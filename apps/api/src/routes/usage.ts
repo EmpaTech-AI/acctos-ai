@@ -266,8 +266,11 @@ router.get('/document-usage', async (req: AuthenticatedRequest, res: Response, n
 /**
  * GET /v1/usage/openai-costs
  *
- * Fetches real token usage directly from the OpenAI API for the requested
- * period and converts it to EUR using GPT-4o pricing.
+ * Fetches real token usage from the OpenAI Organization Usage API and converts
+ * it to EUR using GPT-4o pricing.
+ *
+ * Requires an admin-level API key (sk-admin-... or an org-level project key
+ * with "View usage" permission). A standard sk-proj-... key will return 403.
  *
  * Pricing applied (GPT-4o):
  *   Input  tokens : $2.50  / 1M
@@ -288,38 +291,49 @@ router.get('/openai-costs', requireRole(...ADMIN_ROLES), async (req: Authenticat
 
         const days = Math.min(parseInt((req.query.days as string) || '30'), 90);
 
-        // Build list of YYYY-MM-DD strings to query (today → N days ago)
-        const dates: string[] = [];
-        for (let i = 0; i < days; i++) {
-            const d = new Date();
-            d.setDate(d.getDate() - i);
-            dates.push(d.toISOString().split('T')[0]);
-        }
+        const now = new Date();
+        const endTime = Math.floor(now.getTime() / 1000);
+        const startTime = Math.floor(new Date(now.getTime() - days * 24 * 60 * 60 * 1000).getTime() / 1000);
 
-        // Fetch each day in small parallel batches
-        const BATCH = 5;
         let inputTokens = 0;
         let outputTokens = 0;
+        let after: string | null = null;
+        let hasMore = true;
 
-        for (let i = 0; i < dates.length; i += BATCH) {
-            const batch = dates.slice(i, i + BATCH);
-            const results = await Promise.all(
-                batch.map(date =>
-                    fetch(`https://api.openai.com/v1/usage?date=${date}`, {
-                        headers: { Authorization: `Bearer ${apiKey}` },
-                    })
-                        .then(r => r.json() as Promise<any>)
-                        .catch(() => null)
-                )
-            );
+        while (hasMore) {
+            const url = new URL('https://api.openai.com/v1/organization/usage/completions');
+            url.searchParams.set('start_time', startTime.toString());
+            url.searchParams.set('end_time', endTime.toString());
+            url.searchParams.set('bucket_width', '1d');
+            if (after) url.searchParams.set('after', after);
 
-            for (const data of results) {
-                if (!Array.isArray(data?.data)) continue;
-                for (const entry of data.data) {
-                    inputTokens  += entry.n_context_tokens_total   ?? 0;
-                    outputTokens += entry.n_generated_tokens_total ?? 0;
+            const response = await fetch(url.toString(), {
+                headers: { Authorization: `Bearer ${apiKey}` },
+            });
+
+            const data: any = await response.json().catch(() => null);
+
+            if (!response.ok) {
+                const msg = data?.error?.message || `OpenAI API error ${response.status}`;
+                return res.json({
+                    inputTokens: 0, outputTokens: 0, totalTokens: 0,
+                    costUsd: '0.0000', costEur: '0.00',
+                    error: msg,
+                });
+            }
+
+            if (!data?.data) break;
+
+            for (const bucket of data.data) {
+                for (const result of bucket.results ?? []) {
+                    inputTokens  += result.input_tokens  ?? 0;
+                    outputTokens += result.output_tokens ?? 0;
                 }
             }
+
+            hasMore = data.has_more === true;
+            after = data.next_page ?? null;
+            if (!after) hasMore = false;
         }
 
         // GPT-4o pricing (USD per token)

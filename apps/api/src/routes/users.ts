@@ -192,10 +192,12 @@ router.post('/import', requireRole(...ADMIN_ROLES), upload.single('file'), async
             return next(createError('No file provided', 400, 'NO_FILE'));
         }
 
+        const tenantId = req.user!.tenantId;
         const jobId = startProcessingJob(
             req.file.originalname,
             req.file.mimetype,
             req.file.buffer,
+            tenantId ? { prisma: req.app.locals.prisma, tenantId } : undefined,
         );
 
         res.json({ success: true, jobId });

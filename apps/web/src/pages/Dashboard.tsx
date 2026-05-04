@@ -62,7 +62,7 @@ export default function Dashboard() {
     const [summary, setSummary] = useState<UsageSummary | null>(null);
     const [timeseries, setTimeseries] = useState<TimeseriesPoint[]>([]);
     const [documentUsage, setDocumentUsage] = useState<DocumentUsageData | null>(null);
-    type OpenAICostData = { inputTokens: number; outputTokens: number; totalTokens: number; costEur: string };
+    type OpenAICostData = { inputTokens: number; outputTokens: number; totalTokens: number; costEur: string; error?: string };
     const [openaiCostsMap, setOpenaiCostsMap] = useState<Record<string, OpenAICostData>>({});
     const [loading, setLoading] = useState(true);
     const [filterMode, setFilterMode] = useState<'7d' | '30d' | 'custom'>('30d');
@@ -823,6 +823,11 @@ export default function Dashboard() {
                                 <span>↑ {(openaiCosts?.inputTokens ?? 0).toLocaleString()} in</span>
                                 <span style={{ marginLeft: '0.5rem' }}>↓ {(openaiCosts?.outputTokens ?? 0).toLocaleString()} out</span>
                             </div>
+                            {openaiCosts?.error && (
+                                <div style={{ marginTop: '0.4rem', fontSize: '0.75rem', color: 'var(--error, #ef4444)' }}>
+                                    ⚠ {openaiCosts.error}
+                                </div>
+                            )}
                         </div>
 
                         <div className="card aggregate-card">

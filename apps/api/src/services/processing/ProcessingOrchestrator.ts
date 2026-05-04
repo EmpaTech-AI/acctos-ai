@@ -1,4 +1,6 @@
 import { randomUUID } from 'crypto';
+import { PrismaClient } from '@prisma/client';
+import { PrismaClientKnownRequestError } from '@prisma/client/runtime/library';
 import { jobStore } from './JobStore.js';
 import { classify, detectBankFromContent, BankType } from './DocumentClassifier.js';
 import { splitPdf } from './PdfSplitter.js';
@@ -7,6 +9,11 @@ import { categorize } from './AssistantCategorizer.js';
 import { parseExcel } from './ExcelParser.js';
 import { buildPdfOutputExcel, buildExcelOutputExcel } from './ExcelOutputBuilder.js';
 import { Cell, ParsedTransaction, ParseResult } from './parsers/shared.js';
+
+interface TrackingContext {
+    prisma: PrismaClient;
+    tenantId: string;
+}
 
 import { parse as parseHsbc } from './parsers/hsbc.js';
 import { parse as parseRevolut } from './parsers/revolut.js';
@@ -61,11 +68,16 @@ function parseAllCells(pageCells: Array<Cell[] | null>, bankType: BankType): Par
     return allTransactions;
 }
 
-export function startProcessingJob(filename: string, mimeType: string, fileBuffer: Buffer): string {
+export function startProcessingJob(
+    filename: string,
+    mimeType: string,
+    fileBuffer: Buffer,
+    tracking?: TrackingContext,
+): string {
     const jobId = randomUUID();
     jobStore.create(jobId, filename);
 
-    runJob(jobId, filename, mimeType, fileBuffer).catch(err => {
+    runJob(jobId, filename, mimeType, fileBuffer, tracking).catch(err => {
         console.error(`[Orchestrator] Job ${jobId} unhandled crash:`, err);
         jobStore.update(jobId, { status: 'failed', error: String(err?.message ?? err) });
     });
@@ -73,7 +85,7 @@ export function startProcessingJob(filename: string, mimeType: string, fileBuffe
     return jobId;
 }
 
-async function runJob(jobId: string, filename: string, mimeType: string, fileBuffer: Buffer): Promise<void> {
+async function runJob(jobId: string, filename: string, mimeType: string, fileBuffer: Buffer, tracking?: TrackingContext): Promise<void> {
     try {
         // ── Stage: classify ──────────────────────────────────────────────────────
         jobStore.update(jobId, { status: 'processing', currentStage: 'classify' });
@@ -101,6 +113,60 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
             const pageBuffers = await splitPdf(fileBuffer);
             jobStore.update(jobId, { pageCount: pageBuffers.length });
             const pageData = await analyzePages(pageBuffers);
+
+            // Track Azure Document Intelligence usage
+            if (tracking) {
+                const pageCount = pageData.filter(p => p !== null).length;
+                if (pageCount > 0) {
+                    const today = new Date(); today.setHours(0, 0, 0, 0);
+                    const docType = classification.docType ?? '';
+                    try {
+                        await tracking.prisma.usageEvent.create({
+                            data: {
+                                tenantId: tracking.tenantId,
+                                source: 'azure',
+                                idempotencyKey: `azure-ocr-${jobId}`,
+                                documentType: docType || undefined,
+                                fileType: 'pdf',
+                                step: 'ocr',
+                                timestamp: new Date(),
+                            },
+                        });
+                        await tracking.prisma.usageAggregate.upsert({
+                            where: {
+                                tenantId_date_source_documentType_fileType_step_bankCode: {
+                                    tenantId: tracking.tenantId,
+                                    date: today,
+                                    source: 'azure',
+                                    documentType: docType,
+                                    fileType: 'pdf',
+                                    step: 'ocr',
+                                    bankCode: '',
+                                },
+                            },
+                            create: {
+                                tenantId: tracking.tenantId,
+                                date: today,
+                                source: 'azure',
+                                documentType: docType,
+                                fileType: 'pdf',
+                                step: 'ocr',
+                                bankCode: '',
+                                eventCount: pageCount,
+                                totalCost: 0,
+                                totalTokens: 0,
+                            },
+                            update: { eventCount: { increment: pageCount } },
+                        });
+                    } catch (err: any) {
+                        if (err instanceof PrismaClientKnownRequestError && err.code === 'P2002') {
+                            // Duplicate idempotency key — already tracked, skip
+                        } else {
+                            console.warn('[Orchestrator] Failed to track Azure usage:', err?.message ?? err);
+                        }
+                    }
+                }
+            }
 
             // Combine full-page text from all pages (headers, sidebars, footers that
             // Azure DI captures in result.content but not in table cells) into a
