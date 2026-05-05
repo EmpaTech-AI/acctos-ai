@@ -107,6 +107,7 @@ export default function Dashboard() {
         lastResetAt: string; nextResetAt: string; billingResetDay: number;
     } | null>(null);
     const [docMonthFilter, setDocMonthFilter] = useState<'30d' | 'current-month' | 'prev-month'>('30d');
+    const [billingDocsTotal, setBillingDocsTotal] = useState(0);
 
     // 2. Helper Functions
     const fetchData = async (days = activeDays) => {
@@ -146,6 +147,24 @@ export default function Dashboard() {
         try {
             const res = await axios.get('/v1/usage/monthly-history');
             setMonthlyHistory(res.data.months || []);
+        } catch { /* ignore */ }
+    };
+
+    const fetchBillingPeriodDocs = async () => {
+        try {
+            const now = new Date();
+            const pad = (n: number) => String(n).padStart(2, '0');
+            const resetDay = 4;
+            let from: string;
+            if (now.getDate() >= resetDay) {
+                from = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(resetDay)}`;
+            } else {
+                const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+                from = `${prev.getFullYear()}-${pad(prev.getMonth() + 1)}-${pad(resetDay)}`;
+            }
+            const to = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+            const res = await axios.get('/v1/usage/document-usage', { params: { from, to } });
+            setBillingDocsTotal(res.data?.totals?.documentsHandled ?? 0);
         } catch { /* ignore */ }
     };
 
@@ -328,16 +347,9 @@ export default function Dashboard() {
         if (isNaN(amount) || amount <= 0) return;
         setAdjustingDocs(true);
         try {
-            const res = await axios.put('/v1/billing/adjust-credits', { docs: sign * amount });
-            // Update docs count immediately from the response — don't wait for usage-status re-fetch.
-            if (res.data?.currentDocs !== undefined) {
-                setUsageLimits(prev => prev
-                    ? { ...prev, currentDocs: res.data.currentDocs }
-                    : { currentPages: 0, currentRows: 0, currentDocs: res.data.currentDocs, totalPagesLimit: 5000, totalRowsLimit: 5000, addonPagesLimit: 0, addonRowsLimit: 0, pagesRemaining: 5000, rowsRemaining: 5000, limitWarning: false, scenariosPaused: false, lastResetAt: '', nextResetAt: '', billingResetDay: 4 }
-                );
-            }
+            await axios.put('/v1/billing/adjust-credits', { docs: sign * amount });
             setAdjustDocsAmount('');
-            await fetchDocumentUsage(docMonthFilter);
+            await Promise.all([fetchDocumentUsage(docMonthFilter), fetchBillingPeriodDocs()]);
         } catch (err: any) {
             const detail = err.response?.data?.error?.message || err.message || '';
             alert(detail ? `Failed to adjust documents.\n\n${detail}` : 'Failed to adjust documents.');
@@ -436,6 +448,7 @@ export default function Dashboard() {
             fetchOpenAICosts(activeDays);
         } else {
             fetchDocumentUsage(docMonthFilter);
+            fetchBillingPeriodDocs();
         }
     }, [activeDays, activeTab]);
 
@@ -991,7 +1004,7 @@ export default function Dashboard() {
                                 <Brain size={20} color="#10b981" />
                             </div>
                             <div className="doc-usage-row">
-                                <span className="doc-usage-current" style={{ color: '#10b981' }}>{(usageLimits?.currentDocs ?? 0).toLocaleString()}</span>
+                                <span className="doc-usage-current" style={{ color: '#10b981' }}>{billingDocsTotal.toLocaleString()}</span>
                             </div>
                             <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginTop: '0.75rem' }}>
                                 Documents processed through the system in the selected period
