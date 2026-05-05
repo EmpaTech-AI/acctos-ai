@@ -98,12 +98,13 @@ export default function Dashboard() {
 
     // Usage limits (for Document Usage tab)
     const [usageLimits, setUsageLimits] = useState<{
-        currentPages: number; currentRows: number;
+        currentPages: number; currentRows: number; currentDocs: number;
         totalPagesLimit: number; totalRowsLimit: number;
         addonPagesLimit: number; addonRowsLimit: number;
         pagesRemaining: number; rowsRemaining: number;
         limitWarning: boolean;
         scenariosPaused: boolean;
+        lastResetAt: string; nextResetAt: string; billingResetDay: number;
     } | null>(null);
     const [docMonthFilter, setDocMonthFilter] = useState<'30d' | 'current-month' | 'prev-month'>('30d');
 
@@ -157,7 +158,18 @@ export default function Dashboard() {
             let from: string;
             let to: string;
             if (monthFilter === 'current-month') {
-                from = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-01`;
+                // Use the actual billing period (4th → 3rd), not the calendar month.
+                if (usageLimits?.lastResetAt) {
+                    from = usageLimits.lastResetAt.split('T')[0];
+                } else {
+                    const resetDay = usageLimits?.billingResetDay ?? 4;
+                    if (now.getDate() >= resetDay) {
+                        from = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(resetDay)}`;
+                    } else {
+                        const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+                        from = `${prev.getFullYear()}-${pad(prev.getMonth() + 1)}-${pad(resetDay)}`;
+                    }
+                }
                 to = localDate(now);
             } else if (monthFilter === 'prev-month') {
                 const first = new Date(now.getFullYear(), now.getMonth() - 1, 1);
@@ -185,6 +197,7 @@ export default function Dashboard() {
                 setUsageLimits({
                     currentPages:    d.currentPages ?? 0,
                     currentRows:     d.currentRows ?? 0,
+                    currentDocs:     d.currentDocs ?? 0,
                     totalPagesLimit: d.totalPagesLimit ?? d.pagesLimit,
                     totalRowsLimit:  d.totalRowsLimit ?? d.rowsLimit,
                     addonPagesLimit: d.addonPagesLimit,
@@ -193,6 +206,9 @@ export default function Dashboard() {
                     rowsRemaining:   d.rowsRemaining  ?? ((d.totalRowsLimit  ?? d.rowsLimit)  - (d.currentRows  ?? 0)),
                     limitWarning:    d.limitWarning ?? false,
                     scenariosPaused: d.scenariosPaused,
+                    lastResetAt:     d.lastResetAt ?? '',
+                    nextResetAt:     d.nextResetAt ?? '',
+                    billingResetDay: d.billingResetDay ?? 4,
                 });
             }
         } catch (error) {
@@ -968,7 +984,7 @@ export default function Dashboard() {
                                 <Brain size={20} color="#10b981" />
                             </div>
                             <div className="doc-usage-row">
-                                <span className="doc-usage-current" style={{ color: '#10b981' }}>{(documentUsage?.totals?.documentsHandled ?? 0).toLocaleString()}</span>
+                                <span className="doc-usage-current" style={{ color: '#10b981' }}>{(usageLimits?.currentDocs ?? 0).toLocaleString()}</span>
                             </div>
                             <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginTop: '0.75rem' }}>
                                 Documents processed through the system in the selected period

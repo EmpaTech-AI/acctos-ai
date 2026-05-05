@@ -267,6 +267,12 @@ router.get('/usage-status', async (req: AuthenticatedRequest, res: Response, nex
 
         const usage = await getCurrentPeriodUsage(prisma, tenantId, periodStart);
 
+        const docsAgg = await prisma.documentUsageAggregate.aggregate({
+            where: { customerId: tenantId, date: { gte: periodStart } },
+            _sum: { documentsHandled: true },
+        });
+        const currentDocs = Math.max(0, docsAgg._sum.documentsHandled ?? 0);
+
         const pagesLimit     = tenant.pagesLimit     ?? 5000;
         const rowsLimit      = tenant.rowsLimit      ?? 5000;
         const addonPages     = tenant.addonPagesLimit ?? 0;
@@ -343,6 +349,7 @@ router.get('/usage-status', async (req: AuthenticatedRequest, res: Response, nex
         res.json({
             currentPages:     usage.pages,
             currentRows:      usage.rows,
+            currentDocs,
             pagesLimit,
             rowsLimit,
             addonPagesLimit:  addonPages,
