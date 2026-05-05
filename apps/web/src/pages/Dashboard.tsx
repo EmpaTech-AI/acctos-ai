@@ -194,7 +194,8 @@ export default function Dashboard() {
                 setDocumentUsage(docRes.value.data);
             }
             if (billingDocRes.status === 'fulfilled') {
-                setBillingDocsTotal(billingDocRes.value.data?.totals?.documentsHandled ?? 0);
+                const billingDays: any[] = billingDocRes.value.data?.days ?? [];
+                setBillingDocsTotal(billingDays.reduce((s, d) => s + Math.max(0, d.documentsHandled ?? 0), 0));
             }
             if (limitsRes.status === 'fulfilled') {
                 const d = limitsRes.value.data;
