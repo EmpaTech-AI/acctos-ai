@@ -331,7 +331,10 @@ export default function Dashboard() {
             const res = await axios.put('/v1/billing/adjust-credits', { docs: sign * amount });
             // Update docs count immediately from the response — don't wait for usage-status re-fetch.
             if (res.data?.currentDocs !== undefined) {
-                setUsageLimits(prev => prev ? { ...prev, currentDocs: res.data.currentDocs } : prev);
+                setUsageLimits(prev => prev
+                    ? { ...prev, currentDocs: res.data.currentDocs }
+                    : { currentPages: 0, currentRows: 0, currentDocs: res.data.currentDocs, totalPagesLimit: 5000, totalRowsLimit: 5000, addonPagesLimit: 0, addonRowsLimit: 0, pagesRemaining: 5000, rowsRemaining: 5000, limitWarning: false, scenariosPaused: false, lastResetAt: '', nextResetAt: '', billingResetDay: 4 }
+                );
             }
             setAdjustDocsAmount('');
             await fetchDocumentUsage(docMonthFilter);
