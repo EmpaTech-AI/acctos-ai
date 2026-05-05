@@ -328,7 +328,11 @@ export default function Dashboard() {
         if (isNaN(amount) || amount <= 0) return;
         setAdjustingDocs(true);
         try {
-            await axios.put('/v1/billing/adjust-credits', { docs: sign * amount });
+            const res = await axios.put('/v1/billing/adjust-credits', { docs: sign * amount });
+            // Update docs count immediately from the response — don't wait for usage-status re-fetch.
+            if (res.data?.currentDocs !== undefined) {
+                setUsageLimits(prev => prev ? { ...prev, currentDocs: res.data.currentDocs } : prev);
+            }
             setAdjustDocsAmount('');
             await fetchDocumentUsage(docMonthFilter);
         } catch (err: any) {

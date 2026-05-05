@@ -267,11 +267,14 @@ router.get('/usage-status', async (req: AuthenticatedRequest, res: Response, nex
 
         const usage = await getCurrentPeriodUsage(prisma, tenantId, periodStart);
 
-        const docsAgg = await prisma.documentUsageAggregate.aggregate({
-            where: { customerId: tenantId, date: { gte: periodStart } },
-            _sum: { documentsHandled: true },
-        });
-        const currentDocs = Math.max(0, docsAgg._sum.documentsHandled ?? 0);
+        let currentDocs = 0;
+        try {
+            const docsAgg = await prisma.documentUsageAggregate.aggregate({
+                where: { customerId: tenantId, date: { gte: periodStart } },
+                _sum: { documentsHandled: true },
+            });
+            currentDocs = Math.max(0, docsAgg._sum.documentsHandled ?? 0);
+        } catch { /* non-critical — docs count defaults to 0 if this fails */ }
 
         const pagesLimit     = tenant.pagesLimit     ?? 5000;
         const rowsLimit      = tenant.rowsLimit      ?? 5000;
@@ -620,7 +623,7 @@ router.put(
                 where: { customerId: tenantId, date: { gte: periodStart } },
                 select: { documentsHandled: true },
             });
-            const newDocs = newDocsRows.reduce((sum: number, r: { documentsHandled: number }) => sum + (r.documentsHandled ?? 0), 0);
+            const newDocs = Math.max(0, newDocsRows.reduce((sum: number, r: { documentsHandled: number }) => sum + (r.documentsHandled ?? 0), 0));
             try {
                 await checkAndResumeIfPossible(prisma as any, tenantId);
             } catch (_) {}
