@@ -25,6 +25,7 @@ import { parse as parseNationwide } from './parsers/nationwide.js';
 import { parse as parseSantander } from './parsers/santander.js';
 import { parse as parseBarclays } from './parsers/barclays.js';
 import { parse as parseMetro } from './parsers/metro.js';
+import { parse as parseLloyds } from './parsers/lloyds.js';
 import { parse as parseGeneric } from './parsers/generic.js';
 
 type StandardParser = (cells: Cell[]) => ParseResult;
@@ -40,6 +41,7 @@ function getParser(bankType: BankType): StandardParser {
         case 'santander':  return parseSantander;
         case 'barclays':   return parseBarclays;
         case 'metro':      return parseMetro;
+        case 'lloyds':     return parseLloyds;
         default:           return parseGeneric;
     }
 }
@@ -207,6 +209,8 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
 
             const transactions = parseAllCells(pageCells, bankType);
             if (transactions.length === 0) throw new Error('No transactions could be extracted from the document');
+
+            console.log(`[Orchestrator] Parsed ${transactions.length} transactions:`, JSON.stringify(transactions, null, 2));
 
             // ── Stage: categorize (OpenAI Assistant) ─────────────────────────────
             jobStore.update(jobId, { currentStage: 'categorize' });

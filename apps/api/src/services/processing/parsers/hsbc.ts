@@ -1,231 +1,565 @@
-// Adapted from Make scenario 8458511, code:ExecuteCode module id 1248
-import { Cell, ParsedTransaction, ParseResult, TRANSACTION_CODES, normStr, parseDateToDDMMYYYY, formatMoney } from './shared.js';
+// Ported from Make.com scenario – see ExcelOutputBuilder for integration.
+import {
+    Cell,
+    normStr, parseDateToDDMMYYYY,
+    ParseResult,
+    TRANSACTION_CODES
+} from './shared.js';
 
 interface Row {
     c0: string; c1: string; c2: string; c3: string; c4: string; c5: string; c6: string;
     maxCol: number;
+    __skipBalanceForCurrentTxn?: boolean;
 }
 
+interface PartialTxn {
+    date: string;
+    type: string;
+    description: string;
+    moneyOut: string;
+    moneyIn: string;
+    balance: string;
+    balanceSegmentValid?: boolean | null;
+}
+
+const CODES = TRANSACTION_CODES; // already sorted longest-first in shared.ts
+
+// ── Shared regex constants ──────────────────────────────────────────────────
+
+const FOOTER_ROW_RE =
+    /your bank account details|payment\s+type\s+and\s+details|credit interest rates|overdraft interest rates|credit interest is not paid|aer variable|ear variable|\bupto\b|\bover\b|\d+\.\d+%/i;
+
+const SKIP_DESC_EXACT_RE =
+    /^(?:payment type and details|your (?:basic )?bank account details|(?:balance )?(?:brought|carried) forward|credit interest rates|credit interest is not paid|aer variable|overdraft interest rates|arranged overdraft interest|ear variable|£)$/i;
+
+const STRIP_DESC_RE =
+    /\b(?:payment type and details|your (?:basic )?bank account details|balance (?:brought|carried) forward|(?:brought|carried) forward|credit interest rates|credit interest is not paid|aer variable|overdraft interest rates|arranged overdraft interest|ear variable)\b|\s+£\s*$/gi;
+
+// ── Row helpers ─────────────────────────────────────────────────────────────
+
 function emptyRow(): Row {
-    return { c0:'', c1:'', c2:'', c3:'', c4:'', c5:'', c6:'', maxCol:-1 };
+    return { c0: '', c1: '', c2: '', c3: '', c4: '', c5: '', c6: '', maxCol: -1 };
 }
 
 function rowHasData(row: Row): boolean {
-    return [row.c0,row.c1,row.c2,row.c3,row.c4,row.c5,row.c6].some(v => v && v.trim() !== '');
+    return [row.c0, row.c1, row.c2, row.c3, row.c4, row.c5, row.c6].some(v => v && v.trim() !== '');
 }
 
-function extractDate(val: string): string {
-    if (!val) return '';
-    const m = String(val).match(/(\d{1,2}\s+[A-Za-z]{3}\s+\d{2,4})/);
-    return m ? parseDateToDDMMYYYY(m[1]) : '';
+function isStatementFooterRow(row: Row): boolean {
+    const txt = [row.c0, row.c1, row.c2, row.c3, row.c4, row.c5, row.c6]
+        .filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+    return FOOTER_ROW_RE.test(txt);
 }
 
-function findCode(row: Row): string {
-    const c1 = (row.c1 || '').trim();
-    for (const code of TRANSACTION_CODES) {
-        if (c1 === code) return code;
-    }
+function isAmount(v: string): boolean {
+    return Boolean(v) && /^[0-9,]+(\.\d{1,2})?$/.test(v.trim().replace(/,/g, ''));
+}
+
+function isCode(v: string): boolean {
+    return CODES.includes(v.trim());
+}
+
+// ── Code / description extraction ──────────────────────────────────────────
+
+function findCodeHit(row: Row): { code: string; colKey: 'c0' | 'c1' } | null {
     const c0 = (row.c0 || '').trim();
-    for (const code of TRANSACTION_CODES) {
-        if (c0.startsWith(code + ' ') || c0 === code) return code;
+    if (c0 && CODES.includes(c0)) return { code: c0, colKey: 'c0' };
+
+    const c1 = (row.c1 || '').trim();
+    for (const code of CODES) {
+        if (c1 === code || c1.startsWith(code + ' ')) return { code, colKey: 'c1' };
     }
+    return null;
+}
+
+function extractDescriptionFromRow(
+    row: Row,
+    codeHit: { code: string; colKey: string } | null,
+): string {
+    if (isStatementFooterRow(row)) return '';
+
+    const parts: string[] = [];
+
+    for (const key of ['c1', 'c2'] as const) {
+        let val = row[key];
+        if (!val) continue;
+
+        if (codeHit && key === codeHit.colKey) {
+            if (val.trim() === codeHit.code) continue;
+            const prefix = codeHit.code + ' ';
+            if (val.startsWith(prefix)) val = val.slice(prefix.length).trim();
+        }
+
+        let cleaned = val.trim().replace(/\s+/g, ' ');
+        if (SKIP_DESC_EXACT_RE.test(cleaned)) continue;
+
+        cleaned = cleaned.replace(STRIP_DESC_RE, '').replace(/\s+/g, ' ').trim();
+        if (cleaned) parts.push(cleaned);
+    }
+
+    return parts.join(' ').trim();
+}
+
+// ── Amount extraction ───────────────────────────────────────────────────────
+
+function applyAmountsToTxnFromRow(txn: PartialTxn, row: Row): void {
+    if (!txn || !row || isStatementFooterRow(row)) return;
+
+    const c2 = (row.c2 || '').trim();
+    const c3 = (row.c3 || '').trim();
+    const c4 = (row.c4 || '').trim();
+    const c5 = (row.c5 || '').trim();
+    const c6 = (row.c6 || '').trim();
+
+    const codeHit = findCodeHit(row);
+    const shifted =
+        codeHit?.colKey === 'c0' ||
+        (row.maxCol <= 4 && !row.c5 && !row.c6 &&
+            (CODES.includes((row.c0 || '').trim()) || CODES.includes((row.c1 || '').trim())));
+
+    let outVal = '', inVal = '', balVal = '';
+
+    if (shifted) {
+        if (isAmount(c2)) outVal = c2;
+        else if (isAmount(c3)) outVal = c3;
+        if (isAmount(c5)) balVal = c5;
+        else if (isAmount(c6)) balVal = c6;
+        else if (isAmount(c4)) balVal = c4;
+    } else {
+        if (isAmount(c3)) outVal = c3;
+        if (isAmount(c4)) inVal = c4;
+        if (isAmount(c5)) balVal = c5;
+        else if (isAmount(c6)) balVal = c6;
+    }
+
+    if (!outVal && !inVal) {
+        if (balVal && !txn.balance && !row.__skipBalanceForCurrentTxn) txn.balance = balVal;
+        return;
+    }
+    if (outVal && !txn.moneyOut && !txn.moneyIn) txn.moneyOut = outVal;
+    if (inVal && !txn.moneyIn && !txn.moneyOut) txn.moneyIn = inVal;
+    if (outVal && inVal) {
+        if (!txn.moneyOut) txn.moneyOut = outVal;
+        if (!txn.moneyIn) txn.moneyIn = inVal;
+    }
+    if (balVal && !txn.balance && !row.__skipBalanceForCurrentTxn) txn.balance = balVal;
+}
+
+// ── Balance helpers ─────────────────────────────────────────────────────────
+
+function parseMoney(v: string): number | null {
+    const s = String(v || '').replace(/,/g, '').replace(/[^\d.\-]/g, '').trim();
+    if (!s) return null;
+    const n = Number(s);
+    return Number.isFinite(n) ? n : null;
+}
+
+function fmtMoney(n: number): string {
+    return Math.abs(n).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function almostEqual(a: number, b: number): boolean { return Math.abs(a - b) < 0.01; }
+
+function getOpeningBalance(rows: Row[]): number | null {
+    for (const row of rows) {
+        const txt = [row.c0, row.c1, row.c2].filter(Boolean).join(' ').replace(/\s+/g, ' ');
+        if (/balance brought forward|brought forward/i.test(txt)) {
+            const b = parseMoney(row.c5 || row.c6);
+            if (b !== null) return b;
+        }
+    }
+    return null;
+}
+
+function getPossibleBalance(row: Row): string {
+    if (!row || isStatementFooterRow(row)) return '';
+    const c4 = (row.c4 || '').trim();
+    const c5 = (row.c5 || '').trim();
+    const c6 = (row.c6 || '').trim();
+    if (isAmount(c5)) return c5;
+    if (isAmount(c6)) return c6;
+    if (row.maxCol <= 4 && isAmount(c4)) return c4;
     return '';
 }
 
-// ── Text-content fallback (used when Azure DI finds no table cells) ──────────
-// The HSBC Kinetic layout is not recognised as a table by Azure DI's
-// prebuilt-layout model, so we parse directly from result.content text.
-// The orchestrator injects the full combined-page text as a synthetic cell
-// at rowIndex:-1 / columnIndex:-1.
-
-const TEXT_DATE_RE = /^(\d{1,2}\s+[A-Za-z]{3}\s+\d{2,4})\s*/;
-const AMOUNT_END_1 = /([\d,]+\.\d{2})$/;
-const AMOUNT_END_2 = /([\d,]+\.\d{2})\s+([\d,]+\.\d{2})$/;
-
-function splitAmounts(text: string): { rest: string; amt1: string } {
-    const m2 = text.match(AMOUNT_END_2);
-    if (m2) return { rest: text.slice(0, text.length - m2[0].length).trim(), amt1: m2[1] };
-    const m1 = text.match(AMOUNT_END_1);
-    if (m1) return { rest: text.slice(0, text.length - m1[0].length).trim(), amt1: m1[1] };
-    return { rest: text, amt1: '' };
+function rowHasMovementAmount(row: Row, codeHit: { colKey: string } | null): boolean {
+    if (!row || isStatementFooterRow(row)) return false;
+    const c2 = (row.c2 || '').trim();
+    const c3 = (row.c3 || '').trim();
+    const c4 = (row.c4 || '').trim();
+    const shifted =
+        codeHit?.colKey === 'c0' ||
+        (row.maxCol <= 4 && !row.c5 && !row.c6 &&
+            (CODES.includes((row.c0 || '').trim()) || CODES.includes((row.c1 || '').trim())));
+    return shifted ? isAmount(c2) || isAmount(c3) : isAmount(c3) || isAmount(c4);
 }
 
-function parseFromContent(content: string): ParsedTransaction[] {
-    const transactions: ParsedTransaction[] = [];
-    const lines = content.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+function txnHasRealAmount(txn: PartialTxn): boolean {
+    return Boolean(
+        (txn.moneyOut || '').replace(/,/g, '').trim() ||
+        (txn.moneyIn || '').replace(/,/g, '').trim(),
+    );
+}
 
-    let inSection = false;
-    let currentDate = '';
-    let pendingType = '';
-    let pendingDesc = '';
-    let hasPending = false;
+function txnHasAnyAmount(txn: PartialTxn): boolean {
+    return txnHasRealAmount(txn) || Boolean((txn.balance || '').replace(/,/g, '').trim());
+}
 
-    const flush = (moneyOut: string, moneyIn: string) => {
-        if (!hasPending || !currentDate) { hasPending = false; return; }
-        const desc = pendingDesc.trim();
-        const type = pendingType;
-        hasPending = false; pendingType = ''; pendingDesc = '';
-        if (!desc || /balance\s+(brought|carried)\s+forward/i.test(desc)) return;
-        if (!moneyOut && !moneyIn) return;
-        transactions.push({
-            date: currentDate,
-            type,
-            description: desc,
-            moneyOut: moneyOut.replace(/,/g, ''),
-            moneyIn:  moneyIn.replace(/,/g, ''),
-            balance:  '',
+// ── Direction normalisation ─────────────────────────────────────────────────
+
+function normalizeTxnType(type: string): string {
+    return type === ')))' ? 'VIS' : type;
+}
+
+function forceDirectionByType(tx: PartialTxn): void {
+    if (tx.balanceSegmentValid === true) { tx.type = normalizeTxnType(tx.type); return; }
+    const type = normalizeTxnType(tx.type);
+    tx.type = type;
+
+    const out = parseMoney(tx.moneyOut);
+    const inn = parseMoney(tx.moneyIn);
+    const bal = parseMoney(tx.balance);
+
+    if (type === 'CR') {
+        if (out !== null && inn !== null && bal === null) {
+            tx.balance = tx.moneyIn; tx.moneyIn = tx.moneyOut; tx.moneyOut = ''; return;
+        }
+        if (out !== null && inn === null) { tx.moneyIn = tx.moneyOut; tx.moneyOut = ''; }
+        return;
+    }
+    if (type === 'VIS' || type === 'VISA') {
+        const isRefund = /\brefund\b|\breversal\b|\breturned\b|\bcredit\b/i.test(tx.description || '');
+        if (!isRefund && inn !== null && out === null) { tx.moneyOut = tx.moneyIn; tx.moneyIn = ''; }
+    }
+}
+
+// ── Balance solver ──────────────────────────────────────────────────────────
+
+function fixInOutByBalance(txns: PartialTxn[], openingBalance: number | null): void {
+    let prev = openingBalance;
+    if (prev === null) {
+        for (const tx of txns) {
+            const b = parseMoney(tx.balance);
+            if (b !== null) { prev = b; break; }
+        }
+    }
+    if (prev === null) return;
+
+    const cents = (n: number) => Math.round(n * 100);
+    const fromCts = (n: number) => n / 100;
+
+    function getSingle(tx: PartialTxn): { amount: number; existingSign: number } | null {
+        const out = parseMoney(tx.moneyOut);
+        const inn = parseMoney(tx.moneyIn);
+        if (out !== null && inn === null) return { amount: cents(out), existingSign: -1 };
+        if (inn !== null && out === null) return { amount: cents(inn), existingSign: 1 };
+        if (out !== null && inn !== null && almostEqual(out, inn)) return { amount: cents(out), existingSign: 0 };
+        return null;
+    }
+
+    function preferSigns(tx: PartialTxn, es: number): number[] {
+        const type = normalizeTxnType(tx.type);
+        const desc = tx.description || '';
+        const isRef = /\brefund\b|\breversal\b|\breturned\b|\bcredit\b/i.test(desc);
+
+        if (es === 1) {
+            if (type === 'VIS' || type === 'VISA' || type === 'POS' || type === 'ATM') return isRef ? [1, -1] : [-1, 1];
+            if (type === 'BP' || type === 'CR') return [1, -1];
+            if (type === 'DR' || type === 'DD' || type === 'FEE') return [-1, 1];
+            return [1, -1];
+        }
+        if (es === -1) return [-1, 1];
+        if (type === 'CR') return [1, -1];
+        if (type === 'DR' || type === 'DD' || type === 'FEE') return [-1, 1];
+        if (type === 'BP') return [1, -1]; // BP at HSBC is often income (e.g. cleaning clients)
+        if (type === 'VIS' || type === 'VISA' || type === 'POS' || type === 'ATM') return isRef ? [1, -1] : [-1, 1];
+        return [-1, 1];
+    }
+
+    function penalty(tx: PartialTxn, sign: number, es: number): number {
+        const type = normalizeTxnType(tx.type);
+        const desc = tx.description || '';
+        let p = 0;
+        if (es && sign !== es)
+            p += (type === 'VIS' || type === 'VISA' || type === 'POS' || type === 'ATM') ? 1 : 3;
+        if (type === 'CR' && sign < 0) p += 3;
+        if ((type === 'DR' || type === 'DD' || type === 'FEE') && sign > 0) p += 3;
+        if ((type === 'VIS' || type === 'VISA') && sign > 0) {
+            const isRef = /\brefund\b|\breversal\b|\breturned\b|\bbet365\b|\bbetfair\b|\bpaddypowe|\bbwin\b/i.test(desc);
+            if (!isRef) p += 2;
+        }
+        return p;
+    }
+
+    function solveSegment(startBal: number, items: PartialTxn[]): number {
+        if (!items.length) return startBal;
+        const target = parseMoney(items[items.length - 1].balance);
+        if (target === null) return startBal;
+
+        const targetDelta = cents(target) - cents(startBal);
+        const amtItems = items.map(tx => {
+            const d = getSingle(tx);
+            if (!d || !d.amount) return { tx, amount: 0, existingSign: 0, candidates: [0] };
+            return { tx, amount: d.amount, existingSign: d.existingSign, candidates: preferSigns(tx, d.existingSign) };
         });
-    };
 
-    for (const line of lines) {
-        if (!inSection) {
-            if (/^Date\s+Pay/i.test(line)) inSection = true;
+        let states = new Map<number, { score: number; signs: number[] }>([[0, { score: 0, signs: [] }]]);
+        for (const item of amtItems) {
+            const next = new Map<number, { score: number; signs: number[] }>();
+            for (const [delta, state] of states) {
+                for (const sign of item.candidates) {
+                    const nd = delta + sign * item.amount;
+                    const sc = state.score + penalty(item.tx, sign, item.existingSign);
+                    const ex = next.get(nd);
+                    if (!ex || sc < ex.score) next.set(nd, { score: sc, signs: [...state.signs, sign] });
+                }
+            }
+            states = next;
+        }
+
+        const solved = states.get(targetDelta);
+        if (solved) {
+            for (let i = 0; i < amtItems.length; i++) {
+                const { tx, amount } = amtItems[i];
+                const sign = solved.signs[i];
+                if (!amount || sign === 0) continue;
+                const val = fmtMoney(fromCts(amount));
+                if (sign < 0) { tx.moneyOut = val; tx.moneyIn = ''; }
+                else { tx.moneyOut = ''; tx.moneyIn = val; }
+                tx.balanceSegmentValid = true;
+            }
+            return target;
+        }
+        for (const tx of items) tx.balanceSegmentValid = false;
+        return target;
+    }
+
+    let segment: PartialTxn[] = [];
+    for (const tx of txns) {
+        segment.push(tx);
+        if (tx.balance) { prev = solveSegment(prev!, segment); segment = []; }
+    }
+}
+
+// ── Row repair passes ───────────────────────────────────────────────────────
+
+function repairMergedFeeRows(inputRows: Row[]): Row[] {
+    const out: Row[] = [];
+    for (const row of inputRows) {
+        if (!row || isStatementFooterRow(row)) { out.push(row); continue; }
+
+        const c1 = (row.c1 || '').trim();
+        const c2 = (row.c2 || '').replace(/\s+/g, ' ').trim();
+        const m = c2.match(/^Transaction Fee\s+(INT'?L\b.*)$/i);
+
+        if (m && c1 && CODES.includes(c1) && c1 !== 'DR') {
+            const amounts = (row.c3 || '').match(/[0-9,]+(?:\.\d{1,2})?/g) ?? [];
+            const feeAmt = amounts[0] ?? '';
+            const txnAmt = amounts[1] ?? '';
+
+            if (feeAmt) {
+                const prev = out[out.length - 1];
+                const prevC1 = (prev?.c1 || '').trim();
+                const prevC2 = (prev?.c2 || '').trim();
+                if (prev && prevC1 === 'DR' && !prev.c3 &&
+                    /^(DR\s+)?Non-Sterling\s+Transaction Fee$/i.test(`${prevC1} ${prevC2}`.trim())) {
+                    prev.c2 = 'Non-Sterling Transaction Fee';
+                    prev.c3 = feeAmt;
+                } else {
+                    out.push({ c0: row.c0 || '', c1: 'DR', c2: 'Non-Sterling Transaction Fee', c3: feeAmt, c4: '', c5: '', c6: '', maxCol: 3 });
+                }
+            }
+            out.push({ ...row, c2: m[1].trim(), c3: txnAmt });
+            continue;
+        }
+        out.push(row);
+    }
+    return out;
+}
+
+function normalizeShiftedRows(inputRows: Row[]): Row[] {
+    const out: Row[] = [];
+    for (const row of inputRows) {
+        if (!row || isStatementFooterRow(row)) { out.push(row); continue; }
+
+        const c0 = (row.c0 || '').trim();
+        const c1 = (row.c1 || '').trim();
+        const c2 = (row.c2 || '').trim();
+        const c3 = (row.c3 || '').trim();
+        const c4 = (row.c4 || '').trim();
+        const c5 = (row.c5 || '').trim();
+        const maxCol = Math.max(row.maxCol || 0, 5);
+
+        // c0 is a code but c1 is not → shift everything right
+        if (isCode(c0) && !isCode(c1)) {
+            out.push({
+                ...row, c0: '', c1: c0,
+                c2: [c1, !isAmount(c2) ? c2 : ''].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim(),
+                c3: isAmount(c2) ? c2 : c3,
+                c4, c5, c6: row.c6 || '', maxCol,
+            });
+            continue;
+        }
+        // Continuation row: c1 has description, c2 has amount → shift
+        if (!c0 && c1 && !isCode(c1) && isAmount(c2) && !c3) {
+            out.push({ ...row, c1: '', c2: c1, c3: c2, c4, c5, c6: row.c6 || '', maxCol });
+            continue;
+        }
+        // Continuation row: c1 has description, c3 has amount, c2 empty → shift
+        if (!c0 && c1 && !isCode(c1) && !c2 && isAmount(c3)) {
+            out.push({ ...row, c1: '', c2: c1, c3, c4, c5, c6: row.c6 || '', maxCol });
             continue;
         }
 
-        // Skip repeated headers and footer lines present on every page
-        if (/^Date\s+Pay/i.test(line)) continue;
-        if (/you can contact/i.test(line)) continue;
-        if (/have a question/i.test(line)) continue;
-        if (/^Account Name\b/i.test(line)) continue;
-        if (/Sheet\s+Number/i.test(line)) continue;
-        if (/^(Credit|Debit)\s+interest/i.test(line)) continue;
-
-        let rest = line;
-
-        // Pull date off the front of the line if present
-        const dateMatch = rest.match(TEXT_DATE_RE);
-        if (dateMatch) {
-            const parsed = parseDateToDDMMYYYY(dateMatch[1]);
-            if (parsed) currentDate = parsed;
-            rest = rest.slice(dateMatch[0].length).trim();
-        }
-
-        // Detect transaction code at start of remaining text
-        let foundCode = '';
-        for (const code of TRANSACTION_CODES) {
-            if (rest === code || rest.startsWith(code + ' ')) {
-                foundCode = code;
-                rest = rest.slice(code.length).trim();
-                break;
-            }
-        }
-
-        if (foundCode) {
-            flush('', '');
-            pendingType = foundCode;
-            hasPending = true;
-            const { rest: descPart, amt1 } = splitAmounts(rest);
-            pendingDesc = descPart;
-            if (amt1) {
-                const isCredit = foundCode === 'CR';
-                flush(isCredit ? '' : amt1, isCredit ? amt1 : '');
-            }
-        } else if (hasPending) {
-            // Continuation line: location text and/or amount for the current transaction
-            const { rest: locPart, amt1 } = splitAmounts(rest);
-            if (locPart) pendingDesc = `${pendingDesc} ${locPart}`.trim();
-            if (amt1) {
-                const isCredit = pendingType === 'CR';
-                flush(isCredit ? '' : amt1, isCredit ? amt1 : '');
-            }
-        }
+        out.push(row);
     }
-
-    flush('', '');
-    return transactions;
+    return out;
 }
 
-// ── Table-cell-based parser (primary path) ────────────────────────────────────
+// ── Main parse ──────────────────────────────────────────────────────────────
 
 export function parse(cells: Cell[]): ParseResult {
-    // Azure DI does not detect the HSBC Kinetic layout as a table — fall back
-    // to parsing from the text content injected as the synthetic context cell.
-    const realCells = cells.filter(c => c.rowIndex >= 0);
-    if (realCells.length === 0) {
-        const contextCell = cells.find(c => c.rowIndex === -1);
-        if (contextCell?.content) {
-            return { transactions: parseFromContent(contextCell.content) };
-        }
-        return { transactions: [] };
-    }
+    if (!cells.length) return { transactions: [] };
 
-    const hasCol5 = realCells.some(c => c.columnIndex === 5);
+    // 1. Build logical rows (group by rowIndex, then split on code in col 1)
+    const sorted = [...cells].sort((a, b) =>
+        a.rowIndex !== b.rowIndex ? a.rowIndex - b.rowIndex : a.columnIndex - b.columnIndex);
 
-    // Group cells into rows: a new row starts when columnIndex === 0
     const rawRows: Row[] = [];
-    let currentRow = emptyRow();
+    let cur = emptyRow();
+    let lastRI = -1;
 
-    // Sort by rowIndex then columnIndex
-    const sorted = [...realCells].sort((a, b) => a.rowIndex !== b.rowIndex ? a.rowIndex - b.rowIndex : a.columnIndex - b.columnIndex);
-
-    let lastRowIndex = -1;
     for (const cell of sorted) {
         const col = cell.columnIndex;
         const content = normStr(cell.content);
 
-        if (cell.rowIndex !== lastRowIndex) {
-            if (lastRowIndex !== -1 && rowHasData(currentRow)) {
-                rawRows.push(currentRow);
-                currentRow = emptyRow();
-            }
-            lastRowIndex = cell.rowIndex;
+        if (cell.rowIndex !== lastRI) {
+            if (lastRI !== -1 && rowHasData(cur)) rawRows.push(cur);
+            cur = emptyRow();
+            lastRI = cell.rowIndex;
         }
 
-        if (col > currentRow.maxCol) currentRow.maxCol = col;
+        if (col > cur.maxCol) cur.maxCol = col;
 
         if (col === 0) {
-            currentRow.c0 = content;
+            cur.c0 = content;
         } else if (col >= 1 && col <= 6) {
-            if (col === 1 && content && TRANSACTION_CODES.includes(content.trim()) && rowHasData(currentRow)) {
-                rawRows.push(currentRow);
-                currentRow = emptyRow();
-                currentRow.c1 = content.trim();
+            if (col === 1 && content && CODES.includes(content.trim()) && rowHasData(cur)) {
+                const code = content.trim();
+                const hasAmt = !!(cur.c3 || cur.c4 || cur.c5 || cur.c6);
+                const isATMCon = /\bATM\b/.test(cur.c1 || '') || /\bCASH\b/.test(cur.c2 || '');
+
+                if (!(isATMCon && code === 'BP' && !hasAmt)) {
+                    rawRows.push(cur);
+                    cur = emptyRow();
+                    cur.c1 = code;
+                    cur.maxCol = Math.max(cur.maxCol, col);
+                    continue;
+                }
+                cur.c2 = cur.c2 ? `${cur.c2} ${code}`.trim() : code;
                 continue;
             }
             const key = `c${col}` as keyof Row;
-            const existing = currentRow[key] as string;
-            (currentRow as any)[key] = existing ? `${existing} ${content}`.trim() : content;
+            const ex = cur[key] as string;
+            (cur as any)[key] = ex ? `${ex} ${content}`.trim() : content;
         }
     }
-    if (rowHasData(currentRow)) rawRows.push(currentRow);
+    if (rowHasData(cur)) rawRows.push(cur);
 
-    const transactions: ParsedTransaction[] = [];
+    // 2. Row post-processing
+    const rows = normalizeShiftedRows(repairMergedFeeRows(rawRows));
 
-    for (const row of rawRows) {
-        const date = extractDate(row.c0) || extractDate(row.c1);
-        if (!date) continue;
+    // 3. Opening balance
+    const openingBalance = getOpeningBalance(rows);
 
-        const type = findCode(row);
+    // 4. Build transactions
+    const txns: PartialTxn[] = [];
+    let currentTxn: PartialTxn | null = null;
+    let currentDate = '';
 
-        let description = '';
-        if (row.c1 && !TRANSACTION_CODES.includes(row.c1.trim())) {
-            description = row.c1;
-        } else if (row.c2) {
-            description = row.c2;
-        }
-        if (row.c3 && hasCol5) description = `${description} ${row.c3}`.trim();
+    for (const row of rows) {
+        if (isStatementFooterRow(row)) continue;
 
-        let moneyOut = '', moneyIn = '', balance = '';
-        if (hasCol5) {
-            moneyOut = row.c3 || '';
-            moneyIn  = row.c4 || '';
-            balance  = row.c5 || '';
-        } else {
-            moneyOut = row.c2 || '';
-            moneyIn  = row.c3 || '';
-            balance  = row.c4 || '';
+        const dateMatch = (row.c0 || '').match(/(\d{1,2}\s+[A-Za-z]{3}\s+\d{2,4})/);
+        if (dateMatch) {
+            const parsed = parseDateToDDMMYYYY(dateMatch[1]);
+            if (parsed) currentDate = parsed;
         }
 
-        transactions.push({
-            date,
-            type,
-            description,
-            moneyOut: moneyOut.replace(/,/g, ''),
-            moneyIn:  moneyIn.replace(/,/g, ''),
-            balance:  balance.replace(/,/g, ''),
-        });
+        const codeHit = findCodeHit(row);
+
+        if (codeHit) {
+            // Page-break balance: balance present but no movement on same line
+            const bal = getPossibleBalance(row);
+            if (bal && !rowHasMovementAmount(row, codeHit)) {
+                if (currentTxn && !currentTxn.balance && txnHasRealAmount(currentTxn)) {
+                    currentTxn.balance = bal;
+                }
+                row.__skipBalanceForCurrentTxn = true;
+            }
+
+            if (currentTxn) {
+                currentTxn.description = (currentTxn.description || '').trim();
+                if (txnHasAnyAmount(currentTxn)) txns.push(currentTxn);
+            }
+
+            currentTxn = { date: currentDate, type: codeHit.code, description: '', moneyOut: '', moneyIn: '', balance: '' };
+        }
+
+        if (!currentTxn) continue;
+
+        // Description
+        let descPart = extractDescriptionFromRow(row, codeHit);
+        if (descPart) {
+            const raw = descPart.replace(/,/g, '').trim();
+            if (/^\d+(\.\d{1,2})?$/.test(raw) &&
+                (raw === (currentTxn.moneyOut || '').replace(/,/g, '') ||
+                    raw === (currentTxn.moneyIn || '').replace(/,/g, '') ||
+                    raw === (currentTxn.balance || '').replace(/,/g, ''))) {
+                descPart = '';
+            }
+        }
+        if (descPart) {
+            currentTxn.description = currentTxn.description
+                ? `${currentTxn.description} ${descPart}`.trim()
+                : descPart;
+        }
+
+        applyAmountsToTxnFromRow(currentTxn, row);
     }
 
-    return { transactions };
+    if (currentTxn) {
+        currentTxn.description = (currentTxn.description || '').trim();
+        if (txnHasAnyAmount(currentTxn)) txns.push(currentTxn);
+    }
+
+    // 5. Clean trailing duplicate numbers from descriptions
+    for (const tx of txns) {
+        if (!tx.description) continue;
+        const m = tx.description.match(/(\d[\d,]*\.?\d*)\s*$/);
+        if (!m) continue;
+        const last = m[1].replace(/,/g, '');
+        if (last && (
+            last === (tx.moneyOut || '').replace(/,/g, '') ||
+            last === (tx.moneyIn || '').replace(/,/g, '') ||
+            last === (tx.balance || '').replace(/,/g, '')
+        )) {
+            tx.description = tx.description.slice(0, tx.description.length - m[0].length).trim();
+        }
+    }
+
+    // 6. Normalise types → lock IN/OUT with balance solver
+    for (const tx of txns) forceDirectionByType(tx);
+    fixInOutByBalance(txns, openingBalance);
+
+    return {
+        transactions: txns.map(tx => ({
+            date: tx.date,
+            type: normalizeTxnType(tx.type),
+            description: tx.description,
+            moneyIn: tx.moneyIn || '',
+            moneyOut: tx.moneyOut || '',
+            balance: tx.balance || '',
+        })),
+    };
 }
