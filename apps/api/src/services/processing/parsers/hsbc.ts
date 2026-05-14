@@ -651,11 +651,23 @@ export function parse(cells: Cell[]): ParseResult {
             const hasDesc   = iC2 && !isAmount(iC2) && !SKIP_DESC_EXACT_RE.test(iC2) && !CARRIED_FORWARD_RE.test(iC2);
             const isFeeRow  = /\btransaction fee\b|\bnon-sterling\b/i.test(iC2);
             if (hasNewAmt && hasDesc && !isFeeRow) {
-                currentTxn.description = (currentTxn.description || '').trim();
-                if (txnHasAnyAmount(currentTxn)) txns.push(currentTxn);
-                // New implicit transaction: type unknown (code was not emitted by Azure DI).
-                // Direction comes from column position (c3=out, c4=in); balance solver validates.
-                currentTxn = { date: currentDate, type: '', description: '', moneyOut: '', moneyIn: '', balance: '' };
+                // If ))) appears in the middle of the accumulated description it marks where
+                // the second merchant begins (Azure DI merged two contactless rows into one
+                // cell). Split there: old txn keeps the part before ))), new txn starts with
+                // the part after ())) stripped). The continuation row's location text then
+                // gets appended to the new txn normally.
+                const fullDesc = (currentTxn.description || '').trim();
+                const parenMatch = fullDesc.match(/^([\s\S]*?)\s+\){2,}\s*([\s\S]*)$/);
+                if (parenMatch) {
+                    currentTxn.description = parenMatch[1].trim();
+                    const overflowDesc = parenMatch[2].trim();
+                    if (txnHasAnyAmount(currentTxn)) txns.push(currentTxn);
+                    currentTxn = { date: currentDate, type: '', description: overflowDesc, moneyOut: '', moneyIn: '', balance: '' };
+                } else {
+                    currentTxn.description = fullDesc;
+                    if (txnHasAnyAmount(currentTxn)) txns.push(currentTxn);
+                    currentTxn = { date: currentDate, type: '', description: '', moneyOut: '', moneyIn: '', balance: '' };
+                }
             }
         }
 

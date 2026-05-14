@@ -166,6 +166,96 @@ describe('HSBC parser – implicit transaction split (regression B)', () => {
     });
 });
 
+// ── Bug B extension: ))) marker in merged c2 splits description correctly ─────
+
+describe('HSBC parser – ))) description split (regression B2)', () => {
+    it('))) in c2 splits old description, new txn gets part after ))) + location', () => {
+        // Azure DI merged: "Oyster Mobile App 0343 2221234 ))) Superdrug Stores P" in c2
+        // Continuation row: c2="Clapham", c3=12.98
+        const cells: Cell[] = [
+            c(-1, -1, 'Statement period 01 Mar 2026 - 30 Apr 2026'),
+            c(0, 0, '01 Mar 2026'), c(0, 5, '300.00'),
+            c(1, 0, '31 Mar 2026'), c(1, 1, 'VIS'),
+            c(1, 2, 'Oyster Mobile App 0343 2221234 ))) Superdrug Stores P'),
+            c(1, 3, '37.10'), c(1, 5, '262.90'),
+            c(2, 2, 'Clapham'), c(2, 3, '12.98'), c(2, 5, '249.92'),
+        ];
+
+        const { transactions: txns } = parse(cells);
+        const oyster = txns.find(t => t.description.includes('Oyster'));
+        const superdrug = txns.find(t => t.description.includes('Superdrug'));
+
+        expect(oyster, 'Oyster missing').toBeDefined();
+        expect(oyster!.description).not.toContain('Superdrug');
+        expect(oyster!.description).not.toContain(')))');
+
+        expect(superdrug, 'Superdrug missing').toBeDefined();
+        expect(superdrug!.description).toContain('Superdrug Stores P');
+        expect(superdrug!.description).toContain('Clapham');
+        expect(superdrug!.description).not.toContain(')))');
+    });
+
+    it('))) split: Welcome Home London + Sherwood Food And Mitcham', () => {
+        const cells: Cell[] = [
+            c(-1, -1, 'Statement period 01 Apr 2026 - 30 Apr 2026'),
+            c(0, 0, '01 Apr 2026'), c(0, 5, '300.00'),
+            c(1, 0, '08 Apr 2026'), c(1, 1, 'VIS'),
+            c(1, 2, 'Welcome Home London ))) Sherwood Food And'),
+            c(1, 3, '7.57'), c(1, 5, '292.43'),
+            c(2, 2, 'Mitcham'), c(2, 3, '0.50'), c(2, 5, '291.93'),
+        ];
+
+        const { transactions: txns } = parse(cells);
+        const welcome = txns.find(t => t.description.includes('Welcome Home'));
+        const sherwood = txns.find(t => t.description.includes('Sherwood'));
+
+        expect(welcome!.description).not.toContain('Sherwood');
+        expect(welcome!.description).not.toContain(')))');
+        expect(sherwood!.description).toContain('Sherwood Food And');
+        expect(sherwood!.description).toContain('Mitcham');
+    });
+
+    it('))) split: White . + Tariq Halal Croydon', () => {
+        const cells: Cell[] = [
+            c(-1, -1, 'Statement period 01 Apr 2026 - 30 Apr 2026'),
+            c(0, 0, '01 Apr 2026'), c(0, 5, '300.00'),
+            c(1, 0, '17 Apr 2026'), c(1, 1, 'VIS'),
+            c(1, 2, 'White . ))) Tariq Halal Croydo'),
+            c(1, 3, '20.00'), c(1, 5, '280.00'),
+            c(2, 2, 'Croydon'), c(2, 3, '2.84'), c(2, 5, '277.16'),
+        ];
+
+        const { transactions: txns } = parse(cells);
+        const white = txns.find(t => t.description.includes('White'));
+        const tariq = txns.find(t => t.description.includes('Tariq'));
+
+        expect(white!.description).not.toContain('Tariq');
+        expect(white!.description).not.toContain(')))');
+        expect(tariq!.description).toContain('Tariq Halal Croydo');
+        expect(tariq!.description).toContain('Croydon');
+    });
+
+    it('))) split: Hollister White C London + Tesco Stores 5186 London', () => {
+        const cells: Cell[] = [
+            c(-1, -1, 'Statement period 01 Apr 2026 - 30 Apr 2026'),
+            c(0, 0, '01 Apr 2026'), c(0, 5, '300.00'),
+            c(1, 0, '23 Apr 2026'), c(1, 1, 'VIS'),
+            c(1, 2, 'Hollister (White C London ))) Tesco Stores 5186'),
+            c(1, 3, '27.95'), c(1, 5, '272.05'),
+            c(2, 2, 'London'), c(2, 3, '1.13'), c(2, 5, '270.92'),
+        ];
+
+        const { transactions: txns } = parse(cells);
+        const hollister = txns.find(t => t.description.includes('Hollister'));
+        const tesco = txns.find(t => t.description.includes('Tesco Stores 5186'));
+
+        expect(hollister!.description).not.toContain('Tesco');
+        expect(hollister!.description).not.toContain(')))');
+        expect(tesco!.description).toContain('Tesco Stores 5186');
+        expect(tesco!.description).toContain('London');
+    });
+});
+
 // ── Balance summary assertions (synthetic mini-statement) ─────────────────────
 
 describe('HSBC parser – balance math', () => {
