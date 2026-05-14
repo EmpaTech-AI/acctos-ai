@@ -66,12 +66,9 @@ async function pollRun(threadId: string, runId: string, apiKey: string, timeoutM
     throw new Error(`Assistant run timed out after ${timeoutMs}ms`);
 }
 
-export async function categorize(transactions: ParsedTransaction[]): Promise<CategorizedTransaction[]> {
-    const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) throw new Error('OPENAI_API_KEY not set');
+const BATCH_SIZE = 50;
 
-    const inputArray = formatTransactionsForAssistant(transactions);
-
+async function categorizeBatch(batch: object[], apiKey: string): Promise<CategorizedTransaction[]> {
     // Create thread
     const threadRes = await fetch('https://api.openai.com/v1/threads', {
         method: 'POST',
@@ -86,7 +83,7 @@ export async function categorize(transactions: ParsedTransaction[]): Promise<Cat
         await fetch(`https://api.openai.com/v1/threads/${thread.id}/messages`, {
             method: 'POST',
             headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json', 'OpenAI-Beta': 'assistants=v2' },
-            body: JSON.stringify({ role: 'user', content: JSON.stringify(inputArray) }),
+            body: JSON.stringify({ role: 'user', content: JSON.stringify(batch) }),
         });
 
         // Run
@@ -119,13 +116,29 @@ export async function categorize(transactions: ParsedTransaction[]): Promise<Cat
         }
 
         const items: CategorizedTransaction[] = Array.isArray(parsed) ? parsed : (parsed.items || []);
-        return applyFallback(items, inputArray);
+        return applyFallback(items, batch);
 
     } finally {
-        // Clean up thread (best-effort)
         fetch(`https://api.openai.com/v1/threads/${thread.id}`, {
             method: 'DELETE',
             headers: { Authorization: `Bearer ${apiKey}`, 'OpenAI-Beta': 'assistants=v2' },
         }).catch(() => {});
     }
+}
+
+export async function categorize(transactions: ParsedTransaction[]): Promise<CategorizedTransaction[]> {
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) throw new Error('OPENAI_API_KEY not set');
+
+    const inputArray = formatTransactionsForAssistant(transactions);
+    const results: CategorizedTransaction[] = [];
+
+    for (let i = 0; i < inputArray.length; i += BATCH_SIZE) {
+        const batch = inputArray.slice(i, i + BATCH_SIZE);
+        console.log(`[Categorizer] Batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(inputArray.length / BATCH_SIZE)} — ${batch.length} transactions`);
+        const batchResults = await categorizeBatch(batch, apiKey);
+        results.push(...batchResults);
+    }
+
+    return results;
 }

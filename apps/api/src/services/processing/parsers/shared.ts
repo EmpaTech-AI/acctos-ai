@@ -202,11 +202,12 @@ export function maxCol(cells: Cell[]): number {
     return cells.reduce((m, c) => Math.max(m, c.columnIndex), 0);
 }
 
-/** Format transactions into the string format the OpenAI Assistant expects */
+/** Format transactions into the object format the OpenAI Assistant expects */
 export function formatTransactionsForAssistant(transactions: ParsedTransaction[]): object[] {
     return transactions.map(t => ({
         'Date': t.date,
-        'Type and Description': [t.type, t.description].filter(Boolean).join(' ').trim(),
+        'Type': t.type || '',
+        'Description': t.description || '',
         'Money in': t.moneyIn || '',
         'Money out': t.moneyOut || '',
         'Balance': t.balance || '',

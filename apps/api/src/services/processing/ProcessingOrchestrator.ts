@@ -235,7 +235,7 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
 
             console.log(`[Orchestrator] Parsed ${transactions.length} transactions:`, JSON.stringify(transactions, null, 2));
 
-            // ── Stage: categorize (OpenAI Assistant) ─────────────────────────────
+            // ── Stage: categorize (OpenAI Assistant, 50 transactions per batch) ──
             jobStore.update(jobId, { currentStage: 'categorize' });
             const categorized = await categorize(transactions);
             jobStore.update(jobId, { transactionCount: categorized.length, currentStage: 'output' });
