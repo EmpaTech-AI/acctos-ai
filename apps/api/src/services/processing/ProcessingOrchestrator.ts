@@ -241,7 +241,7 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
             jobStore.update(jobId, { transactionCount: categorized.length, currentStage: 'output' });
 
             // ── Stage: output (build Excel) ───────────────────────────────────────
-            outputBuffer = buildPdfOutputExcel(categorized);
+            outputBuffer = await buildPdfOutputExcel(categorized);
         }
 
         jobStore.update(jobId, { status: 'completed', outputBuffer, completedAt: new Date() });
