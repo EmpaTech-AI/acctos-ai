@@ -44,6 +44,14 @@ function isInOut5Header(header: string[]): boolean {
     );
 }
 
+// Detect transaction-statement format: [date, desc, status, account, out, in]
+// Key markers: "status" and "account" columns present, no "balance" column.
+// Azure DI may shift columns across pages, but the header is stable on page 1.
+function isTransactionStatement(header: string[]): boolean {
+    const joined = header.join(' ').toLowerCase();
+    return /\bstatus\b/.test(joined) && /\baccount\b/.test(joined) && !/\bbalance\b/.test(joined);
+}
+
 // Extract two £-prefixed amounts from a smashed cell, e.g. "£48.70 £436.68"
 function extractTwoAmounts(s: string): [number, number] | null {
     const matches = s.match(/£\s*[\d,]+(?:\.\d{1,2})?/g);
@@ -115,6 +123,52 @@ export function parse(cells: Cell[]): ParseResult {
             }
 
             transactions.push({ date, type: '', description: desc, moneyIn, moneyOut, balance: bal });
+        }
+        return { transactions };
+    }
+
+    // ── Transaction-statement: [date, "TYPE desc", status, account, out, in] ──
+    // Azure DI column positions vary across pages, so for each row we scan
+    // right-to-left from col 6→3 for the first parseable £ amount, then use
+    // the type code (IN_CODES/OUT_CODES) + "from" keyword for direction.
+    if (hasHeader && isTransactionStatement(table[0].cols)) {
+        for (let i = 1; i < table.length; i++) {
+            const c = table[i].cols;
+            const date = parseDateToDDMMYYYY(c[0]);
+            if (!date) continue;
+
+            // Split c[1]: "TYPE rest" → type + desc; if c[1] is bare code → desc from c[2]
+            const cell1 = normStr(c[1]);
+            const sp = cell1.indexOf(' ');
+            let type = '', desc = '';
+            if (sp > 0 && /^[A-Z]{2,4}$/.test(cell1.slice(0, sp))) {
+                type = cell1.slice(0, sp);
+                desc = cell1.slice(sp + 1).trim();
+            } else if (/^[A-Z]{2,4}$/.test(cell1)) {
+                type = cell1;
+                desc = normStr(c[2]);
+            } else {
+                desc = cell1;
+            }
+
+            // Scan right-to-left (col 6 → 3) for the first parseable £ amount
+            let amt: number | null = null;
+            for (let ci = 6; ci >= 3; ci--) {
+                const v = parseMoneyFirst(c[ci] ?? '');
+                if (v !== null && v > 0) { amt = v; break; }
+            }
+            if (amt === null) continue;
+
+            const t = type.toUpperCase();
+            const d = desc.toLowerCase();
+            let moneyIn = '', moneyOut = '';
+            if (IN_CODES.has(t) || /\bfrom\b/.test(d) || d.includes('money added from')) {
+                moneyIn = formatMoney(amt);
+            } else {
+                moneyOut = formatMoney(amt);
+            }
+
+            transactions.push({ date, type, description: desc, moneyIn, moneyOut, balance: '' });
         }
         return { transactions };
     }
