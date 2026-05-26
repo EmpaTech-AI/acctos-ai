@@ -32,8 +32,28 @@ function fixOCR(s: string): string {
 }
 
 // Azure DI marks PDF checkboxes as :selected: / :unselected:
+// Also strip leading OCR artefacts from Barclays icon glyphs: = 1) ))
 function cleanSelected(s: string): string {
-    return s.replace(/:(un)?selected:/gi, ' ').replace(/\s+/g, ' ').trim();
+    return s
+        .replace(/:(un)?selected:/gi, ' ')
+        .replace(/^\s*([=]|\d+\)|[)]{2,})\s+/, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+// Find the earliest year that appears in a proper date context ("6 Dec 2025"),
+// ignoring bare 4-digit years that may appear in company/account names.
+// Uses minimum so that a statement period "06 Dec 2025 - 05 Jan 2026" returns 2025,
+// not 2026 from the "Issued on 06 January 2026" line that often precedes it.
+function extractStartYearFromContent(content: string): number | null {
+    const re = /\b\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+(\d{4})\b/gi;
+    let min: number | null = null;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(content)) !== null) {
+        const y = Number(m[1]);
+        if (y >= 2020 && y <= 2099 && (min === null || y < min)) min = y;
+    }
+    return min;
 }
 
 // Extract column mapping from a header row (shared by initial detection and mid-data re-detection)
@@ -209,8 +229,9 @@ function detectInOutCols(h: string[]): { inIdx: number; outIdx: number } {
 }
 
 function parsePremier(cells: Cell[]): ParseResult {
+    const rawCtx  = cells.find(c => c.rowIndex < 0)?.content ?? '';
     const availYears = extractYearsFromCells(cells);
-    let curYear = availYears[0] ?? new Date().getFullYear();
+    let curYear = extractStartYearFromContent(rawCtx) ?? availYears[0] ?? new Date().getFullYear();
     let lastMon: number | null = null;
     const resolveYear = (mon: number): number => {
         if (lastMon !== null && mon < lastMon) curYear++;
@@ -305,7 +326,7 @@ function parseNormal(cells: Cell[]): ParseResult {
     const rawContent = fixOCR(cells.find(c => c.rowIndex < 0)?.content ?? '');
 
     const availYears = extractYearsFromCells(cells);
-    let curYear = availYears[0] ?? new Date().getFullYear();
+    let curYear = extractStartYearFromContent(rawContent) ?? availYears[0] ?? new Date().getFullYear();
     let lastMon: number | null = null;
     const resolveYear = (mon: number): number => {
         if (lastMon !== null && mon < lastMon) curYear++;
@@ -393,15 +414,8 @@ function parseNormal(cells: Cell[]): ParseResult {
             parsedDate = activePostingDate;
         }
 
-        // Raw text fallback (last resort)
-        if (!parsedDate && desc) {
-            const rd = rawDateFallback(desc, rawContent, resolveYear);
-            if (rd) { parsedDate = rd; activePostingDate = rd; }
-        }
-
-        if (parsedDate) prevDate = parsedDate;
-        const descLow = desc.toLowerCase();
-
+        // Skip checks BEFORE rawDateFallback: rawDateFallback scans raw text and may
+        // advance the year counter as a side effect; skip rows never need date fallback.
         // ── Skip: brought forward / opening balance ───────────────────────────
         if (SKIP_RE.test(desc) || SKIP_RE.test(dateCell)) {
             const bal = balance ?? (moneyIn !== null ? moneyIn : moneyOut);
@@ -417,6 +431,14 @@ function parseNormal(cells: Cell[]): ParseResult {
         }
         // ── Skip: totals / end balance ────────────────────────────────────────
         if (TOTAL_RE.test(desc)) continue;
+
+        // Raw text fallback (last resort)
+        if (!parsedDate && desc) {
+            const rd = rawDateFallback(desc, rawContent, resolveYear);
+            if (rd) { parsedDate = rd; activePostingDate = rd; }
+        }
+
+        if (parsedDate) prevDate = parsedDate;
 
         // ── Amount-only row (no date cell, no desc) → attach to previous ─────
         if (!dateCell && !desc && (moneyIn !== null || moneyOut !== null || balance !== null)) {
