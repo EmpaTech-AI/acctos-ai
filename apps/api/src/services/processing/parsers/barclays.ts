@@ -223,7 +223,7 @@ function toTransactions(txns: PhysRow[]): ParsedTransaction[] {
             description: t.desc || 'Unknown',
             moneyIn,
             moneyOut,
-            balance:     t.balance !== null ? formatMoney(t.balance) : '',
+            balance:     t.balance !== null ? t.balance.toFixed(2) : '',
         }];
     });
 }
@@ -558,7 +558,7 @@ function parseNormal(cells: Cell[]): ParseResult {
             description: t.desc || 'Unknown',
             moneyIn:     inAmt,
             moneyOut:    outAmt,
-            balance:     t.balance !== null ? formatMoney(t.balance) : '',
+            balance:     t.balance !== null ? t.balance.toFixed(2) : '',
         });
     }
     return { transactions };
