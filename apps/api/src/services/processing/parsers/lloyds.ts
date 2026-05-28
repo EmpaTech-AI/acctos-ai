@@ -15,8 +15,8 @@ function parseDate(s: string): string {
     // Web format: 2026-04-30
     const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
     if (iso) return `${iso[3]}/${iso[2]}/${iso[1]}`;
-    // Scanned format: 30 Apr 26 or 30 Apr 2026
-    const m = s.match(/^(\d{1,2})\s+([A-Za-z]{3})\s+(\d{2,4})$/);
+    // Scanned format: 30 Apr 26 or 30 Apr 2026 — allow trailing text e.g. "(Continued on…)"
+    const m = s.match(/^(\d{1,2})\s+([A-Za-z]{3})\s+(\d{2,4})\b/);
     if (!m) return '';
     const MONTHS: Record<string, string> = {
         jan:'01', feb:'02', mar:'03', apr:'04', may:'05', jun:'06',
