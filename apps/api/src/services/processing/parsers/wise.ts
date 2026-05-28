@@ -71,23 +71,35 @@ function looksOutgoing(desc: string): boolean {
 function isHeaderRow(c0: string): boolean {
     const t = normStr(c0).toLowerCase();
     return (
-        t === 'description' ||
-        t === 'incoming'    ||
-        t === 'outgoing'    ||
-        t === 'amount'      ||
+        t === 'description'     ||
+        t === 'incoming'        ||
+        t === 'outgoing'        ||
+        t === 'amount'          ||
         t.startsWith('gbp on ') ||
         t === 'account holder'
     );
 }
 
+// Amounts above this are OCR garbage (card/account numbers, phone numbers, etc.)
+const MAX_SANE_AMOUNT = 1_000_000;
+
 /**
- * Meta line: c0 contains a date AND "Transaction: ..." but c1/c2/c3 have no numbers.
+ * Meta line: c0 contains a date AND "Transaction: ..." and c1/c2/c3 have no money amounts.
  * These rows carry the transaction reference id and are merged into the amount row.
+ *
+ * Azure DI sometimes splits "Transaction: CARD-2020404505" across c0 and c1:
+ *   c0: "9 Jan 2025 Card ending in 9584 ... Transaction:"
+ *   c1: "CARD-2020404505"
+ * We detect this by checking whether c1 looks like a transaction ID (TYPE-digits)
+ * rather than a monetary amount.
  */
 function isMetaLine(c0: string, c1: string, c2: string, c3: string): boolean {
-    if (!extractDateDMY(c0))           return false;
+    if (!extractDateDMY(c0))            return false;
     if (!/\bTransaction:\s*/i.test(c0)) return false;
-    return parseNumber(c1) === null && parseNumber(c2) === null && parseNumber(c3) === null;
+    if (parseNumber(c2) !== null || parseNumber(c3) !== null) return false;
+    // c1 is either empty OR a transaction ID like "CARD-2020404505" (not a money amount)
+    const c1IsTxnId = c1 === '' || /^[A-Za-z]+-\d+$/.test(normStr(c1));
+    return c1IsTxnId;
 }
 
 // ── Pending row accumulator ───────────────────────────────────────────────────
@@ -169,6 +181,14 @@ export function parse(cells: Cell[]): ParseResult {
 
         // ── New transaction row ───────────────────────────────────────────────
         flushPending();
+
+        // Guard against OCR garbage (card numbers, phone numbers in amount columns)
+        const n1 = parseNumber(c1), n2 = parseNumber(c2), n3 = parseNumber(c3);
+        if (
+            (n1 !== null && Math.abs(n1) > MAX_SANE_AMOUNT) ||
+            (n2 !== null && Math.abs(n2) > MAX_SANE_AMOUNT) ||
+            (n3 !== null && Math.abs(n3) > MAX_SANE_AMOUNT)
+        ) continue;
 
         const rowIsFourCol = c3 !== '';
         let moneyIn:  number | null = null;
