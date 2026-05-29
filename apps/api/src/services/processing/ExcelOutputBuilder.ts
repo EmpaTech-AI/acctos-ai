@@ -1,6 +1,6 @@
 import ExcelJS from 'exceljs';
 import * as XLSX from 'xlsx';
-import { readFileSync, writeFileSync } from 'fs';
+import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { CategorizedTransaction } from './AssistantCategorizer.js';
@@ -113,9 +113,7 @@ export async function buildPdfOutputExcel(transactions: CategorizedTransaction[]
     ws.views = [{ state: 'frozen', xSplit: 0, ySplit: 2, topLeftCell: 'A3' }];
 
     const arrayBuffer = await workbook.xlsx.writeBuffer();
-    const buffer = Buffer.from(arrayBuffer);
-
-    return buffer;
+    return Buffer.from(arrayBuffer);
 }
 
 export function buildExcelOutputExcel(transactions: ExcelTransaction[]): Buffer {

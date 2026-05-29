@@ -26,7 +26,10 @@ import { parse as parseSantander } from './parsers/santander.js';
 import { parse as parseBarclays } from './parsers/barclays.js';
 import { parse as parseMetro } from './parsers/metro.js';
 import { parse as parseLloyds } from './parsers/lloyds.js';
+import { parse as parseTsb } from './parsers/tsb.js';
+import { parse as parseTide } from './parsers/tide.js';
 import { parse as parseGeneric } from './parsers/generic.js';
+import { parse as parseFallback } from './parsers/fallback.js';
 
 type StandardParser = (cells: Cell[]) => ParseResult;
 
@@ -42,11 +45,13 @@ function getParser(bankType: BankType): StandardParser {
         case 'barclays':   return parseBarclays;
         case 'metro':      return parseMetro;
         case 'lloyds':     return parseLloyds;
+        case 'tsb':        return parseTsb;
+        case 'tide':       return parseTide;
         default:           return parseGeneric;
     }
 }
 
-function parseAllCells(pageCells: Array<Cell[] | null>, bankType: BankType): ParsedTransaction[] {
+async function parseAllCells(pageCells: Array<Cell[] | null>, bankType: BankType): Promise<ParsedTransaction[]> {
     const allTransactions: ParsedTransaction[] = [];
 
     if (bankType === 'monzo') {
@@ -59,8 +64,6 @@ function parseAllCells(pageCells: Array<Cell[] | null>, bankType: BankType): Par
         }
         if (pendingRow) allTransactions.push(pendingRow);
     } else {
-        const parser = getParser(bankType);
-
         // Merge all pages into one flat cell array so that state like currentDate
         // carries across page boundaries. Each page's row indices are offset to
         // avoid collisions. Synthetic context cells (rowIndex < 0) are kept once.
@@ -86,8 +89,14 @@ function parseAllCells(pageCells: Array<Cell[] | null>, bankType: BankType): Par
             if (pageMaxRow >= 0) rowOffset += pageMaxRow + 10000;
         }
 
-        const result = parser(combined);
-        allTransactions.push(...result.transactions);
+        if (bankType === 'generic') {
+            // AI-powered fallback: Claude detects column layout for unknown banks
+            const result = await parseFallback(combined);
+            allTransactions.push(...result.transactions);
+        } else {
+            const result = getParser(bankType)(combined);
+            allTransactions.push(...result.transactions);
+        }
     }
 
     return allTransactions;
@@ -230,7 +239,7 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
                 }
             }
 
-            const transactions = parseAllCells(pageCells, bankType);
+            const transactions = await parseAllCells(pageCells, bankType);
             if (transactions.length === 0) throw new Error('No transactions could be extracted from the document');
 
             console.log(`[Orchestrator] Parsed ${transactions.length} transactions:`, JSON.stringify(transactions, null, 2));

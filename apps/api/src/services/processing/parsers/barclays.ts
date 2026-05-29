@@ -1,260 +1,572 @@
-// Barclays parser — 1:1 port of Make.com module 1341.
-// Key differences from HSBC: no type codes, dates may be missing on continuation
-// rows, balance is recomputed sequentially from initialBalance.
+// Barclays parser — two layout variants detected from document content:
+//   Premier BK AC : 5-col format, direction-by-sign money gate
+//   Normal Layout : 4-col format, OCR fixup, posting-date grouping, raw-text date fallback
 import {
     Cell, ParsedTransaction, ParseResult,
-    buildGrid, getCell, maxRow, extractYearsFromCells,
+    normStr, parseMoney, formatMoney,
+    buildGrid, getCell, maxCol, extractYearsFromCells,
 } from './shared.js';
 
-// ── Types ─────────────────────────────────────────────────────────────────────
+// ── Constants ────────────────────────────────────────────────────────────────
 
-interface PhysicalRow {
-    date: string;
-    description: string;
-    moneyOut: number | null;
-    moneyIn:  number | null;
-    balance:  number | null;   // explicit OCR balance (may be null)
-    computed?: number;
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function normStr(x: unknown): string {
-    return String(x ?? '').replace(/\s+/g, ' ').trim();
-}
-
-function stripCurrency(v: string): string {
-    return v.replace(/[£$€\s]/g, '');
-}
-
-function parseMoney(v: string): number | null {
-    const s = stripCurrency(v).replace(/,/g, '').trim();
-    if (!s || !/\d/.test(s)) return null;
-    const n = Number(s.replace(/[^\d.\-]/g, ''));
-    return isFinite(n) ? Math.abs(n) : null;
-}
-
-function isAmount(v: string): boolean {
-    const s = stripCurrency(v).replace(/,/g, '').replace(/^-/, '');
-    return Boolean(s) && /^\d+(\.\d{1,2})?$/.test(s);
-}
-
-function fmtMoney(n: number): string {
-    return Math.abs(n).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-}
-
-// ── Year-by-flow tracking (module 1341: resolveYearByFlow) ────────────────────
-
-const MONTH_ABBR: Record<string, number> = {
+const MONTH_MAP: Record<string, number> = {
     jan:1, feb:2, mar:3, apr:4, may:5, jun:6,
     jul:7, aug:8, sep:9, oct:10, nov:11, dec:12,
 };
 
-let _currentYear = 2025;
-let _lastMonth: number | null = null;
+const SKIP_RE          = /\b(start\s+balance|opening\s+balance|balance\s+brought\s+forward|brought\s+forward|starting\s+balance)\b/i;
+const CARRIED_FWD_RE   = /\b(balance\s+carried\s+forward|carried\s+forward)\b/i;
+const TOTAL_RE         = /\b(total\s+payments[\/\\]receipts|total\s+payments|end\s+balance)\b/i;
+const NEW_TXN_RE       = /^(card\s+purchase|card\s+payment|internet\s+banking\s+transfer|on-line\s+banking\s+bill\s+payment|giro\s+direct\s+credit|direct\s+credit|atm\s+cash\s+machine|cash\s+machine\s+withdrawal|direct\s+debit|standing\s+order|refund\s+from|transfer\s+from|asd\s+withdrawal)\b/i;
+// Reasonable upper bound for a single transaction on a personal/SME account.
+// Amounts above this are almost certainly OCR garbage (footnotes, phone numbers, etc.)
+const MAX_SANE_AMOUNT  = 1_000_000;
 
-function resolveYearByFlow(month: number): number {
-    if (_lastMonth !== null && month < _lastMonth) _currentYear++;
-    _lastMonth = month;
-    return _currentYear;
+// ── Shared helpers ───────────────────────────────────────────────────────────
+
+function fixOCR(s: string): string {
+    return s
+        .replace(/\b(\d{1,2})\s+un\b\s*»?\)?/gi, '$1 Jun')
+        .replace(/\b(\d{1,2})\s+Ju[nm]\b\s*»?\)?/gi, '$1 Jun')
+        .replace(/^\s*»\)?\s*/gm, '');
 }
 
-function parseDateStr(s: string): string | null {
-    s = normStr(s);
-    if (!s) return null;
-    const m = s.match(/^(\d{1,2})\s+([A-Za-z]{3,})(?:\s+(\d{4}))?/);
-    if (!m) return null;
-    const day = Number(m[1]);
-    const mon = MONTH_ABBR[m[2].slice(0, 3).toLowerCase()];
-    if (!mon || day < 1 || day > 31) return null;
-    const year = m[3] ? Number(m[3]) : resolveYearByFlow(mon);
-    return `${String(day).padStart(2, '0')}/${String(mon).padStart(2, '0')}/${year}`;
+// Azure DI marks PDF checkboxes as :selected: / :unselected:
+// Also strip leading OCR noise before known Barclays transaction keywords.
+// Uses a lookahead so we only strip artefacts that precede a recognisable transaction type,
+// which avoids accidentally truncating merchant names (e.g. "B & Q", "7-Eleven").
+function cleanSelected(s: string): string {
+    return s
+        .replace(/:(un)?selected:/gi, ' ')
+        .replace(
+            /^\s*(?:[=[\]()%]+\s*|\d{1,3}\s+|[A-Z]\s+|£\s+)(?=(?:card|dd|direct|giro|atm|internet|on[- ]line|bill|commission|interest|cash|transfer|standing|refund|asd|visa|unpaid|businesscall)\b)/i,
+            '',
+        )
+        .replace(/\s+/g, ' ')
+        .trim();
 }
 
-function parseLeadingDate(desc: string): { date: string; rest: string } | null {
-    const m = normStr(desc).match(/^(\d{1,2})\s+([A-Za-z]{3,})(?:\s+(\d{4}))?\s+/);
-    if (!m) return null;
-    const date = parseDateStr(`${m[1]} ${m[2]}${m[3] ? ' ' + m[3] : ''}`);
-    if (!date) return null;
-    return { date, rest: normStr(desc.slice(m[0].length)) };
-}
-
-// ── Skip-row detection ────────────────────────────────────────────────────────
-
-const SKIP_RE = /\b(start\s+balance|balance\s+brought\s+forward|brought\s+forward|balance\s+carried\s+forward|carried\s+forward|total\s+payments|end\s+balance)\b/i;
-
-function isSkipRow(desc: string): boolean {
-    return SKIP_RE.test(desc);
-}
-
-// ── Main export ───────────────────────────────────────────────────────────────
-
-export function parse(cells: Cell[]): ParseResult {
-    const grid = buildGrid(cells);
-    const rows = maxRow(cells);
-
-    // ── Init year tracker ─────────────────────────────────────────────────────
-    const availableYears = extractYearsFromCells(cells);
-    _currentYear = availableYears[0] ?? new Date().getFullYear();
-    _lastMonth   = null;
-
-    // ── Column detection from header ──────────────────────────────────────────
-    let dateCol = 0, descCol = 1, outCol = 2, inCol = 3, balCol = 4;
-    let headerFound = false;
-
-    for (let r = 0; r <= Math.min(5, rows); r++) {
-        const row = grid.get(r);
-        if (!row) continue;
-        const joined = [...row.values()].join(' ').toLowerCase();
-        if (!joined.includes('description') && !joined.includes('date')) continue;
-
-        headerFound = true;
-        for (const [c, v] of row) {
-            const lo = v.toLowerCase();
-            if (lo.includes('date')) { dateCol = c; }
-            else if (/desc|narrat|detail|particul|reference/.test(lo)) { descCol = c; }
-            else if (/paid\s*out|money\s*out|withdrawn|withdrawals|debit|payments?\s*out/.test(lo)) { outCol = c; }
-            else if (/paid\s*in|money\s*in|deposit|credit|payments?\s*in/.test(lo)) { inCol = c; }
-            else if (lo.includes('bal')) {
-                balCol = c;
-                // Azure DI sometimes merges "Money in Balance" into one cell
-                if (lo.includes('money in') || lo === 'in balance') inCol = c + 1;
-            }
+// Find the start year for the statement, ignoring bare 4-digit years in company/account names.
+// Priority order:
+//   1. Full range "DD Mon YYYY - DD Mon YYYY" → first year
+//   2. Abbreviated range "DD Mon - DD Mon YYYY" (Barclays "at a glance" summary)
+//      → derive start year from end year, adjusting back 1 if start month > end month (Dec→Jan)
+//   3. Fallback: minimum year in any proper date context
+// Commission-charge descriptions like "15 Dec 2025/12 Jan 2026" use "/" not "-" so they
+// never match patterns 1 or 2 and don't poison the fallback minimum.
+function extractStartYearFromContent(content: string): number | null {
+    // 1. Full range
+    const fullRe = /\b(\d{1,2})\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+(\d{4})\s*[-–]\s*\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+\d{4}\b/gi;
+    const fm = fullRe.exec(content);
+    if (fm) {
+        const y = Number(fm[3]);
+        if (y >= 2020 && y <= 2099) return y;
+    }
+    // 2. Abbreviated range (e.g. "31 Jan - 27 Feb 2026")
+    const abbRe = /\b(\d{1,2})\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s*[-–]\s*\d{1,2}\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+(\d{4})\b/gi;
+    const am = abbRe.exec(content);
+    if (am) {
+        const startMon = MONTH_MAP[am[2].slice(0, 3).toLowerCase()];
+        const endMon   = MONTH_MAP[am[3].slice(0, 3).toLowerCase()];
+        const endYear  = Number(am[4]);
+        if (startMon && endMon && endYear >= 2020 && endYear <= 2099) {
+            return startMon > endMon ? endYear - 1 : endYear;
         }
-        // Merged "Description Money out" header
-        for (const [c, v] of row) {
-            if (v.toLowerCase().includes('description') && v.toLowerCase().includes('money out')) descCol = c;
+    }
+    // 3. Minimum year in any proper date context
+    const re = /\b\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+(\d{4})\b/gi;
+    let min: number | null = null;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(content)) !== null) {
+        const y = Number(m[1]);
+        if (y >= 2020 && y <= 2099 && (min === null || y < min)) min = y;
+    }
+    return min;
+}
+
+// Extract column mapping from a header row (shared by initial detection and mid-data re-detection)
+function extractColMap(hdr: string[]): { date: number; desc: number; out: number; in: number; bal: number } | null {
+    const joined = hdr.join(' ').toLowerCase();
+    if (!joined.includes('description') && !joined.includes('date')) return null;
+    if (!joined.includes('money out') && !joined.includes('debit') && !joined.includes('balance')) return null;
+
+    let COL = { date: 0, desc: 1, out: 2, in: 3, bal: 4 };
+    for (let c = 0; c < hdr.length; c++) {
+        const v = hdr[c].toLowerCase();
+        if (v.includes('date') && !v.includes('description'))       COL.date = c;
+        else if (v.includes('description') && !v.includes('money'))  COL.desc = c;
+        else if (v.includes('money out') || v.includes('debit'))     COL.out  = c;
+        else if (v.includes('balance')) {
+            COL.bal = c;
+            if (v.includes('money in') || v === 'in balance') COL.in = c + 1;
         }
-        // Header row with only description but not date → fallback layout
-        if (!joined.includes('date') && joined.includes('description')) {
-            dateCol = 0; descCol = 0; outCol = 1; inCol = 2; balCol = 3;
-        }
-        if (outCol === inCol) outCol = -1;
-        break;
+        else if (v.includes('money in') || v.includes('credit'))     COL.in   = c;
+    }
+    for (let c = 0; c < hdr.length; c++) {
+        const v = hdr[c].toLowerCase();
+        if (v.includes('description') && v.includes('money out')) { COL.desc = c; COL.out = c; }
+    }
+    if (!hdr.some(h => h.toLowerCase().includes('date'))) COL.date = 0;
+    if (COL.out === COL.in) COL.out = -1;
+    return COL;
+}
+
+function fmtDate(d: number, m: number, y: number): string {
+    return `${String(d).padStart(2,'0')}/${String(m).padStart(2,'0')}/${y}`;
+}
+
+// Always calls resolveYear to keep flow-tracking state updated.
+function parseBarcDate(s: string, resolveYear: (mon: number) => number): string {
+    s = normStr(s).replace(/\s*([\\/.\-])\s*/g, '$1');
+    if (!s) return '';
+
+    let m = s.match(/^(\d{1,2})\s+([A-Za-z]{3,})(?:\s+(\d{4}))?$/);
+    if (m) {
+        const day = Number(m[1]);
+        const mon = MONTH_MAP[m[2].slice(0,3).toLowerCase()];
+        if (!mon || day < 1 || day > 31) return '';
+        const inferred = resolveYear(mon);
+        const year = m[3] ? Number(m[3]) : inferred;
+        return fmtDate(day, mon, year);
     }
 
-    const startRow = headerFound ? 1 : 0;
+    m = s.match(/^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})$/);
+    if (m) {
+        let d = Number(m[1]), mo = Number(m[2]), y = Number(m[3]);
+        if (y < 100) y = y <= 69 ? 2000+y : 1900+y;
+        if (d < 1 || d > 31 || mo < 1 || mo > 12) return '';
+        return fmtDate(d, mo, y);
+    }
 
-    // ── Read physical rows ────────────────────────────────────────────────────
-    const physical: PhysicalRow[] = [];
-    let prevDate       = '';
+    return '';
+}
+
+interface PhysRow {
+    date:     string;
+    desc:     string;
+    moneyOut: number | null;
+    moneyIn:  number | null;
+    balance:  number | null;
+}
+
+function hasMovement(r: PhysRow): boolean {
+    return (r.moneyIn !== null && r.moneyIn > 0) || (r.moneyOut !== null && r.moneyOut > 0);
+}
+
+// Two-pass stitcher used by Premier variant.
+function stitch(physical: PhysRow[]): PhysRow[] {
+    const txns: PhysRow[] = [];
+    let pending: PhysRow | null = null;
+    const flush = () => { if (pending) { if (hasMovement(pending)) txns.push(pending); pending = null; } };
+
+    for (const r of physical) {
+        const mv    = hasMovement(r);
+        const noAmt = r.moneyIn === null && r.moneyOut === null && r.balance === null;
+
+        // A: text-only continuation
+        if (!mv && r.desc && noAmt) {
+            if (pending) {
+                pending.desc = [pending.desc, r.desc].filter(Boolean).join(' ').trim();
+            } else if (txns.length) {
+                const l = txns[txns.length-1];
+                l.desc = [l.desc, r.desc].filter(Boolean).join(' ').trim();
+            }
+            continue;
+        }
+        // B: amounts, no desc → fill pending
+        if (mv && !r.desc && pending) {
+            if (pending.moneyIn  === null) pending.moneyIn  = r.moneyIn;
+            if (pending.moneyOut === null) pending.moneyOut = r.moneyOut;
+            if (pending.balance  === null) pending.balance  = r.balance;
+            flush(); continue;
+        }
+        // C: desc, no amounts → start pending
+        if (r.desc && !mv) { flush(); pending = { ...r, moneyIn: null, moneyOut: null }; continue; }
+        // D: desc + amounts
+        if (r.desc && mv) {
+            if (pending && !hasMovement(pending)) {
+                pending.desc     = [pending.desc, r.desc].filter(Boolean).join(' ').trim();
+                pending.moneyIn  = r.moneyIn;
+                pending.moneyOut = r.moneyOut;
+                if (r.balance !== null) pending.balance = r.balance;
+                flush(); continue;
+            }
+            flush(); txns.push({ ...r });
+        }
+    }
+    flush();
+    return txns;
+}
+
+// Bottom-to-top balance backfill used by Premier variant.
+function backfillBalance(txns: PhysRow[]): void {
+    let curr: number | null = null;
+    for (let i = txns.length-1; i >= 0; i--) {
+        const t = txns[i];
+        if (t.balance !== null) { curr = t.balance; continue; }
+        if (curr === null) continue;
+        const inA = t.moneyIn ?? 0, outA = t.moneyOut ?? 0;
+        if (!inA && !outA) continue;
+        t.balance = curr - inA + outA;
+        curr = t.balance;
+    }
+}
+
+function toTransactions(txns: PhysRow[]): ParsedTransaction[] {
+    return txns.flatMap(t => {
+        const moneyIn  = (t.moneyIn  ?? 0) > 0 ? formatMoney(t.moneyIn!)  : '';
+        const moneyOut = (t.moneyOut ?? 0) > 0 ? formatMoney(t.moneyOut!) : '';
+        if (!moneyIn && !moneyOut) return [];
+        return [{
+            date:        t.date,
+            type:        '',
+            description: t.desc || 'Unknown',
+            moneyIn,
+            moneyOut,
+            balance:     t.balance !== null ? t.balance.toFixed(2) : '',
+        }];
+    });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// VARIANT 1 — Premier BK AC
+// 5-col: [date, description, money_out, money_in, balance]
+// Direction-by-sign gate: negative value in any money col → moneyOut
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function isPremierHeader(cols: string[]): boolean {
+    const j = cols.join(' ').toLowerCase();
+    let hits = 0;
+    if (/\bdate\b/.test(j))              hits++;
+    if (/description/.test(j))          hits++;
+    if (/money\s*out|out|debit/.test(j)) hits++;
+    if (/money\s*in|in|credit/.test(j))  hits++;
+    if (/balance/.test(j))              hits++;
+    return hits >= 3;
+}
+
+function detectInOutCols(h: string[]): { inIdx: number; outIdx: number } {
+    let inIdx = 3, outIdx = 2;
+    for (let i = 0; i < h.length; i++) {
+        const v = h[i].toLowerCase();
+        if (v.includes('money in')  || v === 'in'  || v.includes('credit')) inIdx  = i;
+        if (v.includes('money out') || v === 'out' || v.includes('debit'))  outIdx = i;
+    }
+    if (inIdx === outIdx) { inIdx = 3; outIdx = 2; }
+    return { inIdx, outIdx };
+}
+
+function parsePremier(cells: Cell[]): ParseResult {
+    const rawCtx  = cells.find(c => c.rowIndex < 0)?.content ?? '';
+    const availYears = extractYearsFromCells(cells);
+    let curYear = extractStartYearFromContent(rawCtx) ?? availYears[0] ?? new Date().getFullYear();
+    let lastMon: number | null = null;
+    const resolveYear = (mon: number): number => {
+        if (lastMon !== null && mon < lastMon) curYear++;
+        lastMon = mon; return curYear;
+    };
+
+    const grid    = buildGrid(cells);
+    const nCols   = maxCol(cells);
+    const rowIdxs = [...grid.keys()].filter(r => r >= 0).sort((a,b) => a-b);
+    const table   = rowIdxs.map(r => {
+        const row: string[] = [];
+        for (let c = 0; c <= nCols; c++) row.push(normStr(getCell(grid, r, c)));
+        return row;
+    });
+    if (!table.length) return { transactions: [] };
+
+    let startAt = 0, inIdx = 3, outIdx = 2;
+    for (let i = 0; i < table.length; i++) {
+        if (isPremierHeader(table[i])) {
+            startAt = i + 1;
+            ({ inIdx, outIdx } = detectInOutCols(table[i]));
+            break;
+        }
+    }
+
+    const physical: PhysRow[] = [];
+    let lastDate = '';
+
+    for (let i = startAt; i < table.length; i++) {
+        const cols = table[i];
+        if (cols.every(c => !c)) continue;
+
+        const pd = parseBarcDate(cols[0], resolveYear);
+        if (pd) lastDate = pd;
+
+        const desc = normStr(cols[1]);
+        if (SKIP_RE.test(desc) || CARRIED_FWD_RE.test(desc) || TOTAL_RE.test(desc)) continue;
+
+        // Direction-by-sign gate: parseMoney preserves sign for negative inputs
+        const osVal = parseMoney(cols[outIdx] ?? '');
+        const isVal = parseMoney(cols[inIdx]  ?? '');
+        let moneyOut: number | null = null;
+        let moneyIn:  number | null = null;
+
+        if (osVal !== null) { if (osVal < 0) moneyOut = Math.abs(osVal); else if (osVal > 0) moneyIn = osVal; }
+        if (isVal !== null) { if (isVal < 0) moneyOut = Math.abs(isVal); else if (isVal > 0) moneyIn = isVal; }
+
+        // Fallback: no sign info → classic column mapping (absolute values)
+        if (moneyOut === null && moneyIn === null) {
+            moneyOut = osVal !== null && Math.abs(osVal) > 0 ? Math.abs(osVal) : null;
+            moneyIn  = isVal !== null && Math.abs(isVal) > 0 ? Math.abs(isVal) : null;
+        }
+
+        physical.push({ date: pd || lastDate, desc, moneyOut, moneyIn, balance: parseMoney(cols[4] ?? '') });
+    }
+
+    const txns = stitch(physical);
+    backfillBalance(txns);
+    return { transactions: toTransactions(txns) };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// VARIANT 2 — Normal Layout
+// 4-col: [date, description, money_out, money_in/balance]
+// OCR fixup, posting-date groups, raw-text date fallback, sequential balance
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function rawDateFallback(desc: string, rawText: string, resolveYear: (mon: number) => number): string {
+    if (!rawText || !desc) return '';
+    const key    = desc.toLowerCase().slice(0, 50);
+    const rawLow = rawText.toLowerCase();
+    const pos    = rawLow.indexOf(key);
+    if (pos === -1) return '';
+
+    const before = rawLow.slice(0, pos);
+    const re     = /\b(\d{1,2})\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*/gi;
+    let lastDate = '';
+    let m: RegExpExecArray | null;
+
+    while ((m = re.exec(before)) !== null) {
+        const prev = before.slice(Math.max(0, m.index - 5), m.index);
+        if (/\bon\s*$/.test(prev)) continue; // skip narrative dates ("paid on 3 Jan")
+        const day = Number(m[1]);
+        const mon = MONTH_MAP[m[2].slice(0,3)];
+        if (!mon || day < 1 || day > 31) continue;
+        lastDate = fmtDate(day, mon, resolveYear(mon));
+    }
+    return lastDate;
+}
+
+function parseNormal(cells: Cell[]): ParseResult {
+    const rawContent = fixOCR(cells.find(c => c.rowIndex < 0)?.content ?? '');
+
+    const availYears = extractYearsFromCells(cells);
+    let curYear = extractStartYearFromContent(rawContent) ?? availYears[0] ?? new Date().getFullYear();
+    let lastMon: number | null = null;
+    const resolveYear = (mon: number): number => {
+        if (lastMon !== null && mon < lastMon) curYear++;
+        lastMon = mon; return curYear;
+    };
+
+    const grid    = buildGrid(cells);
+    const nCols   = maxCol(cells);
+    const rowIdxs = [...grid.keys()].filter(r => r >= 0).sort((a,b) => a-b);
+    const table   = rowIdxs.map(r => {
+        const row: string[] = [];
+        for (let c = 0; c <= nCols; c++) row.push(normStr(fixOCR(getCell(grid, r, c))));
+        return row;
+    });
+    if (!table.length) return { transactions: [] };
+
+    // ── Initial column detection (first header row) ───────────────────────────
+    let startAt = 0;
+    let COL = { date: 0, desc: 1, out: 2, in: 3, bal: 4 };
+
+    for (let i = 0; i < table.length; i++) {
+        const mapped = extractColMap(table[i]);
+        if (mapped) { COL = mapped; startAt = i + 1; break; }
+    }
+
+    const gv = (row: string[], idx: number) => idx >= 0 && idx < row.length ? row[idx] : '';
+
+    // ── Main pass ─────────────────────────────────────────────────────────────
+    const physical: PhysRow[] = [];
+    let prevDate          = '';
+    let activePostingDate = '';
     let initialBalance: number | null = null;
 
-    for (let r = startRow; r <= rows; r++) {
-        const dateCell = normStr(getCell(grid, r, dateCol));
-        const rawDesc  = normStr(getCell(grid, r, descCol));
-        const rawOut   = stripCurrency(getCell(grid, r, outCol >= 0 ? outCol : 999));
-        const rawIn    = stripCurrency(getCell(grid, r, inCol  >= 0 ? inCol  : 999));
-        const rawBal   = stripCurrency(getCell(grid, r, balCol >= 0 ? balCol : 999));
+    for (let i = startAt; i < table.length; i++) {
+        const row = table[i];
 
-        const moneyIn  = parseMoney(rawIn);
-        const moneyOut = parseMoney(rawOut);
-        const balance  = parseMoney(rawBal);
+        // Re-detect column mapping when a page header row appears mid-data
+        // (happens when the whole encrypted PDF is sent as one chunk to Azure DI)
+        const remapped = extractColMap(row);
+        if (remapped) { COL = remapped; continue; }
+
+        const moneyIn  = COL.in  >= 0 ? parseMoney(gv(row, COL.in))  : null;
+        const moneyOut = COL.out >= 0 ? parseMoney(gv(row, COL.out)) : null;
+        const balance  = parseMoney(gv(row, COL.bal));
+        const dateCell = gv(row, COL.date);
         const movement = (moneyIn ?? 0) > 0 || (moneyOut ?? 0) > 0;
 
-        // Parse posting date from date cell
-        const dpDate = parseDateStr(dateCell);
-        let parsedDate = dpDate ?? '';
+        // Skip rows with unreasonably large amounts (footnotes, phone numbers, etc.)
+        if ((moneyIn ?? 0) > MAX_SANE_AMOUNT || (moneyOut ?? 0) > MAX_SANE_AMOUNT) continue;
 
-        // Build description: date cell text after the date + desc cell
-        let descFromDateCell = '';
-        if (dpDate && dateCell) {
-            descFromDateCell = normStr(dateCell.replace(/^\d{1,2}\s+[A-Za-z]{3,}(?:\s+\d{4})?\s*/, ''));
-        } else if (!dpDate && dateCell && !isAmount(stripCurrency(dateCell).replace(/,/g, ''))) {
-            // Date cell has text (not a date, not an amount) → treat as extra desc
-            descFromDateCell = dateCell;
+        let parsedDate = parseBarcDate(dateCell, resolveYear);
+
+        // Build description from non-money, non-date columns
+        const descParts: string[] = [];
+        for (let c = 0; c < row.length; c++) {
+            if (!row[c]) continue;
+            const isMoneyCol = [COL.out, COL.in, COL.bal].includes(c);
+            if (c === COL.date) {
+                if (parsedDate) {
+                    const rest = normStr(row[c].replace(/^\d{1,2}\s+[A-Za-z]{3,}(?:\s+\d{4})?\s*/, ''));
+                    if (rest && !isMoneyCol) descParts.push(rest);
+                } else if (!isMoneyCol) {
+                    descParts.push(row[c]);
+                }
+                continue;
+            }
+            if (!isMoneyCol) descParts.push(row[c]);
+        }
+        // Strip checkbox OCR artefacts (:selected: / :unselected:)
+        let desc = cleanSelected(descParts.filter(Boolean).join(' ').trim());
+
+        // Leading date embedded in description
+        if (!parsedDate && desc) {
+            const m = desc.match(/^(\d{1,2})\s+([A-Za-z]{3,})(?:\s+(\d{4}))?\s+/);
+            if (m) {
+                const dp = parseBarcDate(`${m[1]} ${m[2]}${m[3] ? ' '+m[3] : ''}`, resolveYear);
+                if (dp) { parsedDate = dp; desc = normStr(desc.replace(m[0], '')); }
+            }
         }
 
-        let thisLineDesc = [descFromDateCell, descCol !== dateCol ? rawDesc : ''].filter(Boolean).join(' ').trim();
-        if (!thisLineDesc && descCol === dateCol) thisLineDesc = rawDesc;
-
-        // If no date from date cell, try leading date in description
-        if (!parsedDate && thisLineDesc) {
-            const ld = parseLeadingDate(thisLineDesc);
-            if (ld) { parsedDate = ld.date; thisLineDesc = ld.rest; }
+        // Active posting-date group: rows without a date inherit the last seen date
+        if (parsedDate) {
+            activePostingDate = parsedDate;
+        } else if (activePostingDate) {
+            parsedDate = activePostingDate;
         }
 
-        // Inherit previous date
-        if (!parsedDate && prevDate) parsedDate = prevDate;
-
-        // ── Skip rows (start balance, brought/carried forward, totals) ─────────
-        if (isSkipRow(thisLineDesc) || isSkipRow(dateCell)) {
-            const skipBal = balance ?? moneyIn ?? moneyOut ?? null;
-            if (skipBal != null) initialBalance = skipBal;
-            if (parsedDate) prevDate = parsedDate;
+        // Skip checks BEFORE rawDateFallback: rawDateFallback scans raw text and may
+        // advance the year counter as a side effect; skip rows never need date fallback.
+        // ── Skip: brought forward / opening balance ───────────────────────────
+        if (SKIP_RE.test(desc) || SKIP_RE.test(dateCell)) {
+            const bal = balance ?? (moneyIn !== null ? moneyIn : moneyOut);
+            if (bal !== null) initialBalance = bal;
+            if (parsedDate) { prevDate = parsedDate; activePostingDate = parsedDate; }
             continue;
         }
-
-        // ── Empty row (no movement, no date cell, no description) ─────────────
-        if (!movement && !dateCell && !thisLineDesc) {
-            if (balance != null && physical.length === 0) initialBalance = balance;
+        // ── Skip: carried forward ─────────────────────────────────────────────
+        if (CARRIED_FWD_RE.test(desc)) {
+            if (balance !== null) initialBalance = initialBalance ?? balance;
+            if (parsedDate) { prevDate = parsedDate; activePostingDate = parsedDate; }
             continue;
         }
+        // ── Skip: totals / end balance ────────────────────────────────────────
+        if (TOTAL_RE.test(desc)) continue;
 
-        // ── Continuation: no date cell, no movement, has text → append ────────
-        // (port of Make.com: `if(!dateCell && !movement && thisLineDesc)`)
-        if (!dateCell && !movement && thisLineDesc) {
+        // Raw text fallback (last resort)
+        if (!parsedDate && desc) {
+            const rd = rawDateFallback(desc, rawContent, resolveYear);
+            if (rd) { parsedDate = rd; activePostingDate = rd; }
+        }
+
+        if (parsedDate) prevDate = parsedDate;
+
+        // ── Amount-only row (no date cell, no desc) → attach to previous ─────
+        if (!dateCell && !desc && (moneyIn !== null || moneyOut !== null || balance !== null)) {
             if (physical.length > 0) {
-                physical[physical.length - 1].description = normStr(
-                    physical[physical.length - 1].description + ' ' + thisLineDesc
-                );
-                if (balance != null) physical[physical.length - 1].balance = balance;
+                const prev = physical[physical.length - 1];
+                if (!prev.moneyIn  && moneyIn  !== null) prev.moneyIn  = moneyIn;
+                if (!prev.moneyOut && moneyOut !== null) prev.moneyOut = moneyOut;
+                if (balance !== null) prev.balance = balance;
+            } else if (balance !== null) {
+                initialBalance = balance;
             }
             continue;
         }
 
-        // ── No date cell but HAS movement → new transaction with inherited date ─
-        // (Make.com falls through to push, carrying prevDate forward)
+        // ── Fully empty row ───────────────────────────────────────────────────
+        if (!movement && !dateCell && !desc) {
+            if (balance !== null && physical.length === 0) initialBalance = balance;
+            continue;
+        }
 
-        // Skip description-only noise rows
-        if (!movement && !isAmount(rawBal.replace(/,/g, ''))) continue;
+        // ── Recognisable transaction keyword without date/amounts → new txn ──
+        if (!dateCell && !movement && desc && NEW_TXN_RE.test(desc)) {
+            physical.push({ date: parsedDate || prevDate, desc, moneyIn, moneyOut, balance });
+            continue;
+        }
 
-        physical.push({
-            date:        parsedDate,
-            description: thisLineDesc || '',
-            moneyOut,
-            moneyIn,
-            balance,
-        });
+        // ── Continuation line (no date, no movement) ──────────────────────────
+        if (!dateCell && !movement && desc) {
+            if (physical.length > 0) {
+                physical[physical.length-1].desc = normStr(physical[physical.length-1].desc + ' ' + desc);
+                if (balance !== null) physical[physical.length-1].balance = balance;
+            }
+            continue;
+        }
 
-        if (parsedDate) prevDate = parsedDate;
+        // ── Noise row (no movement, no balance) ───────────────────────────────
+        if (!movement && balance === null) continue;
+
+        physical.push({ date: parsedDate || prevDate, desc, moneyIn, moneyOut, balance });
     }
 
-    // ── Recover initialBalance if not found from skip rows ────────────────────
-    if (initialBalance == null) {
+    // ── Recover initialBalance from first row with known balance ──────────────
+    if (initialBalance === null) {
         let delta = 0;
         for (const r of physical) {
-            delta = delta - (r.moneyOut ?? 0) + (r.moneyIn ?? 0);
-            if (r.balance != null) { initialBalance = r.balance - delta; break; }
+            delta += (r.moneyIn ?? 0) - (r.moneyOut ?? 0);
+            if (r.balance !== null) { initialBalance = r.balance - delta; break; }
         }
     }
 
-    // ── Sequential balance computation (module 1341 approach) ─────────────────
+    // ── Sequential forward balance computation ────────────────────────────────
     let lastBal = initialBalance;
+    const txns: PhysRow[] = [];
+
     for (const r of physical) {
-        const out = r.moneyOut ?? 0;
-        const inn = r.moneyIn  ?? 0;
-        if (lastBal != null) {
-            r.computed = lastBal - out + inn;
-            lastBal = r.computed;
-            if (r.balance != null) { r.computed = r.balance; lastBal = r.balance; }
-        } else if (r.balance != null) {
-            r.computed = r.balance;
-            lastBal = r.balance;
+        let inA = r.moneyIn ?? 0, outA = r.moneyOut ?? 0;
+        const explBal = r.balance;
+
+        // Infer missing amounts from balance delta
+        if (lastBal !== null && explBal !== null && inA === 0 && outA === 0) {
+            const diff = +(explBal - lastBal).toFixed(2);
+            if (diff > 0) { r.moneyIn = diff; inA = diff; }
+            else if (diff < 0) { r.moneyOut = -diff; outA = -diff; }
         }
+
+        if (lastBal !== null) {
+            r.balance = lastBal - outA + inA;
+            lastBal   = r.balance;
+            if (explBal !== null) { r.balance = explBal; lastBal = explBal; }
+        } else if (explBal !== null) {
+            r.balance = explBal; lastBal = explBal;
+        } else if (inA > 0 || outA > 0) {
+            lastBal = inA - outA; r.balance = lastBal;
+        }
+
+        txns.push({ ...r });
     }
 
-    // ── Output ────────────────────────────────────────────────────────────────
-    return {
-        transactions: physical
-            .filter(t => (t.moneyOut ?? 0) > 0 || (t.moneyIn ?? 0) > 0)
-            .map(t => ({
-                date:        t.date,
-                type:        '',
-                description: t.description,
-                moneyIn:     (t.moneyIn  ?? 0) > 0 ? fmtMoney(t.moneyIn!)  : '',
-                moneyOut:    (t.moneyOut ?? 0) > 0 ? fmtMoney(t.moneyOut!) : '',
-                balance:     t.computed != null ? fmtMoney(t.computed) : (t.balance != null ? fmtMoney(t.balance) : ''),
-            })),
-    };
+    // ── Emit ──────────────────────────────────────────────────────────────────
+    const transactions: ParsedTransaction[] = [];
+    for (const t of txns) {
+        if (TOTAL_RE.test(t.desc ?? '')) continue;
+        const inAmt  = (t.moneyIn  ?? 0) > 0 ? formatMoney(t.moneyIn!)  : '';
+        const outAmt = (t.moneyOut ?? 0) > 0 ? formatMoney(t.moneyOut!) : '';
+        if (!inAmt && !outAmt) continue;
+        transactions.push({
+            date:        t.date,
+            type:        '',
+            description: t.desc || 'Unknown',
+            moneyIn:     inAmt,
+            moneyOut:    outAmt,
+            balance:     t.balance !== null ? t.balance.toFixed(2) : '',
+        });
+    }
+    return { transactions };
+}
+
+// ── Entry point ───────────────────────────────────────────────────────────────
+
+export function parse(cells: Cell[]): ParseResult {
+    const ctx = cells.find(c => c.rowIndex < 0)?.content ?? '';
+    return /Premier BK AC/i.test(ctx) ? parsePremier(cells) : parseNormal(cells);
 }

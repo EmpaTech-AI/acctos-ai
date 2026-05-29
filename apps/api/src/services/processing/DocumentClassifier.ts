@@ -1,7 +1,7 @@
 export type BankType =
     | 'hsbc' | 'revolut' | 'monzo' | 'wise' | 'starling'
     | 'natwest' | 'nationwide' | 'santander' | 'barclays' | 'metro'
-    | 'lloyds'
+    | 'lloyds' | 'tsb' | 'tide'
     | 'generic';
 
 export type DocType = 'bank_statement' | 'vat';
@@ -51,6 +51,8 @@ function detectBank(lower: string): BankType {
     if (lower.includes('barclays'))                               return 'barclays';
     if (lower.includes('metro'))                                  return 'metro';
     if (lower.includes('lloyds'))                                 return 'lloyds';
+    if (lower.includes('tsb'))                                    return 'tsb';
+    if (lower.includes('tide'))                                   return 'tide';
     return 'generic';
 }
 
@@ -69,6 +71,8 @@ export function detectBankFromContent(text: string): BankType {
     if (/\bbarclays\b/.test(t))                                      return 'barclays';
     if (/\bmetro bank\b/.test(t))                                    return 'metro';
     if (/\blloyds\b/.test(t))                                        return 'lloyds';
+    if (/\btsb\b/.test(t) || /203\s*284\s*1576/.test(t))            return 'tsb';
+    if (/\btide\b/.test(t))                                          return 'tide';
     return 'generic';
 }
 
