@@ -242,7 +242,7 @@ function PreviewModal({ jobId, filename, onClose, onDownload }: PreviewModalProp
                 </div>
 
                 {/* Modal body */}
-                <div style={{ overflowY: 'auto', flex: 1, padding: '0' }}>
+                <div style={{ overflowY: 'auto', overflowX: 'auto', flex: 1, padding: '0' }}>
                     {loading && (
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '3rem', gap: '0.6rem', color: 'var(--text-muted)' }}>
                             <Loader2 size={18} style={{ animation: 'spin 1s linear infinite' }} />
@@ -253,7 +253,7 @@ function PreviewModal({ jobId, filename, onClose, onDownload }: PreviewModalProp
                         <div style={{ padding: '2rem', textAlign: 'center', color: '#ef4444', fontSize: '0.88rem' }}>{error}</div>
                     )}
                     {!loading && !error && headers && (
-                        <div style={{ overflowX: 'auto' }}>
+                        <div>
                             <table style={{
                                 width: '100%', borderCollapse: 'collapse',
                                 fontSize: '0.78rem', tableLayout: 'auto',

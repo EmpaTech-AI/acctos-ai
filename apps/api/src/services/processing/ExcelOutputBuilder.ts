@@ -1,5 +1,6 @@
+import ExcelJS from 'exceljs';
 import * as XLSX from 'xlsx';
-import { readFileSync, writeFileSync } from 'fs';
+import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { CategorizedTransaction } from './AssistantCategorizer.js';
@@ -8,22 +9,26 @@ import { ExcelTransaction } from './ExcelParser.js';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const TEMPLATE_PATH = join(__dirname, 'template-bank-statement.xlsx');
 
-// Category column keys → Excel column indices 4–15 (E–P)
+// Category column keys → Excel columns E–P (1-based: 5–16)
 const CAT_COLS: (keyof CategorizedTransaction)[] = [
     'SALARY', 'OTHER', 'INSURANCE', 'LOAN', 'CASH',
     'TRAVEL', 'PHONE', 'CHARGES', 'Bank_Transfer', 'HMRC', 'RENT', 'BILLS',
 ];
 
-/** "DD/MM/YYYY" → Excel serial number */
-function toSerial(ddmmyyyy: string): number | null {
+const YELLOW_FILL: ExcelJS.Fill = {
+    type: 'pattern',
+    pattern: 'solid',
+    fgColor: { argb: 'FFFFFF00' },
+};
+
+/** "DD/MM/YYYY" → Date (UTC) */
+function parseDate(ddmmyyyy: string): Date | null {
     if (!ddmmyyyy) return null;
     const p = ddmmyyyy.split('/');
     if (p.length !== 3) return null;
     const [dd, mm, yyyy] = p.map(Number);
     if (!yyyy || !mm || !dd) return null;
-    const d = new Date(Date.UTC(yyyy, mm - 1, dd));
-    const epoch = new Date(Date.UTC(1899, 11, 30));
-    return Math.floor((d.getTime() - epoch.getTime()) / 86400000);
+    return new Date(Date.UTC(yyyy, mm - 1, dd));
 }
 
 /** String/number → parsed float, or null if empty/zero */
@@ -34,73 +39,81 @@ function toNum(v: unknown): number | null {
     return isFinite(n) && n !== 0 ? n : null;
 }
 
-export function buildPdfOutputExcel(transactions: CategorizedTransaction[]): Buffer {
+export async function buildPdfOutputExcel(transactions: CategorizedTransaction[]): Promise<Buffer> {
     const templateBuf = readFileSync(TEMPLATE_PATH);
-    const wb = XLSX.read(templateBuf, { cellStyles: true, sheetStubs: true });
-    const ws = wb.Sheets[wb.SheetNames[0]];
 
-    // Read column formats from row-3 stubs before clearing
-    const colFmts: Record<number, string> = {
-        0: 'dd/MM/yyyy',
-        2: '#,##0.00', 4: '#,##0.00', 5: '#,##0.00', 6: '#,##0.00',
-        7: '#,##0.00', 8: '#,##0.00', 9: '#,##0.00', 10: '#,##0.00',
-        11: '#,##0.00', 12: '#,##0.00', 13: '#,##0.00', 14: '#,##0.00',
-        15: '#,##0.00', 16: '#,##0.00',
-    };
-    for (let c = 0; c <= 16; c++) {
-        const addr = XLSX.utils.encode_cell({ r: 2, c });
-        const z = (ws[addr] as any)?.z;
-        if (z) colFmts[c] = z;
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(templateBuf as unknown as ArrayBuffer);
+
+    const ws = workbook.worksheets[0];
+
+    // Apply yellow to column D (col 4) in header rows before clearing data
+    for (let r = 1; r <= 2; r++) {
+        ws.getRow(r).getCell(4).fill = YELLOW_FILL;
     }
 
-    // Clear all data rows (row index ≥ 2 = Excel row 3+)
-    const existingRef = XLSX.utils.decode_range(ws['!ref'] ?? 'A1:Q2');
-    for (let r = 2; r <= existingRef.e.r; r++) {
-        for (let c = 0; c <= Math.max(existingRef.e.c, 16); c++) {
-            const addr = XLSX.utils.encode_cell({ r, c });
-            if (ws[addr]) delete ws[addr];
-        }
+    // Remove all data rows (row 3 onwards)
+    const totalRows = ws.rowCount;
+    if (totalRows > 2) {
+        ws.spliceRows(3, totalRows - 2);
     }
 
-    // Write transactions starting at row 3 (index 2)
+    // Write transactions starting at row 3
     transactions.forEach((t, ri) => {
-        const r = ri + 2;
+        const row = ws.getRow(ri + 3);
 
-        const serial = toSerial(String(t.DATE ?? ''));
-        if (serial !== null) {
-            (ws as any)[XLSX.utils.encode_cell({ r, c: 0 })] = { t: 'n', v: serial, z: colFmts[0] };
+        const date = parseDate(String(t.DATE ?? ''));
+        if (date !== null) {
+            const cell = row.getCell(1);
+            cell.value = date;
+            cell.numFmt = 'dd/MM/yyyy';
         }
 
         const name = String(t['Type and Description'] ?? '').trim();
-        if (name) {
-            (ws as any)[XLSX.utils.encode_cell({ r, c: 1 })] = { t: 's', v: name };
-        }
+        if (name) row.getCell(2).value = name;
 
         const income = toNum(t.INCOME);
         if (income !== null) {
-            (ws as any)[XLSX.utils.encode_cell({ r, c: 2 })] = { t: 'n', v: income, z: colFmts[2] };
+            const cell = row.getCell(3);
+            cell.value = income;
+            cell.numFmt = '#,##0.00';
         }
+
+        // Column D (col 4) — always yellow, no data
+        row.getCell(4).fill = YELLOW_FILL;
 
         CAT_COLS.forEach((col, i) => {
             const val = toNum((t as any)[col]);
             if (val !== null) {
-                (ws as any)[XLSX.utils.encode_cell({ r, c: 4 + i })] = { t: 'n', v: val, z: colFmts[4 + i] };
+                const cell = row.getCell(5 + i);
+                cell.value = val;
+                cell.numFmt = '#,##0.00';
             }
         });
 
         const balance = toNum(t.Balance);
         if (balance !== null) {
-            (ws as any)[XLSX.utils.encode_cell({ r, c: 16 })] = { t: 'n', v: balance, z: colFmts[16] };
+            const cell = row.getCell(17);
+            cell.value = balance;
+            cell.numFmt = '#,##0.00';
         }
+
+        row.commit();
     });
 
-    // Update sheet range
-    const lastRow = Math.max(1, transactions.length + 1);
-    ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: lastRow, c: 16 } });
+    // Fill column D yellow for all remaining rows up to 1000
+    const lastDataRow = transactions.length + 2;
+    for (let r = lastDataRow + 1; r <= 1000; r++) {
+        const row = ws.getRow(r);
+        row.getCell(4).fill = YELLOW_FILL;
+        row.commit();
+    }
 
-    const buffer = Buffer.from(XLSX.write(wb, { type: 'buffer', bookType: 'xlsx', cellStyles: true }));
-    writeFileSync(TEMPLATE_PATH, buffer);
-    return buffer;
+    // Freeze first 2 rows
+    ws.views = [{ state: 'frozen', xSplit: 0, ySplit: 2, topLeftCell: 'A3' }];
+
+    const arrayBuffer = await workbook.xlsx.writeBuffer();
+    return Buffer.from(arrayBuffer);
 }
 
 export function buildExcelOutputExcel(transactions: ExcelTransaction[]): Buffer {
