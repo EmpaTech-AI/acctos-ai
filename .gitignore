@@ -36,3 +36,17 @@ coverage/
 # Temporary files
 *.tmp
 *.temp
+
+# Runtime logs
+apps/api/api.log
+apps/web/web.log
+
+# Test output artefacts (processed statements, test xlsx results)
+apps/api/*_processed*.xlsx
+apps/api/*_processed.xlsx
+apps/api/test-output.xlsx
+apps/api/test-hsbc-reference/
+
+# Parser test fixtures with client data
+apps/api/src/services/processing/template-bank-statement.ORIGINAL.xlsx
+test_fixtures/**/*.pdf
