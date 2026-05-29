@@ -40,7 +40,7 @@ function isHeaderRow(cols: string[]): boolean {
     return hits >= 3;
 }
 
-export function parse(cells: Cell[]): ParseResult {
+export function parse(cells: Cell[], _opts?: { pendingFromPrev?: ParsedTransaction | null }): ParseResult {
     const grid = buildGrid(cells);
     const rows = maxRow(cells);
     const cols = maxCol(cells);
