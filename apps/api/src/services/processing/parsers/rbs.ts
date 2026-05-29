@@ -66,6 +66,11 @@ function isBroughtForward(desc: string): boolean {
     return /brought forward|balance brought forward|carried forward/i.test(desc);
 }
 
+function cleanDesc(s: string): string {
+    // Strip Azure DI OCR artefact ":selected:" that sometimes appears in cell content
+    return normStr(s).replace(/:selected:/g, '').replace(/\s+/g, ' ').trim();
+}
+
 function descriptionSuggestsIn(desc: string): boolean {
     const d = desc.toLowerCase();
     return (
@@ -167,7 +172,33 @@ export function parse(cells: Cell[]): ParseResult {
     for (let i = startAt; i < table.length; i++) {
         const c = table[i].cols;
 
-        if (isHeaderRow(c)) continue;  // repeated header on subsequent pages
+        if (isHeaderRow(c)) {
+            // Recover data from merged header+data rows (Azure DI merges header with
+            // the first data row when a table continues onto a new page).
+            // Pattern: col0 = "Date DD Mon", col3 = "Paid in (£) £603.00"
+            const col0 = normStr(c[0]);
+            const strippedDate = col0.replace(/^date\s+/i, '');
+            if (strippedDate !== col0) {
+                const mergedDate = parseDate(strippedDate, period, currentYear);
+                if (mergedDate) {
+                    lastDate = mergedDate;
+                    const mdesc = cleanDesc(c[1]).replace(/^description\s+/i, '');
+                    const mtype = normStr(c[2]).replace(/^type\s+/i, '');
+                    const mRaw3 = normStr(c[3]).replace(/^paid\s+in\s*\([^)]*\)\s*/i, '');
+                    const mRaw4 = normStr(c[4] ?? '').replace(/^paid\s+out\s*\([^)]*\)\s*/i, '');
+                    const m3 = parseMoney(mRaw3);
+                    const m4 = parseMoney(mRaw4);
+                    const mMoneyIn  = m3 !== null && m3 > 0 ? formatMoney(m3) : '';
+                    const mMoneyOut = m4 !== null && m4 !== 0 ? formatMoney(Math.abs(m4)) : '';
+                    if ((mMoneyIn || mMoneyOut) && mdesc && !isBroughtForward(mdesc)) {
+                        const mtype2Amt = parseMoney(mtype);
+                        const mTypeFinal = (mtype2Amt !== null && mtype2Amt !== 0) ? '' : mtype;
+                        transactions.push({ date: mergedDate, type: mTypeFinal, description: mdesc, moneyIn: mMoneyIn, moneyOut: mMoneyOut, balance: '' });
+                    }
+                }
+            }
+            continue;
+        }
 
         const rawDate = normStr(c[0]);
         if (rawDate) {
@@ -179,7 +210,7 @@ export function parse(cells: Cell[]): ParseResult {
 
         if (!lastDate) continue;
 
-        const desc = normStr(c[1]);
+        const desc = cleanDesc(c[1]);
         if (!desc || isBroughtForward(desc)) continue;
 
         // ── Format 4: "Type Paid in (£) | Paid out (£)" ────────────────────
@@ -197,12 +228,19 @@ export function parse(cells: Cell[]): ParseResult {
             const type = isMoneyCol2 ? '' : rawCol2;
 
             const col3Amt = parseMoney(rawCol3);
+            // col4 present on pages 2+ where col3=paid-in and col4=paid-out
+            const col4Amt = parseMoney(normStr(c[4] ?? ''));
+
             let moneyIn  = isMoneyCol2 ? formatMoney(Math.abs(col2Amt!)) : '';
             let moneyOut = '';
 
             if (col3Amt !== null && col3Amt !== 0) {
+                // Page 1 style: col3 holds the amount (positive=in, negative=out)
                 if (col3Amt > 0) moneyIn  = formatMoney(col3Amt);
                 else             moneyOut = formatMoney(Math.abs(col3Amt));
+            } else if (col4Amt !== null && col4Amt !== 0) {
+                // Pages 2+ style: col3 is empty paid-in, col4 holds paid-out amount
+                moneyOut = formatMoney(Math.abs(col4Amt));
             }
 
             if (!moneyIn && !moneyOut) continue;
