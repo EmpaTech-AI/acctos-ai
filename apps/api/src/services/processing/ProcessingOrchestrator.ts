@@ -26,6 +26,7 @@ import { parse as parseSantander } from './parsers/santander.js';
 import { parse as parseBarclays } from './parsers/barclays.js';
 import { parse as parseMetro } from './parsers/metro.js';
 import { parse as parseLloyds } from './parsers/lloyds.js';
+import { parse as parseTsb } from './parsers/tsb.js';
 import { parse as parseGeneric } from './parsers/generic.js';
 
 type StandardParser = (cells: Cell[]) => ParseResult;
@@ -42,6 +43,7 @@ function getParser(bankType: BankType): StandardParser {
         case 'barclays':   return parseBarclays;
         case 'metro':      return parseMetro;
         case 'lloyds':     return parseLloyds;
+        case 'tsb':        return parseTsb;
         default:           return parseGeneric;
     }
 }

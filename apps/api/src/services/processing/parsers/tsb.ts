@@ -11,11 +11,10 @@ function parseMoney(s: string): string {
 
 function parseDate(s: string): string {
     s = normStr(s);
-    if (!s) return '';
     // Web format: 2026-04-30
     const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
     if (iso) return `${iso[3]}/${iso[2]}/${iso[1]}`;
-    // Scanned format: 30 Apr 26 or 30 Apr 2026 — allow trailing text e.g. "(Continued on…)"
+    // Scanned format: 30 Apr 26 or 30 Apr 2026 — allow trailing text
     const m = s.match(/^(\d{1,2})\s+([A-Za-z]{3})\s+(\d{2,4})\b/);
     if (!m) return '';
     const MONTHS: Record<string, string> = {
@@ -32,23 +31,16 @@ function parseDate(s: string): string {
 
 function mapType(code: string): string {
     const map: Record<string, string> = {
-        BGC: 'BANK GIRO CREDIT',
-        BP:  'BILL PAYMENT',
-        CHG: 'CHARGE',
-        CHQ: 'CHEQUE',
-        COR: 'CORRECTION',
-        CPT: 'CASHPOINT',
+        FPI: 'FASTER PAYMENT IN',
+        FPO: 'FASTER PAYMENT OUT',
         DC:  'DIRECT CREDIT',
         DD:  'DIRECT DEBIT',
         DEB: 'DEBIT CARD',
-        DEP: 'DEPOSIT',
-        FEE: 'FIXED SERVICE FEE',
-        FPI: 'FASTER PAYMENT IN',
-        FPO: 'FASTER PAYMENT OUT',
         CSH: 'CASH WITHDRAWAL',
-        MPI: 'MOBILE PAYMENT IN',
-        MPO: 'MOBILE PAYMENT OUT',
         PAY: 'PAYMENT',
+        BGC: 'BANK GIRO CREDIT',
+        BP:  'BILL PAYMENT',
+        CHQ: 'CHEQUE',
         SO:  'STANDING ORDER',
         TFR: 'TRANSFER',
     };
@@ -59,7 +51,6 @@ export function parse(cells: Cell[]): ParseResult {
     const realCells = cells.filter(c => c.rowIndex >= 0);
     if (realCells.length === 0) return { transactions: [] };
 
-    // Build row map: rowIndex → columnIndex → content
     const rowMap = new Map<number, Map<number, string>>();
     for (const cell of realCells) {
         if (!rowMap.has(cell.rowIndex)) rowMap.set(cell.rowIndex, new Map());
@@ -70,7 +61,6 @@ export function parse(cells: Cell[]): ParseResult {
         .sort((a, b) => a[0] - b[0])
         .map(([, colMap]) => ({ cells: colMap }));
 
-    // Detect header row and column indices
     let COL_DATE = 0, COL_TYPE = 1, COL_DETAILS = 2, COL_OUT = 3, COL_IN = 4, COL_BAL = 5;
     let format: 'old' | 'new' = 'old';
     let headerFound = false;
@@ -90,8 +80,8 @@ export function parse(cells: Cell[]): ParseResult {
             vals.includes('date') &&
             vals.some(v => v === 'description') &&
             vals.some(v => v === 'type') &&
-            vals.some(v => v === 'in (£)' || v === 'in' || v.includes('money in')) &&
-            vals.some(v => v === 'out (£)' || v === 'out' || v.includes('money out')) &&
+            vals.some(v => v === 'in (£)' || v === 'in') &&
+            vals.some(v => v === 'out (£)' || v === 'out') &&
             vals.some(v => v.startsWith('balance'));
 
         if (!isOldHeader && !isNewHeader) continue;
@@ -102,17 +92,17 @@ export function parse(cells: Cell[]): ParseResult {
             const vl = v.toLowerCase();
             if (vl === 'date') { COL_DATE = col; continue; }
             if (format === 'old') {
-                if (vl === 'payment type')       COL_TYPE    = col;
-                else if (vl === 'details')        COL_DETAILS = col;
-                else if (vl.includes('paid out')) COL_OUT     = col;
-                else if (vl.includes('paid in'))  COL_IN      = col;
-                else if (vl.startsWith('balance'))COL_BAL     = col;
+                if (vl === 'payment type')        COL_TYPE    = col;
+                else if (vl === 'details')         COL_DETAILS = col;
+                else if (vl.includes('paid out'))  COL_OUT     = col;
+                else if (vl.includes('paid in'))   COL_IN      = col;
+                else if (vl.startsWith('balance')) COL_BAL     = col;
             } else {
-                if (vl === 'description')                     COL_DETAILS = col;
-                else if (vl === 'type')                       COL_TYPE    = col;
-                else if (vl === 'in (£)' || vl === 'in' || vl.includes('money in'))   COL_IN  = col;
-                else if (vl === 'out (£)' || vl === 'out' || vl.includes('money out')) COL_OUT = col;
-                else if (vl.startsWith('balance'))            COL_BAL     = col;
+                if (vl === 'description')                              COL_DETAILS = col;
+                else if (vl === 'type')                                COL_TYPE    = col;
+                else if (vl === 'in (£)' || vl === 'in')              COL_IN      = col;
+                else if (vl === 'out (£)' || vl === 'out')            COL_OUT     = col;
+                else if (vl.startsWith('balance'))                     COL_BAL     = col;
             }
         }
 
@@ -126,16 +116,15 @@ export function parse(cells: Cell[]): ParseResult {
 
     for (const row of rows) {
         const c = row.cells;
-        const dateRaw    = c.get(COL_DATE)    ?? '';
-        const rawType    = c.get(COL_TYPE)    ?? '';
-        const details    = c.get(COL_DETAILS) ?? '';
-        const paidOut    = parseMoney(c.get(COL_OUT) ?? '');
-        const paidIn     = parseMoney(c.get(COL_IN)  ?? '');
-        const balance    = parseMoney(c.get(COL_BAL) ?? '');
-        const date       = parseDate(dateRaw);
-        const type       = format === 'new' ? mapType(rawType) : rawType;
+        const dateRaw = c.get(COL_DATE)    ?? '';
+        const rawType = c.get(COL_TYPE)    ?? '';
+        const details = c.get(COL_DETAILS) ?? '';
+        const paidOut = parseMoney(c.get(COL_OUT) ?? '');
+        const paidIn  = parseMoney(c.get(COL_IN)  ?? '');
+        const balance = parseMoney(c.get(COL_BAL) ?? '');
+        const date    = parseDate(dateRaw);
+        const type    = format === 'new' ? mapType(rawType) : rawType;
 
-        // Continuation row: old scanned format, no date, no amounts — append to previous
         if (format === 'old' && !date && transactions.length > 0 && !paidIn && !paidOut) {
             const last = transactions[transactions.length - 1];
             if (type)    last.type        = normStr(`${last.type} ${type}`);

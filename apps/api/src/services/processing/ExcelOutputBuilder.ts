@@ -98,9 +98,7 @@ export function buildPdfOutputExcel(transactions: CategorizedTransaction[]): Buf
     const lastRow = Math.max(1, transactions.length + 1);
     ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: lastRow, c: 16 } });
 
-    const buffer = Buffer.from(XLSX.write(wb, { type: 'buffer', bookType: 'xlsx', cellStyles: true }));
-    writeFileSync(TEMPLATE_PATH, buffer);
-    return buffer;
+    return Buffer.from(XLSX.write(wb, { type: 'buffer', bookType: 'xlsx', cellStyles: true }));
 }
 
 export function buildExcelOutputExcel(transactions: ExcelTransaction[]): Buffer {
