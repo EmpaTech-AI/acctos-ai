@@ -136,13 +136,15 @@ export function parse(cells: Cell[]): ParseResult {
 
         const amountRaw = normStr(c[2]);
         const amount    = parseMoney(amountRaw);
+        // parseMoney may return negative for '-' prefix — store absolute value
+        const absAmt    = amount !== null ? Math.abs(amount) : null;
         const balance   = parseMoney(c[3]);
 
         physical.push({
             date,
             desc,
-            moneyOut: /^-/.test(amountRaw) && amount !== null ? amount : null,
-            moneyIn:  /^\+/.test(amountRaw) && amount !== null ? amount : null,
+            moneyOut: /^-/.test(amountRaw) && absAmt !== null ? absAmt : null,
+            moneyIn:  /^\+/.test(amountRaw) && absAmt !== null ? absAmt : null,
             balance:  balance,
         });
     }
