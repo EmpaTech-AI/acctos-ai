@@ -1,8 +1,12 @@
 // Virgin Money parser
-// Layout: date | description | type | debit | credit | balance  (6-col normal)
-//      or date | description | type | amount | balance           (5-col compact)
-// Date: "DD MMM YY" or "DD MMM YYYY" — may have trailing ▼
-// Balance may carry OD/DR suffix (overdraft) or explicit negative sign
+// Layout A (6-col): date | description | type | debit | credit | balance | ">"
+// Layout B (5-col): date | description | type | amount | balance | ">"
+// Distinguish: Layout A when col5 contains "£" OR col6 is present; else Layout B.
+// Direction for Layout A: credit col (4) → in; debit col (3) → out.
+// Direction for Layout B: balance delta with look-ahead (statement is reverse-chronological).
+//   diff = physRows[i+1].balance - physRows[i].balance  (older − newer)
+//   diff > 0 → balance went down → debit (moneyOut)
+//   diff < 0 → balance went up   → credit (moneyIn)
 import {
     Cell, ParsedTransaction, ParseResult,
     normStr, parseMoney, formatMoney, buildGrid, getCell, maxRow, maxCol,
@@ -37,12 +41,43 @@ function isHeaderRow(cols: string[]): boolean {
     );
 }
 
+function cleanOcr(s: string): string {
+    return normStr(s)
+        .replace(/:selected:/gi, '')
+        .replace(/:unselected:/gi, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+function cleanType(raw: string): string {
+    const s = cleanOcr(raw);
+    const fixes: Record<string, string> = {
+        'Direct De bit': 'Direct Debit',
+        'Cash Adv ance': 'Cash Advance',
+    };
+    return fixes[s] ?? s;
+}
+
 function signedBal(raw: string): string {
     const isOD = /\b(OD|DR)\b/i.test(raw);
     const n = parseMoney(raw);
     if (n === null) return '';
     const abs = formatMoney(Math.abs(n));
     return isOD && Math.abs(n) > 0 ? '-' + abs : abs;
+}
+
+interface PhysRow {
+    date:       string;
+    desc:       string;
+    type:       string;
+    rawBalance: string;
+    balanceNum: number | null;
+    // Layout A — direct in/out from credit/debit columns
+    directIn:   number | null;
+    directOut:  number | null;
+    // Layout B — raw amount, direction via look-ahead balance delta
+    amount:     number | null;
+    isCompact:  boolean;
 }
 
 export function parse(cells: Cell[]): ParseResult {
@@ -70,7 +105,8 @@ export function parse(cells: Cell[]): ParseResult {
         }
     }
 
-    const transactions: ParsedTransaction[] = [];
+    // ── Phase 1: build physical rows ────────────────────────────────────────────
+    const physRows: PhysRow[] = [];
     let lastDate = '';
 
     for (let i = startAt; i < table.length; i++) {
@@ -83,55 +119,88 @@ export function parse(cells: Cell[]): ParseResult {
         const date = parsedDate || lastDate;
         if (!date) continue;
 
-        const desc = normStr(c[1]);
+        const desc = cleanOcr(c[1]);
         if (!desc) continue;
 
-        const type = normStr(c[2]);
+        const type = cleanType(c[2]);
 
         const col3Raw = normStr(c[3] ?? '');
         const col4Raw = normStr(c[4] ?? '');
         const col5Raw = normStr(c[5] ?? '');
+        const col6Raw = normStr(c[6] ?? '');
 
         const col3Amt = parseMoney(col3Raw);
         const col4Amt = parseMoney(col4Raw);
-        const col5Amt = parseMoney(col5Raw);
+
+        // Distinguish layout:
+        //  ">" or ":selected:" in col5 but NO "£" → compact (Layout B)
+        //  col6 present OR col5 contains "£"       → normal  (Layout A)
+        const col5HasPound = col5Raw.includes('£');
+        const hasCol6      = col6Raw !== '';
+
+        if (col5HasPound || hasCol6) {
+            // Layout A: col3=debit, col4=credit, col5=balance
+            const directIn  = col4Amt !== null && col4Amt > 0 ? col4Amt : null;
+            const directOut = col3Amt !== null && col3Amt > 0 ? col3Amt : null;
+            if (!directIn && !directOut) continue;
+
+            physRows.push({
+                date, desc, type,
+                rawBalance: col5Raw,
+                balanceNum: parseMoney(col5Raw),
+                directIn, directOut,
+                amount: null,
+                isCompact: false,
+            });
+        } else if (col4Raw && col3Amt !== null && col3Amt > 0) {
+            // Layout B: col3=amount, col4=balance, col5=">"
+            physRows.push({
+                date, desc, type,
+                rawBalance: col4Raw,
+                balanceNum: parseMoney(col4Raw),
+                directIn: null, directOut: null,
+                amount: col3Amt,
+                isCompact: true,
+            });
+        }
+    }
+
+    // ── Phase 2: determine direction + emit ─────────────────────────────────────
+    const transactions: ParsedTransaction[] = [];
+
+    for (let i = 0; i < physRows.length; i++) {
+        const row = physRows[i];
+        const balance = signedBal(row.rawBalance);
 
         let moneyIn  = '';
         let moneyOut = '';
-        let balance  = '';
 
-        if (col5Raw) {
-            // Normal 6-col: col3=debit, col4=credit, col5=balance
-            if (col4Amt !== null && col4Amt > 0) {
-                moneyIn = formatMoney(col4Amt);
-            } else if (col3Amt !== null && col3Amt > 0) {
-                moneyOut = formatMoney(col3Amt);
-            } else {
-                continue;
-            }
-            balance = signedBal(col5Raw);
-        } else if (col4Raw && col3Amt !== null && col3Amt > 0) {
-            // Compact 5-col: col3=amount, col4=balance — direction from balance delta
-            balance = signedBal(col4Raw);
-            const curBal = col4Amt;
-            const prevTx = transactions.length > 0 ? transactions[transactions.length - 1] : null;
-            const prevBal = prevTx ? parseMoney(prevTx.balance) : null;
-
-            if (curBal !== null && prevBal !== null) {
-                const delta = curBal - prevBal;
-                if (Math.abs(delta - col3Amt) <= 0.01)       moneyIn  = formatMoney(col3Amt);
-                else if (Math.abs(delta + col3Amt) <= 0.01)  moneyOut = formatMoney(col3Amt);
-                else                                          moneyOut = formatMoney(col3Amt);
-            } else {
-                moneyOut = formatMoney(col3Amt);
-            }
+        if (!row.isCompact) {
+            // Layout A: direction directly from columns
+            if (row.directIn)  moneyIn  = formatMoney(row.directIn);
+            else if (row.directOut) moneyOut = formatMoney(row.directOut);
         } else {
-            continue;
+            // Layout B: use look-ahead balance delta
+            // diff = nextRow.balance − thisRow.balance  (older − newer in reverse-chron order)
+            //   diff > 0 → balance was higher before → debit (moneyOut)
+            //   diff < 0 → balance was lower before  → credit (moneyIn)
+            const amount  = row.amount!;
+            const nextBal = i + 1 < physRows.length ? physRows[i + 1].balanceNum : null;
+            const curBal  = row.balanceNum;
+
+            if (nextBal !== null && curBal !== null) {
+                const diff = nextBal - curBal;
+                if      (Math.abs(diff - amount) <= 0.01) moneyOut = formatMoney(amount);
+                else if (Math.abs(diff + amount) <= 0.01) moneyIn  = formatMoney(amount);
+                else                                      moneyOut = formatMoney(amount);
+            } else {
+                moneyOut = formatMoney(amount);
+            }
         }
 
         if (!moneyIn && !moneyOut) continue;
 
-        transactions.push({ date, type, description: desc, moneyIn, moneyOut, balance });
+        transactions.push({ date: row.date, type: row.type, description: row.desc, moneyIn, moneyOut, balance });
     }
 
     return { transactions };
