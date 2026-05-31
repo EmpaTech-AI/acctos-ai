@@ -140,18 +140,33 @@ export function parse(cells: Cell[]): ParseResult {
 
         if (col5HasPound || hasCol6) {
             // Layout A: col3=debit, col4=credit, col5=balance
-            const directIn  = col4Amt !== null && col4Amt > 0 ? col4Amt : null;
-            const directOut = col3Amt !== null && col3Amt > 0 ? col3Amt : null;
-            if (!directIn && !directOut) continue;
+            // When col4 is present → explicitly credit (moneyIn).
+            // When only col3 is present → Azure DI sometimes puts credits in col3;
+            //   use balance delta to resolve direction (same logic as compact pages).
+            const directIn = col4Amt !== null && col4Amt > 0 ? col4Amt : null;
+            const col3Only = col3Amt !== null && col3Amt > 0;
+            if (!directIn && !col3Only) continue;
 
-            physRows.push({
-                date, desc, type,
-                rawBalance: col5Raw,
-                balanceNum: parseMoney(col5Raw),
-                directIn, directOut,
-                amount: null,
-                isCompact: false,
-            });
+            if (directIn) {
+                physRows.push({
+                    date, desc, type,
+                    rawBalance: col5Raw,
+                    balanceNum: parseMoney(col5Raw),
+                    directIn, directOut: null,
+                    amount: null,
+                    isCompact: false,
+                });
+            } else {
+                // Only col3 has a value — direction ambiguous; resolve via balance delta
+                physRows.push({
+                    date, desc, type,
+                    rawBalance: col5Raw,
+                    balanceNum: parseMoney(col5Raw),
+                    directIn: null, directOut: null,
+                    amount: col3Amt,
+                    isCompact: true,
+                });
+            }
         } else if (col4Raw && col3Amt !== null && col3Amt > 0) {
             // Layout B: col3=amount, col4=balance, col5=">"
             physRows.push({
