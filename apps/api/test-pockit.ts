@@ -8,6 +8,41 @@ import { analyzePages } from './src/services/processing/AzureExtractor.js';
 import { classify } from './src/services/processing/DocumentClassifier.js';
 import { parse as parsePockit } from './src/services/processing/parsers/pockit.js';
 import { Cell, ParsedTransaction, parseMoney } from './src/services/processing/parsers/shared.js';
+
+function logTotalsVerification(
+    transactions: ParsedTransaction[],
+    declared?: { moneyIn: number; moneyOut: number },
+): void {
+    if (!transactions.length) return;
+    const totalIn  = transactions.reduce((s, t) => s + (parseFloat(t.moneyIn  || '0') || 0), 0);
+    const totalOut = transactions.reduce((s, t) => s + (parseFloat(t.moneyOut || '0') || 0), 0);
+
+    if (declared) {
+        const inDiff  = totalIn  - declared.moneyIn;
+        const outDiff = totalOut - declared.moneyOut;
+        if (Math.abs(inDiff) > 0.02 || Math.abs(outDiff) > 0.02) {
+            console.warn(`  [TotalsCheck] MISMATCH vs declared — In: computed=${totalIn.toFixed(2)} declared=${declared.moneyIn.toFixed(2)} (diff=${inDiff.toFixed(2)}), Out: computed=${totalOut.toFixed(2)} declared=${declared.moneyOut.toFixed(2)} (diff=${outDiff.toFixed(2)})`);
+        } else {
+            console.log(`  [TotalsCheck] Declared totals match — In: ${totalIn.toFixed(2)}, Out: ${totalOut.toFixed(2)} ✓`);
+        }
+    }
+
+    const first = transactions[0];
+    const last  = transactions[transactions.length - 1];
+    const closingBal = parseMoney(first.balance);
+    const oldestBal  = parseMoney(last.balance);
+    if (closingBal !== null && oldestBal !== null) {
+        const lastIn  = parseMoney(last.moneyIn)  ?? 0;
+        const lastOut = parseMoney(last.moneyOut) ?? 0;
+        const openingBal      = oldestBal - lastIn + lastOut;
+        const expectedClosing = openingBal + totalIn - totalOut;
+        if (Math.abs(expectedClosing - closingBal) > 0.02) {
+            console.warn(`  [TotalsCheck] Balance gap — opening: ${openingBal.toFixed(2)} + in: ${totalIn.toFixed(2)} - out: ${totalOut.toFixed(2)} = ${expectedClosing.toFixed(2)}, actual closing: ${closingBal.toFixed(2)} (diff=${(closingBal - expectedClosing).toFixed(2)})`);
+        } else {
+            console.log(`  [TotalsCheck] Balance continuity OK — opening: ${openingBal.toFixed(2)}, closing: ${closingBal.toFixed(2)} ✓`);
+        }
+    }
+}
 import { categorize } from './src/services/processing/AssistantCategorizer.js';
 import { buildPdfOutputExcel } from './src/services/processing/ExcelOutputBuilder.js';
 
@@ -69,6 +104,7 @@ function verifyBalances(transactions: ParsedTransaction[]): void {
 
 // ── Process each file ────────────────────────────────────────────────────────
 const allTransactions: ParsedTransaction[] = [];
+let combinedStatementTotals: { moneyIn: number; moneyOut: number } | undefined;
 
 for (const filePath of filePaths) {
     const fileBuffer = readFileSync(filePath);
@@ -121,7 +157,7 @@ for (const filePath of filePaths) {
         if (pageMaxRow >= 0) rowOffset += pageMaxRow + 10000;
     }
 
-    const { transactions } = parsePockit(combined);
+    const { transactions, statementTotals } = parsePockit(combined);
     console.log(`Parsed ${transactions.length} transactions`);
 
     if (transactions.length > 0) {
@@ -129,6 +165,11 @@ for (const filePath of filePaths) {
         const totalOut = transactions.reduce((s, t) => s + (parseFloat(t.moneyOut || '0') || 0), 0);
         console.log(`Totals — Money In: ${totalIn.toFixed(2)}  Money Out: ${totalOut.toFixed(2)}`);
         console.log(`Date range: ${transactions[transactions.length - 1].date} → ${transactions[0].date}`);
+        if (statementTotals) {
+            console.log(`Declared by bank — Money In: ${statementTotals.moneyIn.toFixed(2)}  Money Out: ${statementTotals.moneyOut.toFixed(2)}`);
+            if (!combinedStatementTotals) combinedStatementTotals = { ...statementTotals };
+            else { combinedStatementTotals.moneyIn += statementTotals.moneyIn; combinedStatementTotals.moneyOut += statementTotals.moneyOut; }
+        }
     }
 
     allTransactions.push(...transactions);
@@ -157,6 +198,9 @@ if (sorted.length > 0) {
         console.log('\nBalance verification:');
         verifyBalances(sorted);
     }
+
+    console.log('\nTotals verification:');
+    logTotalsVerification(sorted, combinedStatementTotals);
 }
 
 console.log('\nRunning categorization...');

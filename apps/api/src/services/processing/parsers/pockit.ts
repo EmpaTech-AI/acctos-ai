@@ -104,12 +104,29 @@ export function parse(cells: Cell[]): ParseResult {
 
     if (!table.length) return { transactions: [] };
 
-    // Find header row (may have "Your transactions" row before it)
+    // Find header row and extract declared totals from the summary section above it
     let startAt = 0;
+    let statementTotals: { moneyIn: number; moneyOut: number } | undefined;
+
     for (let i = 0; i < table.length; i++) {
         if (isHeaderRow(table[i].cols)) {
             startAt = headerContainsTransaction(table[i].cols) ? i : i + 1;
             break;
+        }
+        // Rows with "Total outgoings" / "Total loads" labels — amounts are on the previous row
+        const joined = table[i].cols.join(' ').toLowerCase();
+        if (/total\s*(outgoings?|loads?)/.test(joined) && i > 0) {
+            let foundIn: number | null = null;
+            let foundOut: number | null = null;
+            for (const v of table[i - 1].cols) {
+                const n = parseMoney(v);
+                if (n === null) continue;
+                if (n < 0 && foundOut === null) foundOut = Math.abs(n);
+                else if (n > 0 && foundIn === null) foundIn = n;
+            }
+            if (foundIn !== null && foundOut !== null) {
+                statementTotals = { moneyIn: foundIn, moneyOut: foundOut };
+            }
         }
     }
 
@@ -243,5 +260,5 @@ export function parse(cells: Cell[]): ParseResult {
         });
     }
 
-    return { transactions };
+    return { transactions, statementTotals };
 }

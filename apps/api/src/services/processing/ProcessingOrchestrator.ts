@@ -57,7 +57,7 @@ function getParser(bankType: BankType): StandardParser {
     }
 }
 
-async function parseAllCells(pageCells: Array<Cell[] | null>, bankType: BankType): Promise<ParsedTransaction[]> {
+async function parseAllCells(pageCells: Array<Cell[] | null>, bankType: BankType): Promise<ParseResult> {
     const allTransactions: ParsedTransaction[] = [];
 
     if (bankType === 'monzo') {
@@ -69,6 +69,7 @@ async function parseAllCells(pageCells: Array<Cell[] | null>, bankType: BankType
             pendingRow = result.pendingRow;
         }
         if (pendingRow) allTransactions.push(pendingRow);
+        return { transactions: allTransactions };
     } else {
         // Merge all pages into one flat cell array so that state like currentDate
         // carries across page boundaries. Each page's row indices are offset to
@@ -97,15 +98,63 @@ async function parseAllCells(pageCells: Array<Cell[] | null>, bankType: BankType
 
         if (bankType === 'generic') {
             // AI-powered fallback: Claude detects column layout for unknown banks
-            const result = await parseFallback(combined);
-            allTransactions.push(...result.transactions);
+            return await parseFallback(combined);
         } else {
-            const result = getParser(bankType)(combined);
-            allTransactions.push(...result.transactions);
+            return getParser(bankType)(combined);
+        }
+    }
+}
+
+/**
+ * Verify parsed totals against what the document itself declares.
+ * Two checks:
+ *  1. Declared totals (e.g. Pockit summary rows): compare money in/out directly.
+ *  2. Balance continuity: opening_balance + total_in - total_out == closing_balance.
+ */
+function logTotalsVerification(
+    transactions: ParsedTransaction[],
+    declared?: { moneyIn: number; moneyOut: number },
+): void {
+    if (!transactions.length) return;
+
+    const totalIn  = transactions.reduce((s, t) => s + (parseMoney(t.moneyIn)  ?? 0), 0);
+    const totalOut = transactions.reduce((s, t) => s + (parseMoney(t.moneyOut) ?? 0), 0);
+
+    if (declared) {
+        const inDiff  = totalIn  - declared.moneyIn;
+        const outDiff = totalOut - declared.moneyOut;
+        if (Math.abs(inDiff) > 0.02 || Math.abs(outDiff) > 0.02) {
+            console.warn(
+                `[TotalsCheck] MISMATCH vs declared — ` +
+                `In: computed=${totalIn.toFixed(2)} declared=${declared.moneyIn.toFixed(2)} (diff=${inDiff.toFixed(2)}), ` +
+                `Out: computed=${totalOut.toFixed(2)} declared=${declared.moneyOut.toFixed(2)} (diff=${outDiff.toFixed(2)})`
+            );
+        } else {
+            console.log(`[TotalsCheck] Declared totals match — In: ${totalIn.toFixed(2)}, Out: ${totalOut.toFixed(2)}`);
         }
     }
 
-    return allTransactions;
+    // Balance continuity: opening + total_in - total_out == closing
+    // Transactions are newest-first (descending), so first = newest, last = oldest.
+    const first = transactions[0];
+    const last  = transactions[transactions.length - 1];
+    const closingBal = parseMoney(first.balance);
+    const oldestBal  = parseMoney(last.balance);
+    if (closingBal !== null && oldestBal !== null) {
+        const lastIn  = parseMoney(last.moneyIn)  ?? 0;
+        const lastOut = parseMoney(last.moneyOut) ?? 0;
+        const openingBal     = oldestBal - lastIn + lastOut;
+        const expectedClosing = openingBal + totalIn - totalOut;
+        if (Math.abs(expectedClosing - closingBal) > 0.02) {
+            console.warn(
+                `[TotalsCheck] Balance gap — opening: ${openingBal.toFixed(2)} ` +
+                `+ in: ${totalIn.toFixed(2)} - out: ${totalOut.toFixed(2)} = ${expectedClosing.toFixed(2)}, ` +
+                `actual closing: ${closingBal.toFixed(2)} (diff=${(closingBal - expectedClosing).toFixed(2)})`
+            );
+        } else {
+            console.log(`[TotalsCheck] Balance continuity OK — opening: ${openingBal.toFixed(2)}, closing: ${closingBal.toFixed(2)}`);
+        }
+    }
 }
 
 // ── Multi-file batch helpers ─────────────────────────────────────────────────
@@ -439,10 +488,11 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
                 }
             }
 
-            const transactions = await parseAllCells(pageCells, bankType);
+            const { transactions, statementTotals } = await parseAllCells(pageCells, bankType);
             if (transactions.length === 0) throw new Error('No transactions could be extracted from the document');
 
             console.log(`[Orchestrator] Parsed ${transactions.length} transactions:`, JSON.stringify(transactions, null, 2));
+            logTotalsVerification(transactions, statementTotals);
 
             // ── Stage: categorize (OpenAI Assistant, 50 transactions per batch) ──
             jobStore.update(jobId, { currentStage: 'categorize' });

@@ -16,6 +16,8 @@ export interface ParsedTransaction {
 export interface ParseResult {
     transactions: ParsedTransaction[];
     pendingRow?: ParsedTransaction | null;
+    /** Totals declared by the bank in the document itself (e.g. Pockit summary rows). */
+    statementTotals?: { moneyIn: number; moneyOut: number };
 }
 
 export const TRANSACTION_CODES = [
