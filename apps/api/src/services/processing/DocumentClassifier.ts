@@ -1,7 +1,7 @@
 export type BankType =
     | 'hsbc' | 'revolut' | 'monzo' | 'wise' | 'starling'
     | 'natwest' | 'nationwide' | 'santander' | 'barclays' | 'metro'
-    | 'lloyds' | 'tsb' | 'tide' | 'rbs' | 'virginmoney'
+    | 'lloyds' | 'tsb' | 'tide' | 'rbs' | 'virginmoney' | 'pockit'
     | 'generic';
 
 export type DocType = 'bank_statement' | 'vat';
@@ -48,6 +48,7 @@ function detectBank(lower: string): BankType {
     if (lower.includes('natwest') || lower.includes('nat west'))  return 'natwest';
     if (lower.includes('rbs') || lower.includes('royal bank'))    return 'rbs';
     if (lower.includes('virgin money') || lower.includes('virginmoney') || lower.includes('virgin_money')) return 'virginmoney';
+    if (lower.includes('pockit'))                                  return 'pockit';
     if (lower.includes('nationwide'))                             return 'nationwide';
     if (lower.includes('santander'))                              return 'santander';
     if (lower.includes('barclays'))                               return 'barclays';
@@ -70,6 +71,7 @@ export function detectBankFromContent(text: string): BankType {
     if (/\b(natwest|nat west|national westminster)\b/.test(t))       return 'natwest';
     if (/\b(rbs|royal bank of scotland)\b/.test(t))                  return 'rbs';
     if (/\bvirgin money\b/.test(t) || /virginmoney\.com/.test(t))    return 'virginmoney';
+    if (/\bpockit\b/.test(t) || /help@pockit\.com/.test(t))          return 'pockit';
     if (/\bnationwide\b/.test(t))                                    return 'nationwide';
     if (/\bsantander\b/.test(t))                                     return 'santander';
     if (/\bbarclays\b/.test(t))                                      return 'barclays';
