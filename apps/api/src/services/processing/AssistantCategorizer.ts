@@ -192,14 +192,24 @@ export async function categorize(transactions: ParsedTransaction[]): Promise<Cat
     if (!apiKey) throw new Error('OPENAI_API_KEY not set');
 
     const inputArray = formatTransactionsForAssistant(transactions);
-    const results: CategorizedTransaction[] = [];
+    const totalBatches = Math.ceil(inputArray.length / BATCH_SIZE);
 
+    const batches: object[][] = [];
     for (let i = 0; i < inputArray.length; i += BATCH_SIZE) {
-        const batch = inputArray.slice(i, i + BATCH_SIZE);
-        console.log(`[Categorizer] Batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(inputArray.length / BATCH_SIZE)} — ${batch.length} transactions`);
-        const batchResults = await categorizeBatch(batch, apiKey);
-        results.push(...batchResults);
+        batches.push(inputArray.slice(i, i + BATCH_SIZE));
     }
 
-    return results;
+    console.log(`[Categorizer] Running ${totalBatches} batch(es) in parallel — ${inputArray.length} transactions total`);
+
+    const batchResults = await Promise.all(
+        batches.map((batch, idx) => {
+            console.log(`[Categorizer] Batch ${idx + 1}/${totalBatches} started — ${batch.length} transactions`);
+            return categorizeBatch(batch, apiKey).then(result => {
+                console.log(`[Categorizer] Batch ${idx + 1}/${totalBatches} done`);
+                return result;
+            });
+        })
+    );
+
+    return batchResults.flat();
 }
