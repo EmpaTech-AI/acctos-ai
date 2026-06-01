@@ -8,7 +8,7 @@ import { analyzePages } from './AzureExtractor.js';
 import { categorize } from './AssistantCategorizer.js';
 import { parseExcel } from './ExcelParser.js';
 import { buildPdfOutputExcel, buildExcelOutputExcel } from './ExcelOutputBuilder.js';
-import { Cell, ParsedTransaction, ParseResult } from './parsers/shared.js';
+import { Cell, ParsedTransaction, ParseResult, parseMoney } from './parsers/shared.js';
 
 interface TrackingContext {
     prisma: PrismaClient;
@@ -106,6 +106,200 @@ async function parseAllCells(pageCells: Array<Cell[] | null>, bankType: BankType
     }
 
     return allTransactions;
+}
+
+// ── Multi-file batch helpers ─────────────────────────────────────────────────
+
+function parseTransactionDate(dateStr: string): number {
+    const parts = dateStr.split('/');
+    if (parts.length !== 3) return 0;
+    const [d, m, y] = parts.map(Number);
+    return new Date(y, m - 1, d).getTime();
+}
+
+/**
+ * Sort transactions from multiple files by date descending (newest first),
+ * keeping HSBC-style balance-blocks (intermediate rows with no balance) intact.
+ */
+function sortTransactions(transactions: ParsedTransaction[]): ParsedTransaction[] {
+    const units: ParsedTransaction[][] = [];
+    let i = 0;
+    while (i < transactions.length) {
+        if (!transactions[i].balance) {
+            const block: ParsedTransaction[] = [transactions[i++]];
+            while (i < transactions.length && !transactions[i].balance) block.push(transactions[i++]);
+            if (i < transactions.length) block.push(transactions[i++]);
+            units.push(block);
+        } else {
+            units.push([transactions[i++]]);
+        }
+    }
+    // Stable descending sort (newest first — matches original statement format)
+    units.sort((a, b) =>
+        parseTransactionDate(b[b.length - 1].date) - parseTransactionDate(a[a.length - 1].date)
+    );
+    return units.flat();
+}
+
+/**
+ * Log balance continuity warnings after sorting.
+ * In descending order: row[i].balance = row[i+1].balance + row[i].moneyIn - row[i].moneyOut
+ */
+function verifyBalances(transactions: ParsedTransaction[]): void {
+    for (let i = 0; i < transactions.length - 1; i++) {
+        const cur  = transactions[i];
+        const next = transactions[i + 1];
+        const curBal  = parseMoney(cur.balance);
+        const nextBal = parseMoney(next.balance);
+        if (curBal === null || nextBal === null) continue;
+        const moneyIn  = parseMoney(cur.moneyIn)  ?? 0;
+        const moneyOut = parseMoney(cur.moneyOut) ?? 0;
+        const expected = nextBal + moneyIn - moneyOut;
+        if (Math.abs(expected - curBal) > 0.02) {
+            console.warn(
+                `[BalanceCheck] ${cur.date} "${cur.description}": ` +
+                `expected ${expected.toFixed(2)}, got ${curBal.toFixed(2)} ` +
+                `(diff=${(curBal - expected).toFixed(2)})`
+            );
+        }
+    }
+}
+
+export interface FileInput {
+    filename: string;
+    mimeType: string;
+    buffer: Buffer;
+}
+
+/**
+ * Start a batch job: parse all files, sort by date, verify balances, categorize, produce one Excel.
+ */
+export function startBatchProcessingJob(files: FileInput[], tracking?: TrackingContext): string {
+    const jobId = randomUUID();
+    const batchName = files.length === 1 ? files[0].filename : `${files.length} files`;
+    jobStore.create(jobId, batchName);
+
+    runBatchJob(jobId, files, tracking).catch(err => {
+        console.error(`[Orchestrator] Batch job ${jobId} unhandled crash:`, err);
+        jobStore.update(jobId, { status: 'failed', error: String(err?.message ?? err) });
+    });
+
+    return jobId;
+}
+
+async function runBatchJob(jobId: string, files: FileInput[], tracking?: TrackingContext): Promise<void> {
+    try {
+        jobStore.update(jobId, { status: 'processing', totalFiles: files.length });
+
+        const allTransactions: ParsedTransaction[] = [];
+        let confirmedBankType: BankType | null = null;
+
+        for (let fi = 0; fi < files.length; fi++) {
+            const { filename, mimeType, buffer } = files[fi];
+            jobStore.update(jobId, { currentFile: fi + 1, currentStage: 'classify' });
+
+            const classification = classify(filename, mimeType);
+            jobStore.update(jobId, { bankType: classification.bankType, docType: classification.docType, fileFormat: classification.fileFormat });
+
+            if (classification.fileFormat === 'excel') {
+                throw new Error(`Excel files are not supported in multi-file batch. Upload "${filename}" separately.`);
+            }
+
+            // PDF: split → Azure DI → parse
+            jobStore.update(jobId, { currentStage: 'extract' });
+            const pageBuffers = await splitPdf(buffer);
+            jobStore.update(jobId, { pageCount: pageBuffers.length });
+            const pageData = await analyzePages(pageBuffers);
+            console.log(`[Orchestrator] File ${fi + 1}/${files.length} Azure DI:`, pageData.map((p, i) => `page${i+1}:${p?.cells?.length ?? 'null'}cells`));
+
+            if (tracking) {
+                const pageCount = pageData.filter(p => p !== null).length;
+                if (pageCount > 0) {
+                    const today = new Date(); today.setHours(0, 0, 0, 0);
+                    const docType = classification.docType ?? '';
+                    try {
+                        await tracking.prisma.usageEvent.create({
+                            data: {
+                                tenantId: tracking.tenantId,
+                                source: 'azure',
+                                idempotencyKey: `azure-ocr-${jobId}-${fi}`,
+                                documentType: docType || undefined,
+                                fileType: 'pdf',
+                                step: 'ocr',
+                                timestamp: new Date(),
+                            },
+                        });
+                        await tracking.prisma.usageAggregate.upsert({
+                            where: {
+                                tenantId_date_source_documentType_fileType_step_bankCode: {
+                                    tenantId: tracking.tenantId, date: today,
+                                    source: 'azure', documentType: docType,
+                                    fileType: 'pdf', step: 'ocr', bankCode: '',
+                                },
+                            },
+                            create: {
+                                tenantId: tracking.tenantId, date: today,
+                                source: 'azure', documentType: docType,
+                                fileType: 'pdf', step: 'ocr', bankCode: '',
+                                eventCount: pageCount, totalCost: 0, totalTokens: 0,
+                            },
+                            update: { eventCount: { increment: pageCount } },
+                        });
+                    } catch (err: any) {
+                        if (!(err instanceof PrismaClientKnownRequestError && err.code === 'P2002')) {
+                            console.warn('[Orchestrator] Failed to track Azure usage:', err?.message ?? err);
+                        }
+                    }
+                }
+            }
+
+            const combinedContent = pageData.filter((p): p is NonNullable<typeof p> => p !== null).map(p => p.content).join(' ');
+            const pageCells = pageData.map(p => {
+                if (!p) return null;
+                return [{ rowIndex: -1, columnIndex: -1, content: combinedContent }, ...p.cells] as Cell[];
+            });
+
+            let bankType = classification.bankType;
+            if (bankType === 'generic') {
+                const detected = detectBankFromContent(combinedContent);
+                if (detected !== 'generic') {
+                    console.log(`[Orchestrator] Bank detected from content: ${detected}`);
+                    bankType = detected;
+                } else if (confirmedBankType) {
+                    console.log(`[Orchestrator] File ${fi + 1}/${files.length}: reusing confirmed bank "${confirmedBankType}" from earlier file`);
+                    bankType = confirmedBankType;
+                }
+                jobStore.update(jobId, { bankType });
+            }
+            if (bankType !== 'generic' && !confirmedBankType) {
+                confirmedBankType = bankType;
+            }
+
+            jobStore.update(jobId, { currentStage: 'parse' });
+            const fileTransactions = await parseAllCells(pageCells, bankType);
+            console.log(`[Orchestrator] File ${fi + 1}/${files.length} "${filename}": ${fileTransactions.length} transactions`);
+            allTransactions.push(...fileTransactions);
+        }
+
+        if (allTransactions.length === 0) throw new Error('No transactions found in any of the uploaded files');
+
+        // Sort all transactions by date descending and verify balance continuity
+        const sorted = files.length > 1 ? sortTransactions(allTransactions) : allTransactions;
+        if (files.length > 1) verifyBalances(sorted);
+
+        jobStore.update(jobId, { currentStage: 'categorize', currentFile: undefined });
+        const categorized = await categorize(sorted);
+        jobStore.update(jobId, { transactionCount: categorized.length, currentStage: 'output' });
+
+        const outputBuffer = await buildPdfOutputExcel(categorized);
+        jobStore.update(jobId, { status: 'completed', outputBuffer, completedAt: new Date() });
+        console.log(`[Orchestrator] Batch job ${jobId} completed — ${allTransactions.length} transactions from ${files.length} file(s)`);
+
+    } catch (err: any) {
+        const stage = jobStore.get(jobId)?.currentStage;
+        console.error(`[Orchestrator] Batch job ${jobId} failed at stage "${stage}":`, err.message);
+        jobStore.update(jobId, { status: 'failed', error: err.message || String(err), completedAt: new Date() });
+    }
 }
 
 export function startProcessingJob(

@@ -20,6 +20,8 @@ interface Job {
     bankType?: string;
     transactionCount?: number;
     pageCount?: number;
+    currentFile?: number;
+    totalFiles?: number;
     error?: string;
 }
 
@@ -339,7 +341,7 @@ function clearActiveJob() { localStorage.removeItem(LS_ACTIVE_KEY); }
 
 export default function ImportFile() {
     const { t } = useLanguage();
-    const [selectedFile, setSelectedFile] = useState<File | null>(null);
+    const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
     const [uploadProgress, setUploadProgress] = useState(0);
     const [isUploading, setIsUploading] = useState(false);
     const [uploadError, setUploadError] = useState<string | null>(null);
@@ -440,15 +442,19 @@ export default function ImportFile() {
         setJob(null);
         setUploadProgress(0);
         setUploadError(null);
+        setSelectedFiles([]);
     };
 
-    const handleFileSelect = (file: File) => { reset(); setSelectedFile(file); };
+    const handleFileSelect = (files: FileList | null) => {
+        if (!files || files.length === 0) return;
+        reset();
+        setSelectedFiles(Array.from(files));
+    };
 
     const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
         e.preventDefault();
         setIsDragging(false);
-        const file = e.dataTransfer.files[0];
-        if (file) handleFileSelect(file);
+        handleFileSelect(e.dataTransfer.files);
     };
 
     const handleDownload = async (jobId: string, filename: string) => {
@@ -483,12 +489,16 @@ export default function ImportFile() {
     };
 
     const handleUpload = async () => {
-        if (!selectedFile) return;
+        if (selectedFiles.length === 0) return;
         reset();
         setIsUploading(true);
 
         const formData = new FormData();
-        formData.append('file', selectedFile);
+        for (const f of selectedFiles) formData.append('files', f);
+
+        const batchName = selectedFiles.length === 1
+            ? selectedFiles[0].name
+            : `${selectedFiles.length} files`;
 
         try {
             const res = await axios.post('/v1/users/import', formData, {
@@ -499,9 +509,9 @@ export default function ImportFile() {
             });
             setUploadProgress(100);
             const jobId: string = res.data.jobId;
-            saveActiveJob(jobId, selectedFile.name);
-            setJob({ id: jobId, status: 'queued', filename: selectedFile.name });
-            setSelectedFile(null);
+            saveActiveJob(jobId, batchName);
+            setJob({ id: jobId, status: 'queued', filename: batchName });
+            setSelectedFiles([]);
             if (fileInputRef.current) fileInputRef.current.value = '';
             startPolling(jobId);
         } catch (err: any) {
@@ -515,7 +525,7 @@ export default function ImportFile() {
     const isProcessing = job && (job.status === 'queued' || job.status === 'processing');
     const isCompleted  = job?.status === 'completed';
     const isFailed     = job?.status === 'failed';
-    const canUpload    = !!selectedFile && !isUploading && !isProcessing;
+    const canUpload    = selectedFiles.length > 0 && !isUploading && !isProcessing;
 
     return (
         <div>
@@ -574,9 +584,12 @@ export default function ImportFile() {
                         )}
                         {isProcessing && (
                             <span style={{ fontSize: '0.75rem', color: '#6366f1' }}>
-                                {job.bankType
-                                    ? `Processing ${job.bankType.toUpperCase()} statement${job.pageCount ? ` · ${job.pageCount} pages` : ''}`
-                                    : 'Processing…'}
+                                {job.totalFiles && job.totalFiles > 1
+                                    ? `File ${job.currentFile || 1} of ${job.totalFiles}${job.bankType ? ` · ${job.bankType.toUpperCase()}` : ''}${job.currentStage ? ` · ${job.currentStage}` : ''}`
+                                    : job.bankType
+                                        ? `Processing ${job.bankType.toUpperCase()} statement${job.pageCount ? ` · ${job.pageCount} pages` : ''}`
+                                        : 'Processing…'
+                                }
                             </span>
                         )}
                         {isCompleted && (
@@ -598,23 +611,36 @@ export default function ImportFile() {
                 {/* ── Drop zone ── */}
                 {!isProcessing && !isCompleted && (
                     <div
-                        className={`drop-zone${isDragging ? ' dragging' : ''}${selectedFile ? ' has-file' : ''}`}
+                        className={`drop-zone${isDragging ? ' dragging' : ''}${selectedFiles.length > 0 ? ' has-file' : ''}`}
                         onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
                         onDragLeave={() => setIsDragging(false)}
                         onDrop={handleDrop}
                         onClick={() => !isUploading && fileInputRef.current?.click()}
                     >
                         <Upload size={26} style={{ marginBottom: '0.6rem', opacity: 0.5 }} />
-                        {selectedFile
-                            ? <p style={{ fontWeight: 600, color: 'var(--text)', margin: 0 }}>{selectedFile.name}</p>
-                            : <p style={{ color: 'var(--text-muted)', margin: 0, fontSize: '0.88rem' }}>{t.dragDropFile}</p>
-                        }
+                        {selectedFiles.length === 0 && (
+                            <p style={{ color: 'var(--text-muted)', margin: 0, fontSize: '0.88rem' }}>{t.dragDropFile}</p>
+                        )}
+                        {selectedFiles.length === 1 && (
+                            <p style={{ fontWeight: 600, color: 'var(--text)', margin: 0 }}>{selectedFiles[0].name}</p>
+                        )}
+                        {selectedFiles.length > 1 && (
+                            <div style={{ textAlign: 'center' }}>
+                                <p style={{ fontWeight: 600, color: 'var(--text)', margin: '0 0 0.4rem' }}>
+                                    {selectedFiles.length} files selected
+                                </p>
+                                <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', maxHeight: 80, overflowY: 'auto' }}>
+                                    {selectedFiles.map((f, i) => <div key={i}>{f.name}</div>)}
+                                </div>
+                            </div>
+                        )}
                         <input
                             ref={fileInputRef}
                             type="file"
                             accept=".pdf,.xlsx,.xls,.csv"
+                            multiple
                             style={{ display: 'none' }}
-                            onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFileSelect(f); }}
+                            onChange={(e) => handleFileSelect(e.target.files)}
                         />
                     </div>
                 )}

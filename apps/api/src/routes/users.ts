@@ -6,7 +6,7 @@ import { PrismaClient } from '@prisma/client';
 import { authenticateToken, requireRole, AuthenticatedRequest } from '../middleware/auth.js';
 import { createError } from '../middleware/errorHandler.js';
 import { ADMIN_ROLES } from '../utils/roles.js';
-import { startProcessingJob } from '../services/processing/ProcessingOrchestrator.js';
+import { startProcessingJob, startBatchProcessingJob } from '../services/processing/ProcessingOrchestrator.js';
 
 const upload = multer({
     storage: multer.memoryStorage(),
@@ -184,21 +184,26 @@ router.delete('/:membershipId', requireRole(...ADMIN_ROLES), async (req: Authent
 /**
  * POST /v1/users/import
  *
- * Accept a file upload from an admin, start async processing, return jobId.
+ * Accept one or more file uploads from an admin, start async batch processing, return jobId.
  */
-router.post('/import', requireRole(...ADMIN_ROLES), upload.single('file'), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+router.post('/import', requireRole(...ADMIN_ROLES), upload.array('files', 20), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
-        if (!req.file) {
-            return next(createError('No file provided', 400, 'NO_FILE'));
+        const files = req.files as Express.Multer.File[] | undefined;
+        if (!files || files.length === 0) {
+            return next(createError('No files provided', 400, 'NO_FILE'));
         }
 
         const tenantId = req.user!.tenantId;
-        const jobId = startProcessingJob(
-            req.file.originalname,
-            req.file.mimetype,
-            req.file.buffer,
-            tenantId ? { prisma: req.app.locals.prisma, tenantId } : undefined,
-        );
+        const tracking = tenantId ? { prisma: req.app.locals.prisma, tenantId } : undefined;
+
+        // Single file: use original path (supports Excel + PDF)
+        // Multiple files: batch path (PDF only, sorts by date, one combined output)
+        const jobId = files.length === 1
+            ? startProcessingJob(files[0].originalname, files[0].mimetype, files[0].buffer, tracking)
+            : startBatchProcessingJob(
+                files.map(f => ({ filename: f.originalname, mimeType: f.mimetype, buffer: f.buffer })),
+                tracking,
+            );
 
         res.json({ success: true, jobId });
     } catch (error) {

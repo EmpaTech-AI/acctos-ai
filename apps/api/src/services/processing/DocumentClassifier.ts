@@ -66,11 +66,11 @@ export function detectBankFromContent(text: string): BankType {
     if (/\bhsbc\b/.test(t))                                          return 'hsbc';
     if (/\brevolut\b/.test(t))                                       return 'revolut';
     if (/\bmonzo\b/.test(t))                                         return 'monzo';
-    if (/\b(wise|transferwise)\b/.test(t))                           return 'wise';
+    if (/wise\.com\/help/.test(t) || /\bref:\s*[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i.test(t)) return 'wise';
     if (/\bstarling\b/.test(t))                                      return 'starling';
     if (/\b(natwest|nat west|national westminster)\b/.test(t))       return 'natwest';
     if (/\b(rbs|royal bank of scotland)\b/.test(t))                  return 'rbs';
-    if (/\bvirgin money\b/.test(t) || /virginmoney\.com/.test(t))    return 'virginmoney';
+    if (t.includes('internet-banking.ib.apps.virginmoney.com/vm/homepage')) return 'virginmoney';
     if (/\bpockit\b/.test(t) || /help@pockit\.com/.test(t))          return 'pockit';
     if (/\bnationwide\b/.test(t))                                    return 'nationwide';
     if (/\bsantander\b/.test(t))                                     return 'santander';

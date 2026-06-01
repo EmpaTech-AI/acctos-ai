@@ -11,6 +11,8 @@ export interface ProcessingJob {
     fileFormat?: string;
     transactionCount?: number;
     pageCount?: number;
+    currentFile?: number;
+    totalFiles?: number;
     error?: string;
     outputBuffer?: Buffer;
     createdAt: Date;
