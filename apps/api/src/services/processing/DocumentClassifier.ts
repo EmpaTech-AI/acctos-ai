@@ -70,7 +70,7 @@ export function detectBankFromContent(text: string): BankType {
     if (/\bstarling\b/.test(t))                                      return 'starling';
     if (/\b(natwest|nat west|national westminster)\b/.test(t))       return 'natwest';
     if (/\b(rbs|royal bank of scotland)\b/.test(t))                  return 'rbs';
-    if (/internet-banking\.ib\.apps\.virginmoney\.com/.test(t))       return 'virginmoney';
+    if (/virginmoney\.com/.test(t))                                    return 'virginmoney';
     if (/\bpockit\b/.test(t) || /help@pockit\.com/.test(t))          return 'pockit';
     if (/\bnationwide\b/.test(t))                                    return 'nationwide';
     if (/\bsantander\b/.test(t))                                     return 'santander';
