@@ -192,6 +192,7 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
         jobStore.update(jobId, { status: 'processing', totalFiles: files.length });
 
         const allTransactions: ParsedTransaction[] = [];
+        let confirmedBankType: BankType | null = null;
 
         for (let fi = 0; fi < files.length; fi++) {
             const { filename, mimeType, buffer } = files[fi];
@@ -264,8 +265,14 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
                 if (detected !== 'generic') {
                     console.log(`[Orchestrator] Bank detected from content: ${detected}`);
                     bankType = detected;
-                    jobStore.update(jobId, { bankType: detected });
+                } else if (confirmedBankType) {
+                    console.log(`[Orchestrator] File ${fi + 1}/${files.length}: reusing confirmed bank "${confirmedBankType}" from earlier file`);
+                    bankType = confirmedBankType;
                 }
+                jobStore.update(jobId, { bankType });
+            }
+            if (bankType !== 'generic' && !confirmedBankType) {
+                confirmedBankType = bankType;
             }
 
             jobStore.update(jobId, { currentStage: 'parse' });

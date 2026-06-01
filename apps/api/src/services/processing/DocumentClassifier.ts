@@ -66,7 +66,7 @@ export function detectBankFromContent(text: string): BankType {
     if (/\bhsbc\b/.test(t))                                          return 'hsbc';
     if (/\brevolut\b/.test(t))                                       return 'revolut';
     if (/\bmonzo\b/.test(t))                                         return 'monzo';
-    if (/\btransferwise\b/.test(t) || /wise\.com/.test(t))           return 'wise';
+    if (/wise\.com\/help/.test(t) || /\bref:\s*[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i.test(t)) return 'wise';
     if (/\bstarling\b/.test(t))                                      return 'starling';
     if (/\b(natwest|nat west|national westminster)\b/.test(t))       return 'natwest';
     if (/\b(rbs|royal bank of scotland)\b/.test(t))                  return 'rbs';
