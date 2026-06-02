@@ -1,6 +1,6 @@
 export type BankType =
     | 'hsbc' | 'revolut' | 'monzo' | 'wise' | 'starling'
-    | 'natwest' | 'nationwide' | 'santander' | 'barclays' | 'metro'
+    | 'natwest' | 'mettle' | 'nationwide' | 'santander' | 'barclays' | 'metro'
     | 'lloyds' | 'tsb' | 'tide' | 'rbs' | 'virginmoney' | 'pockit'
     | 'generic';
 
@@ -45,6 +45,7 @@ function detectBank(lower: string): BankType {
     if (lower.includes('monzo'))                                  return 'monzo';
     if (lower.includes('wise') || lower.includes('transferwise')) return 'wise';
     if (lower.includes('starling'))                               return 'starling';
+    if (lower.includes('mettle'))                                  return 'mettle';
     if (lower.includes('natwest') || lower.includes('nat west'))  return 'natwest';
     if (lower.includes('rbs') || lower.includes('royal bank'))    return 'rbs';
     if (lower.includes('virgin money') || lower.includes('virginmoney') || lower.includes('virgin_money')) return 'virginmoney';
@@ -68,6 +69,7 @@ export function detectBankFromContent(text: string): BankType {
     if (/\bmonzo\b/.test(t))                                         return 'monzo';
     if (/wise\.com\/help/.test(t) || /\bref:\s*[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i.test(t)) return 'wise';
     if (/\bstarling\b/.test(t))                                      return 'starling';
+    if (/\bmettle\b/.test(t))                                          return 'mettle';
     if (/\b(natwest|nat west|national westminster)\b/.test(t))       return 'natwest';
     if (/\b(rbs|royal bank of scotland)\b/.test(t))                  return 'rbs';
     if (t.includes('internet-banking.ib.apps.virginmoney.com/vm/homepage')) return 'virginmoney';

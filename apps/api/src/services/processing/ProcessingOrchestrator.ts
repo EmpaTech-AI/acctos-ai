@@ -32,6 +32,7 @@ import { parse as parseTide } from './parsers/tide.js';
 import { parse as parseRbs } from './parsers/rbs.js';
 import { parse as parseVirginMoney } from './parsers/virginmoney.js';
 import { parse as parsePockit } from './parsers/pockit.js';
+import { parse as parseMettle } from './parsers/mettle.js';
 import { parse as parseGeneric } from './parsers/generic.js';
 import { parse as parseFallback } from './parsers/fallback.js';
 
@@ -47,6 +48,7 @@ function getParser(bankType: BankType): StandardParser {
         case 'rbs':        return parseRbs;
         case 'virginmoney': return parseVirginMoney;
         case 'pockit':     return parsePockit;
+        case 'mettle':     return parseMettle;
         case 'nationwide': return parseNationwide;
         case 'santander':  return parseSantander;
         case 'barclays':   return parseBarclays;
