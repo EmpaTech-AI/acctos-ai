@@ -68,6 +68,18 @@ function addVerificationSide(ws: ExcelJS.Worksheet, v: VerificationSummary): voi
             : `⚠ In diff: ${(v.totalIn - v.declaredIn).toFixed(2)}, Out diff: ${(v.totalOut - v.declaredOut).toFixed(2)}`;
         write(declStatus, null, true);
     }
+
+    if (v.catTotalIn != null && v.catTotalOut != null) {
+        write('');
+        write('── After categorization ──', null, true);
+        write('Categorized in',  v.catTotalIn);
+        write('Categorized out', v.catTotalOut);
+        write('');
+        const catStatus = v.catOk
+            ? '✓ Category totals match'
+            : `⚠ In diff: ${(v.catTotalIn - v.totalIn).toFixed(2)}, Out diff: ${(v.catTotalOut - v.totalOut).toFixed(2)}`;
+        write(catStatus, null, true);
+    }
 }
 
 /** "DD/MM/YYYY" → Date (UTC) */

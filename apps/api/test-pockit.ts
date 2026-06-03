@@ -8,7 +8,7 @@ import { analyzePages } from './src/services/processing/AzureExtractor.js';
 import { classify } from './src/services/processing/DocumentClassifier.js';
 import { parse as parsePockit } from './src/services/processing/parsers/pockit.js';
 import { Cell, ParsedTransaction } from './src/services/processing/parsers/shared.js';
-import { computeVerification, logVerificationSummary } from './src/services/processing/Verification.js';
+import { computeVerification, applyCatVerification, logVerificationSummary } from './src/services/processing/Verification.js';
 import { categorize } from './src/services/processing/AssistantCategorizer.js';
 import { buildPdfOutputExcel } from './src/services/processing/ExcelOutputBuilder.js';
 
@@ -174,6 +174,7 @@ if (sorted.length > 0) {
 
 console.log('\nRunning categorization...');
 const categorized = await categorize(sorted);
+if (verification) applyCatVerification(verification, categorized);
 console.log('\nFirst 5 categorized:');
 categorized.slice(0, 5).forEach((t, i) =>
     console.log(`  [${i+1}] ${t.DATE} | ${(t['Type and Description']||'').slice(0,40).padEnd(40)} | INCOME:${(t.INCOME||'').padStart(10)} OTHER:${(t.OTHER||'').padStart(10)} bal:${t.Balance}`)

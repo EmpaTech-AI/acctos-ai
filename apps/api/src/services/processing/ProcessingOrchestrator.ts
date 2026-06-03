@@ -9,7 +9,7 @@ import { categorize } from './AssistantCategorizer.js';
 import { parseExcel } from './ExcelParser.js';
 import { buildPdfOutputExcel, buildExcelOutputExcel } from './ExcelOutputBuilder.js';
 import { Cell, ParsedTransaction, ParseResult } from './parsers/shared.js';
-import { computeVerification, logVerificationSummary } from './Verification.js';
+import { computeVerification, applyCatVerification, logVerificationSummary } from './Verification.js';
 
 interface TrackingContext {
     prisma: PrismaClient;
@@ -303,6 +303,8 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
 
         jobStore.update(jobId, { currentStage: 'categorize', currentFile: undefined });
         const categorized = await categorize(sorted);
+        if (verification) applyCatVerification(verification, categorized);
+        if (verification) logVerificationSummary(verification);
         jobStore.update(jobId, { transactionCount: categorized.length, currentStage: 'output' });
 
         const outputBuffer = await buildPdfOutputExcel(categorized, verification);
@@ -463,6 +465,8 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
             // ── Stage: categorize (OpenAI Assistant, 50 transactions per batch) ──
             jobStore.update(jobId, { currentStage: 'categorize' });
             const categorized = await categorize(transactions);
+            if (verification) applyCatVerification(verification, categorized);
+            if (verification) logVerificationSummary(verification);
             jobStore.update(jobId, { transactionCount: categorized.length, currentStage: 'output' });
 
             // ── Stage: output (build Excel) ───────────────────────────────────────

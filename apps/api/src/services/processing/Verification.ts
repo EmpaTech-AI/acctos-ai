@@ -1,4 +1,5 @@
 import { ParsedTransaction, parseMoney } from './parsers/shared.js';
+import type { CategorizedTransaction } from './AssistantCategorizer.js';
 
 export interface VerificationSummary {
     totalIn: number;
@@ -10,6 +11,10 @@ export interface VerificationSummary {
     declaredIn?: number;
     declaredOut?: number;
     declaredOk?: boolean;
+    /** Totals computed from the categorized Excel output (post-AI). */
+    catTotalIn?: number;
+    catTotalOut?: number;
+    catOk?: boolean;
 }
 
 /**
@@ -64,6 +69,28 @@ export function computeVerification(
     };
 }
 
+const CAT_EXPENSE_COLS = ['SALARY','OTHER','INSURANCE','LOAN','CASH','TRAVEL','PHONE','CHARGES','Bank_Transfer','HMRC','RENT','BILLS'] as const;
+
+/**
+ * Attach post-categorization totals to an existing VerificationSummary.
+ * catTotalIn  = sum of INCOME values across all categorized rows
+ * catTotalOut = sum of absolute values of all expense category columns
+ */
+export function applyCatVerification(v: VerificationSummary, categorized: CategorizedTransaction[]): void {
+    let catIn = 0, catOut = 0;
+    for (const t of categorized) {
+        const inc = parseMoney(t.INCOME);
+        if (inc !== null && inc > 0) catIn += inc;
+        for (const col of CAT_EXPENSE_COLS) {
+            const val = parseMoney((t as any)[col]);
+            if (val !== null && val !== 0) catOut += Math.abs(val);
+        }
+    }
+    v.catTotalIn  = Math.round(catIn  * 100) / 100;
+    v.catTotalOut = Math.round(catOut * 100) / 100;
+    v.catOk = Math.abs(v.catTotalIn - v.totalIn) <= 0.02 && Math.abs(v.catTotalOut - v.totalOut) <= 0.02;
+}
+
 export function logVerificationSummary(v: VerificationSummary): void {
     console.log(
         `[TotalsCheck] Opening: ${v.openingBalance?.toFixed(2) ?? 'N/A'} | ` +
@@ -83,6 +110,17 @@ export function logVerificationSummary(v: VerificationSummary): void {
                 `[TotalsCheck] Declared totals mismatch — ` +
                 `In diff: ${(v.totalIn - v.declaredIn).toFixed(2)}, ` +
                 `Out diff: ${(v.totalOut - v.declaredOut).toFixed(2)}`
+            );
+        }
+    }
+    if (v.catTotalIn != null && v.catTotalOut != null) {
+        if (v.catOk) {
+            console.log(`[TotalsCheck] Categorized totals match parser — In: ${v.catTotalIn.toFixed(2)}, Out: ${v.catTotalOut.toFixed(2)} ✓`);
+        } else {
+            console.warn(
+                `[TotalsCheck] Categorized totals differ — ` +
+                `In diff: ${(v.catTotalIn - v.totalIn).toFixed(2)}, ` +
+                `Out diff: ${(v.catTotalOut - v.totalOut).toFixed(2)}`
             );
         }
     }
