@@ -1,123 +1,109 @@
-/**
- * Barclays parser test — processes a real PDF via Azure DI (cached).
- * Results saved as _processed.xlsx next to the PDF.
- *
- * Usage (from apps/api/):
- *   npx tsx test-barclays.ts "<path-to-barclays-pdf>"
- */
-
+// Quick parser test: reads a Barclays PDF, runs full pipeline, saves Excel output.
+// Azure DI results are cached to <pdf>.azure-cache.json to skip re-processing.
 import 'dotenv/config';
 import { readFileSync, writeFileSync, existsSync } from 'fs';
-import path from 'path';
 import { splitPdf } from './src/services/processing/PdfSplitter.js';
-import { analyzePage } from './src/services/processing/AzureExtractor.js';
-import { parse } from './src/services/processing/parsers/barclays.js';
+import { analyzePages } from './src/services/processing/AzureExtractor.js';
+import { classify } from './src/services/processing/DocumentClassifier.js';
+import { parse as parseBarclays } from './src/services/processing/parsers/barclays.js';
+import { Cell } from './src/services/processing/parsers/shared.js';
+import { computeVerification, applyCatVerification, logVerificationSummary } from './src/services/processing/Verification.js';
+import { categorize } from './src/services/processing/AssistantCategorizer.js';
 import { buildPdfOutputExcel } from './src/services/processing/ExcelOutputBuilder.js';
-import type { Cell } from './src/services/processing/parsers/shared.js';
-import type { CategorizedTransaction } from './src/services/processing/AssistantCategorizer.js';
 
-const pdfPath = process.argv[2];
-if (!pdfPath) { console.error('Usage: npx tsx test-barclays.ts "<path-to-pdf>"'); process.exit(1); }
+const filePath = process.argv[2];
+if (!filePath) { console.error('Usage: npx tsx test-barclays.ts <path-to-pdf>'); process.exit(1); }
 
-const cachePath = pdfPath + '.azure-cache.json';
+const fileBuffer = readFileSync(filePath);
+const filename = filePath.split(/[\\/]/).pop()!;
+const cachePath = filePath.replace(/\.pdf(\.\w+)?$/i, '') + '.azure-cache.json';
 
-async function main() {
-    console.log(`\nPDF: ${path.basename(pdfPath)}`);
+console.log(`\n=== Testing: ${filename} ===\n`);
 
-    // ── Azure DI (with cache) ──────────────────────────────────────────────
-    interface CacheEntry { cells: Cell[]; content: string; }
-    let pageData: CacheEntry[];
+const classification = classify(filename, 'application/pdf');
+console.log('Classification:', classification);
 
-    if (existsSync(cachePath)) {
-        console.log('Using cached Azure DI results…');
-        const raw = JSON.parse(readFileSync(cachePath, 'utf-8'));
-        // Support old format (Cell[][]) and new format (CacheEntry[])
-        if (Array.isArray(raw[0]) || raw.length === 0) {
-            pageData = (raw as Cell[][]).map(cells => ({ cells, content: '' }));
-        } else {
-            pageData = raw as CacheEntry[];
-        }
-    } else {
-        console.log('Splitting PDF into pages…');
-        const pages = await splitPdf(readFileSync(pdfPath));
-        console.log(`${pages.length} page(s) — calling Azure DI…`);
-        pageData = [];
-        for (let i = 0; i < pages.length; i++) {
-            process.stdout.write(`  Page ${i + 1}/${pages.length}… `);
-            const data = await analyzePage(pages[i]);
-            pageData.push({ cells: data.cells, content: data.content });
-            console.log(`${data.cells.length} cells, ${data.content.length} chars content`);
-        }
-        writeFileSync(cachePath, JSON.stringify(pageData));
-        console.log('Cache saved.');
-    }
+// ── Azure DI — load from cache or fetch ──────────────────────────────────────
+let pageData: Awaited<ReturnType<typeof analyzePages>>;
 
-    // ── Merge pages (offset rows + inject combined content as context cell) ──
-    const combinedContent = pageData.map(p => p.content).filter(Boolean).join(' ')
-        || pageData.flatMap(p => p.cells).map(c => c.content).join(' ');
-    const combined: Cell[] = [{ rowIndex: -1, columnIndex: -1, content: combinedContent }];
-    let rowOffset = 0;
-    for (const { cells } of pageData) {
-        let pageMax = -1;
-        for (const c of cells) {
-            combined.push({ ...c, rowIndex: c.rowIndex + rowOffset });
-            if (c.rowIndex > pageMax) pageMax = c.rowIndex;
-        }
-        if (pageMax >= 0) rowOffset += pageMax + 10000;
-    }
-
-    // ── Diagnostic: show raw content if no cells found ────────────────────
-    const totalCells = pageData.reduce((s, p) => s + p.cells.length, 0);
-    if (totalCells === 0 && combinedContent) {
-        console.log('\n── Raw content (first 2000 chars) ──');
-        console.log(combinedContent.slice(0, 2000));
-        console.log('──');
-    }
-
-    // Detect variant
-    const variant = /Premier BK AC/i.test(combinedContent) ? 'Premier BK AC' : 'Normal Layout';
-    console.log(`\nVariant detected: ${variant}`);
-
-    // ── Parse ──────────────────────────────────────────────────────────────
-    const result = parse(combined);
-    const txns   = result.transactions;
-
-    // ── Print table ────────────────────────────────────────────────────────
-    const W = { date: 12, desc: 50, out: 14, inn: 14 };
-    const sep = '─'.repeat(W.date + W.desc + W.out + W.inn + 12);
-    console.log(`\nTransactions: ${txns.length}\n${sep}`);
-    console.log('Date'.padEnd(W.date) + 'Description'.padEnd(W.desc) + 'Out'.padEnd(W.out) + 'In'.padEnd(W.inn) + 'Balance');
-    console.log(sep);
-    for (const tx of txns) {
-        console.log(
-            tx.date.padEnd(W.date) +
-            (tx.description || '').slice(0, W.desc - 2).padEnd(W.desc) +
-            (tx.moneyOut || '').padEnd(W.out) +
-            (tx.moneyIn  || '').padEnd(W.inn) +
-            (tx.balance  || '')
-        );
-    }
-
-    // ── Totals ─────────────────────────────────────────────────────────────
-    const totalOut = txns.reduce((s, t) => s + (parseFloat(t.moneyOut?.replace(/,/g, '') || '0') || 0), 0);
-    const totalIn  = txns.reduce((s, t) => s + (parseFloat(t.moneyIn?.replace(/,/g, '')  || '0') || 0), 0);
-    console.log(sep);
-    console.log('TOTAL'.padEnd(W.date) + ''.padEnd(W.desc) + totalOut.toFixed(2).padEnd(W.out) + totalIn.toFixed(2));
-    console.log(`Money Out: ${totalOut.toFixed(2)}   Money In: ${totalIn.toFixed(2)}   Net: ${(totalIn - totalOut).toFixed(2)}`);
-
-    // ── Save Excel ─────────────────────────────────────────────────────────
-    const categorized: CategorizedTransaction[] = txns.map(t => ({
-        DATE: t.date,
-        'Type and Description': t.description,
-        INCOME: t.moneyIn || '', SALARY: '', OTHER: '', INSURANCE: '', LOAN: '',
-        CASH: '', TRAVEL: '', PHONE: '', CHARGES: t.moneyOut || '',
-        Bank_Transfer: '', HMRC: '', RENT: '', BILLS: '',
-        Balance: t.balance || '',
-    }));
-
-    const outPath = pdfPath + '_processed.xlsx';
-    writeFileSync(outPath, buildPdfOutputExcel(categorized));
-    console.log(`\nSaved: ${outPath}`);
+if (existsSync(cachePath)) {
+    console.log(`[Cache] Loading Azure results from ${cachePath}`);
+    pageData = JSON.parse(readFileSync(cachePath, 'utf8'));
+    console.log('Azure DI results (cached):', pageData.map((p, i) => `page${i+1}:${p?.cells?.length ?? 'null'}cells`).join(', '));
+} else {
+    const pageBuffers = await splitPdf(fileBuffer);
+    console.log(`Pages: ${pageBuffers.length}`);
+    pageData = await analyzePages(pageBuffers);
+    console.log('Azure DI results:', pageData.map((p, i) => `page${i+1}:${p?.cells?.length ?? 'null'}cells`).join(', '));
+    writeFileSync(cachePath, JSON.stringify(pageData, null, 2));
+    console.log(`[Cache] Saved to ${cachePath}`);
 }
 
-main().catch(err => { console.error(err); process.exit(1); });
+// Debug: show raw cells from page 1 (rows 0-8)
+if (pageData[0]) {
+    const p1cells = pageData[0].cells.filter(c => c.rowIndex <= 8).sort((a,b) => a.rowIndex - b.rowIndex || a.columnIndex - b.columnIndex);
+    console.log('\n--- Page 1 raw cells (rows 0-8) ---');
+    for (const c of p1cells) {
+        console.log(`  row${c.rowIndex} col${c.columnIndex}: "${c.content}"`);
+    }
+    console.log('---\n');
+}
+
+// Merge all pages with row offsets
+const combinedContent = pageData
+    .filter((p): p is NonNullable<typeof p> => p !== null)
+    .map(p => p.content).join(' ');
+
+const combined: Cell[] = [{ rowIndex: -1, columnIndex: -1, content: combinedContent }];
+let rowOffset = 0;
+for (const p of pageData) {
+    if (!p) continue;
+    let pageMaxRow = -1;
+    for (const c of p.cells) {
+        combined.push({ ...c, rowIndex: c.rowIndex + rowOffset });
+        if (c.rowIndex > pageMaxRow) pageMaxRow = c.rowIndex;
+    }
+    if (pageMaxRow >= 0) rowOffset += pageMaxRow + 10000;
+}
+
+const { transactions, statementTotals, ascending } = parseBarclays(combined);
+console.log(`Parsed ${transactions.length} transactions`);
+
+if (statementTotals) {
+    console.log(`Declared by bank — Money In: ${statementTotals.moneyIn.toFixed(2)}  Money Out: ${statementTotals.moneyOut.toFixed(2)}`);
+}
+
+const verification = computeVerification(transactions, statementTotals, ascending);
+
+if (transactions.length > 0) {
+    console.log('\nFirst 5:');
+    transactions.slice(0, 5).forEach((t, i) =>
+        console.log(`  [${i+1}] ${t.date} | ${t.type.padEnd(8)} | ${t.description.slice(0, 40).padEnd(40)} | out:${(t.moneyOut||'').padStart(10)} in:${(t.moneyIn||'').padStart(10)} bal:${t.balance}`)
+    );
+    console.log('\nLast 3:');
+    transactions.slice(-3).forEach((t, i) =>
+        console.log(`  [${transactions.length - 2 + i}] ${t.date} | ${t.type.padEnd(8)} | ${t.description.slice(0, 40).padEnd(40)} | out:${(t.moneyOut||'').padStart(10)} in:${(t.moneyIn||'').padStart(10)} bal:${t.balance}`)
+    );
+
+    const totalIn  = transactions.reduce((s, t) => s + (parseFloat(t.moneyIn  || '0') || 0), 0);
+    const totalOut = transactions.reduce((s, t) => s + (parseFloat(t.moneyOut || '0') || 0), 0);
+    console.log(`\nTotals — Money In: ${totalIn.toFixed(2)}  Money Out: ${totalOut.toFixed(2)}`);
+
+    if (verification) {
+        console.log('\nTotals verification:');
+        logVerificationSummary(verification);
+    }
+}
+
+console.log('\nRunning categorization...');
+const categorized = await categorize(transactions);
+if (verification) applyCatVerification(verification, categorized);
+console.log('\nFirst 5 categorized:');
+categorized.slice(0, 5).forEach((t, i) =>
+    console.log(`  [${i+1}] ${t.DATE} | ${(t['Type and Description']||'').slice(0,40).padEnd(40)} | INCOME:${(t.INCOME||'').padStart(10)} OTHER:${(t.OTHER||'').padStart(10)} bal:${t.Balance}`)
+);
+
+const outputBuffer = await buildPdfOutputExcel(categorized, verification);
+const outPath = filePath.replace(/\.pdf(\.\w+)?$/i, '') + '_processed.xlsx';
+writeFileSync(outPath, outputBuffer);
+console.log(`\nOutput saved: ${outPath}`);

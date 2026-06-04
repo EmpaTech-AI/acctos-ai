@@ -318,7 +318,7 @@ function parsePremier(cells: Cell[]): ParseResult {
 
     const txns = stitch(physical);
     backfillBalance(txns);
-    return { transactions: toTransactions(txns) };
+    return { transactions: toTransactions(txns), ascending: true };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -561,7 +561,7 @@ function parseNormal(cells: Cell[]): ParseResult {
             balance:     t.balance !== null ? t.balance.toFixed(2) : '',
         });
     }
-    return { transactions };
+    return { transactions, ascending: true };
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
