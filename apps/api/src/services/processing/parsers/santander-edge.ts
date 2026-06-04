@@ -395,5 +395,5 @@ export function parse(cells: Cell[]): ParseResult {
         curr.balance = numberToAmountString(nextBal - (amountToNumber(next.moneyIn) ?? 0) + (amountToNumber(next.moneyOut) ?? 0));
     }
 
-    return { transactions };
+    return { transactions, ascending: true };
 }

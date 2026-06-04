@@ -9,6 +9,15 @@ function parseMoney(s: string): string {
     return Math.abs(n).toFixed(2);
 }
 
+function parseBalance(s: string): string {
+    s = normStr(s);
+    if (!s) return '';
+    s = s.replace(/[£,\s]/g, '');
+    const n = Number(s);
+    if (!isFinite(n)) return '';
+    return n.toFixed(2);
+}
+
 function parseDate(s: string): string {
     s = normStr(s);
     if (!s) return '';
@@ -131,7 +140,7 @@ export function parse(cells: Cell[]): ParseResult {
         const details    = c.get(COL_DETAILS) ?? '';
         const paidOut    = parseMoney(c.get(COL_OUT) ?? '');
         const paidIn     = parseMoney(c.get(COL_IN)  ?? '');
-        const balance    = parseMoney(c.get(COL_BAL) ?? '');
+        const balance    = parseBalance(c.get(COL_BAL) ?? '');
         const date       = parseDate(dateRaw);
         const type       = format === 'new' ? mapType(rawType) : rawType;
 
@@ -152,5 +161,6 @@ export function parse(cells: Cell[]): ParseResult {
         transactions.push({ date, type, description: details, moneyIn: paidIn, moneyOut: paidOut, balance });
     }
 
-    return { transactions };
+    // Lloyds web format PDFs are oldest-first (earliest date at top of statement)
+    return { transactions, ascending: true };
 }

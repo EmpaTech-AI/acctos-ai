@@ -18,6 +18,8 @@ export interface ParseResult {
     pendingRow?: ParsedTransaction | null;
     /** Totals declared by the bank in the document itself (e.g. Pockit summary rows). */
     statementTotals?: { moneyIn: number; moneyOut: number };
+    /** true = oldest transaction first (e.g. Mettle PDF). false/undefined = newest first (default). */
+    ascending?: boolean;
 }
 
 export const TRANSACTION_CODES = [

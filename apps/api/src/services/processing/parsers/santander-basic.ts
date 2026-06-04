@@ -400,5 +400,5 @@ export function parse(cells: Cell[]): ParseResult {
     }
 
     flush();
-    return { transactions };
+    return { transactions, ascending: true };
 }

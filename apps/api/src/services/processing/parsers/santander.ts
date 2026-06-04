@@ -434,5 +434,6 @@ export function parse(cells: Cell[]): ParseResult {
                 moneyOut:    t.moneyOut !== '' ? fmt(t.moneyOut as number) : '',
                 balance:     t.balance,
             })),
+        ascending: true,
     };
 }

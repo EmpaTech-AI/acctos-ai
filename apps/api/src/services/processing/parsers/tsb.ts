@@ -141,5 +141,6 @@ export function parse(cells: Cell[]): ParseResult {
         transactions.push({ date, type, description: details, moneyIn: paidIn, moneyOut: paidOut, balance });
     }
 
-    return { transactions };
+    // 'old' format (scanned, DD MMM YY dates) → oldest first; 'new' format (web, YYYY-MM-DD) → newest first
+    return { transactions, ascending: format === 'old' };
 }

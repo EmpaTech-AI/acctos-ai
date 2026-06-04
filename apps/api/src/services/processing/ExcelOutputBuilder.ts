@@ -68,6 +68,18 @@ function addVerificationSide(ws: ExcelJS.Worksheet, v: VerificationSummary): voi
             : `⚠ In diff: ${(v.totalIn - v.declaredIn).toFixed(2)}, Out diff: ${(v.totalOut - v.declaredOut).toFixed(2)}`;
         write(declStatus, null, true);
     }
+
+    if (v.catTotalIn != null && v.catTotalOut != null) {
+        write('');
+        write('── After categorization ──', null, true);
+        write('Categorized in',  v.catTotalIn);
+        write('Categorized out', v.catTotalOut);
+        write('');
+        const catStatus = v.catOk
+            ? '✓ Category totals match'
+            : `⚠ In diff: ${(v.catTotalIn - v.totalIn).toFixed(2)}, Out diff: ${(v.catTotalOut - v.totalOut).toFixed(2)}`;
+        write(catStatus, null, true);
+    }
 }
 
 /** "DD/MM/YYYY" → Date (UTC) */
@@ -150,9 +162,10 @@ export async function buildPdfOutputExcel(transactions: CategorizedTransaction[]
         row.commit();
     });
 
-    // Fill column D yellow for all remaining rows up to 1000
+    // Fill column D yellow for all remaining rows — always at least 250 beyond data, minimum row 1000
     const lastDataRow = transactions.length + 2;
-    for (let r = lastDataRow + 1; r <= 1000; r++) {
+    const yellowEnd = Math.max(1000, lastDataRow + 250);
+    for (let r = lastDataRow + 1; r <= yellowEnd; r++) {
         const row = ws.getRow(r);
         row.getCell(4).fill = YELLOW_FILL;
         row.commit();

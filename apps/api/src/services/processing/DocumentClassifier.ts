@@ -1,6 +1,6 @@
 export type BankType =
     | 'hsbc' | 'revolut' | 'monzo' | 'wise' | 'starling'
-    | 'natwest' | 'nationwide' | 'santander' | 'barclays' | 'metro'
+    | 'natwest' | 'mettle' | 'nationwide' | 'santander' | 'barclays' | 'metro'
     | 'lloyds' | 'tsb' | 'tide' | 'rbs' | 'virginmoney' | 'pockit'
     | 'generic';
 
@@ -45,6 +45,7 @@ function detectBank(lower: string): BankType {
     if (lower.includes('monzo'))                                  return 'monzo';
     if (lower.includes('wise') || lower.includes('transferwise')) return 'wise';
     if (lower.includes('starling'))                               return 'starling';
+    if (lower.includes('mettle'))                                  return 'mettle';
     if (lower.includes('natwest') || lower.includes('nat west'))  return 'natwest';
     if (lower.includes('rbs') || lower.includes('royal bank'))    return 'rbs';
     if (lower.includes('virgin money') || lower.includes('virginmoney') || lower.includes('virgin_money')) return 'virginmoney';
@@ -62,9 +63,12 @@ function detectBank(lower: string): BankType {
 /** Scan extracted document text for bank name mentions when filename gave no result. */
 export function detectBankFromContent(text: string): BankType {
     const t = text.toLowerCase();
-    // Use word-boundary-style checks to reduce false positives
+    // Check institutional bank names first — before generic brand names that appear as payees
+    if (/\bmettle\b/.test(t) || t.includes('the mettle bank account')) return 'mettle';
+    if (/\btide\b/.test(t))                                          return 'tide';
+    if (/\bsantander\b/.test(t))                                     return 'santander';
+    if (/\blloyds\s+bank\b/.test(t))                                 return 'lloyds';
     if (/\bhsbc\b/.test(t))                                          return 'hsbc';
-    if (/\brevolut\b/.test(t))                                       return 'revolut';
     if (/\bmonzo\b/.test(t))                                         return 'monzo';
     if (/wise\.com\/help/.test(t) || /\bref:\s*[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i.test(t)) return 'wise';
     if (/\bstarling\b/.test(t))                                      return 'starling';
@@ -73,12 +77,11 @@ export function detectBankFromContent(text: string): BankType {
     if (t.includes('internet-banking.ib.apps.virginmoney.com/vm/homepage')) return 'virginmoney';
     if (/\bpockit\b/.test(t) || /help@pockit\.com/.test(t))          return 'pockit';
     if (/\bnationwide\b/.test(t))                                    return 'nationwide';
-    if (/\bsantander\b/.test(t))                                     return 'santander';
     if (/\bbarclays\b/.test(t))                                      return 'barclays';
     if (/\bmetro bank\b/.test(t))                                    return 'metro';
-    if (/\blloyds\b/.test(t))                                        return 'lloyds';
     if (/\btsb\b/.test(t) || /203\s*284\s*1576/.test(t))            return 'tsb';
-    if (/\btide\b/.test(t))                                          return 'tide';
+    if (/\brevolut\b/.test(t))                                       return 'revolut';
+    if (/\blloyds\b/.test(t))                                        return 'lloyds';
     return 'generic';
 }
 

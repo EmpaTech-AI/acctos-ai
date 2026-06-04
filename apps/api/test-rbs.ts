@@ -7,6 +7,7 @@ import { analyzePages } from './src/services/processing/AzureExtractor.js';
 import { classify } from './src/services/processing/DocumentClassifier.js';
 import { parse as parseRbs } from './src/services/processing/parsers/rbs.js';
 import { Cell } from './src/services/processing/parsers/shared.js';
+import { computeVerification, applyCatVerification, logVerificationSummary } from './src/services/processing/Verification.js';
 import { categorize } from './src/services/processing/AssistantCategorizer.js';
 import { buildPdfOutputExcel } from './src/services/processing/ExcelOutputBuilder.js';
 
@@ -38,10 +39,6 @@ if (existsSync(cachePath)) {
     console.log(`[Cache] Saved to ${cachePath}`);
 }
 
-const combinedContent = pageData
-    .filter((p): p is NonNullable<typeof p> => p !== null)
-    .map(p => p.content).join(' ');
-
 // Debug: show raw cells from page 1 (rows 0-8)
 if (pageData[0]) {
     const p1cells = pageData[0].cells.filter(c => c.rowIndex <= 8).sort((a,b) => a.rowIndex - b.rowIndex || a.columnIndex - b.columnIndex);
@@ -52,7 +49,11 @@ if (pageData[0]) {
     console.log('---\n');
 }
 
-// Merge all pages with row offsets (same logic as Orchestrator)
+// Merge all pages with row offsets
+const combinedContent = pageData
+    .filter((p): p is NonNullable<typeof p> => p !== null)
+    .map(p => p.content).join(' ');
+
 const combined: Cell[] = [{ rowIndex: -1, columnIndex: -1, content: combinedContent }];
 let rowOffset = 0;
 for (const p of pageData) {
@@ -65,32 +66,44 @@ for (const p of pageData) {
     if (pageMaxRow >= 0) rowOffset += pageMaxRow + 10000;
 }
 
-const { transactions } = parseRbs(combined);
-console.log(`\nParsed ${transactions.length} transactions`);
+const { transactions, statementTotals, ascending } = parseRbs(combined);
+console.log(`Parsed ${transactions.length} transactions`);
+
+if (statementTotals) {
+    console.log(`Declared by bank — Money In: ${statementTotals.moneyIn.toFixed(2)}  Money Out: ${statementTotals.moneyOut.toFixed(2)}`);
+}
+
+const verification = computeVerification(transactions, statementTotals, ascending);
 
 if (transactions.length > 0) {
     console.log('\nFirst 5:');
     transactions.slice(0, 5).forEach((t, i) =>
-        console.log(`  [${i+1}] ${t.date} | ${t.type.padEnd(6)} | ${t.description.slice(0, 40).padEnd(40)} | out:${(t.moneyOut||'').padStart(10)} in:${(t.moneyIn||'').padStart(10)} bal:${t.balance}`)
+        console.log(`  [${i+1}] ${t.date} | ${t.type.padEnd(8)} | ${t.description.slice(0, 40).padEnd(40)} | out:${(t.moneyOut||'').padStart(10)} in:${(t.moneyIn||'').padStart(10)} bal:${t.balance}`)
     );
     console.log('\nLast 3:');
     transactions.slice(-3).forEach((t, i) =>
-        console.log(`  [${transactions.length - 2 + i}] ${t.date} | ${t.type.padEnd(6)} | ${t.description.slice(0, 40).padEnd(40)} | out:${(t.moneyOut||'').padStart(10)} in:${(t.moneyIn||'').padStart(10)} bal:${t.balance}`)
+        console.log(`  [${transactions.length - 2 + i}] ${t.date} | ${t.type.padEnd(8)} | ${t.description.slice(0, 40).padEnd(40)} | out:${(t.moneyOut||'').padStart(10)} in:${(t.moneyIn||'').padStart(10)} bal:${t.balance}`)
     );
 
-    // Totals
     const totalIn  = transactions.reduce((s, t) => s + (parseFloat(t.moneyIn  || '0') || 0), 0);
     const totalOut = transactions.reduce((s, t) => s + (parseFloat(t.moneyOut || '0') || 0), 0);
     console.log(`\nTotals — Money In: ${totalIn.toFixed(2)}  Money Out: ${totalOut.toFixed(2)}`);
+
+    if (verification) {
+        console.log('\nTotals verification:');
+        logVerificationSummary(verification);
+    }
 }
 
 console.log('\nRunning categorization...');
 const categorized = await categorize(transactions);
+if (verification) applyCatVerification(verification, categorized);
 console.log('\nFirst 5 categorized:');
 categorized.slice(0, 5).forEach((t, i) =>
     console.log(`  [${i+1}] ${t.DATE} | ${(t['Type and Description']||'').slice(0,40).padEnd(40)} | INCOME:${(t.INCOME||'').padStart(10)} OTHER:${(t.OTHER||'').padStart(10)} bal:${t.Balance}`)
 );
-const outputBuffer = await buildPdfOutputExcel(categorized);
+
+const outputBuffer = await buildPdfOutputExcel(categorized, verification);
 const outPath = filePath.replace(/\.pdf(\.\w+)?$/i, '') + '_processed.xlsx';
 writeFileSync(outPath, outputBuffer);
 console.log(`\nOutput saved: ${outPath}`);

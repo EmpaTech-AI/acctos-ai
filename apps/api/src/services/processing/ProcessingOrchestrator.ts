@@ -1,4 +1,4 @@
-import { randomUUID } from 'crypto';
+import { randomUUID, createHash } from 'crypto';
 import { PrismaClient } from '@prisma/client';
 import { PrismaClientKnownRequestError } from '@prisma/client/runtime/library';
 import { jobStore } from './JobStore.js';
@@ -9,7 +9,7 @@ import { categorize } from './AssistantCategorizer.js';
 import { parseExcel } from './ExcelParser.js';
 import { buildPdfOutputExcel, buildExcelOutputExcel } from './ExcelOutputBuilder.js';
 import { Cell, ParsedTransaction, ParseResult } from './parsers/shared.js';
-import { computeVerification, logVerificationSummary } from './Verification.js';
+import { computeVerification, applyCatVerification, logVerificationSummary } from './Verification.js';
 
 interface TrackingContext {
     prisma: PrismaClient;
@@ -32,6 +32,7 @@ import { parse as parseTide } from './parsers/tide.js';
 import { parse as parseRbs } from './parsers/rbs.js';
 import { parse as parseVirginMoney } from './parsers/virginmoney.js';
 import { parse as parsePockit } from './parsers/pockit.js';
+import { parse as parseMettle } from './parsers/mettle.js';
 import { parse as parseGeneric } from './parsers/generic.js';
 import { parse as parseFallback } from './parsers/fallback.js';
 
@@ -47,6 +48,7 @@ function getParser(bankType: BankType): StandardParser {
         case 'rbs':        return parseRbs;
         case 'virginmoney': return parseVirginMoney;
         case 'pockit':     return parsePockit;
+        case 'mettle':     return parseMettle;
         case 'nationwide': return parseNationwide;
         case 'santander':  return parseSantander;
         case 'barclays':   return parseBarclays;
@@ -116,10 +118,10 @@ function parseTransactionDate(dateStr: string): number {
 }
 
 /**
- * Sort transactions from multiple files by date descending (newest first),
- * keeping HSBC-style balance-blocks (intermediate rows with no balance) intact.
+ * Sort transactions from multiple files, keeping HSBC-style balance-blocks intact.
+ * ascending=false (default) → newest first; ascending=true → oldest first (e.g. Mettle).
  */
-function sortTransactions(transactions: ParsedTransaction[]): ParsedTransaction[] {
+function sortTransactions(transactions: ParsedTransaction[], ascending = false): ParsedTransaction[] {
     const units: ParsedTransaction[][] = [];
     let i = 0;
     while (i < transactions.length) {
@@ -132,10 +134,10 @@ function sortTransactions(transactions: ParsedTransaction[]): ParsedTransaction[
             units.push([transactions[i++]]);
         }
     }
-    // Stable descending sort (newest first — matches original statement format)
-    units.sort((a, b) =>
-        parseTransactionDate(b[b.length - 1].date) - parseTransactionDate(a[a.length - 1].date)
-    );
+    units.sort((a, b) => {
+        const diff = parseTransactionDate(b[b.length - 1].date) - parseTransactionDate(a[a.length - 1].date);
+        return ascending ? -diff : diff;
+    });
     return units.flat();
 }
 
@@ -177,13 +179,40 @@ export interface FileInput {
 
 /**
  * Start a batch job: parse all files, sort by date, verify balances, categorize, produce one Excel.
+ * Deduplicates files by SHA-256 content hash before processing.
  */
 export function startBatchProcessingJob(files: FileInput[], tracking?: TrackingContext): string {
     const jobId = randomUUID();
-    const batchName = files.length === 1 ? files[0].filename : `${files.length} files`;
+
+    // Deduplicate by content hash — identical bytes across differently-named files get dropped
+    const seen = new Set<string>();
+    const uniqueFiles: FileInput[] = [];
+    const duplicatesRemoved: string[] = [];
+    for (const f of files) {
+        const hash = createHash('sha256').update(f.buffer).digest('hex');
+        if (seen.has(hash)) {
+            duplicatesRemoved.push(f.filename);
+            console.warn(`[Orchestrator] Duplicate removed: "${f.filename}" (identical content already queued)`);
+        } else {
+            seen.add(hash);
+            uniqueFiles.push(f);
+        }
+    }
+
+    const batchName = uniqueFiles.length === 1 ? uniqueFiles[0].filename : `${uniqueFiles.length} files`;
     jobStore.create(jobId, batchName);
 
-    runBatchJob(jobId, files, tracking).catch(err => {
+    if (duplicatesRemoved.length > 0) {
+        jobStore.update(jobId, { duplicatesRemoved });
+        console.log(`[Orchestrator] ${duplicatesRemoved.length} duplicate(s) removed. Processing ${uniqueFiles.length} unique file(s).`);
+    }
+
+    if (uniqueFiles.length === 0) {
+        jobStore.update(jobId, { status: 'failed', error: 'All uploaded files are duplicates — no unique files to process.' });
+        return jobId;
+    }
+
+    runBatchJob(jobId, uniqueFiles, tracking).catch(err => {
         console.error(`[Orchestrator] Batch job ${jobId} unhandled crash:`, err);
         jobStore.update(jobId, { status: 'failed', error: String(err?.message ?? err) });
     });
@@ -198,6 +227,7 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
         const allTransactions: ParsedTransaction[] = [];
         let confirmedBankType: BankType | null = null;
         let combinedStatementTotals: { moneyIn: number; moneyOut: number } | undefined;
+        let ascending = false;
 
         for (let fi = 0; fi < files.length; fi++) {
             const { filename, mimeType, buffer } = files[fi];
@@ -281,7 +311,8 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
             }
 
             jobStore.update(jobId, { currentStage: 'parse' });
-            const { transactions: fileTransactions, statementTotals } = await parseAllCells(pageCells, bankType);
+            const { transactions: fileTransactions, statementTotals, ascending: fileAscending } = await parseAllCells(pageCells, bankType);
+            if (fileAscending) ascending = true;
             console.log(`[Orchestrator] File ${fi + 1}/${files.length} "${filename}": ${fileTransactions.length} transactions`);
             if (statementTotals) {
                 if (!combinedStatementTotals) combinedStatementTotals = { ...statementTotals };
@@ -292,15 +323,17 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
 
         if (allTransactions.length === 0) throw new Error('No transactions found in any of the uploaded files');
 
-        // Sort all transactions by date descending and verify balance continuity
-        const sorted = files.length > 1 ? sortTransactions(allTransactions) : allTransactions;
+        // Sort by date, preserving the bank's natural order (ascending for Mettle, descending for all others)
+        const sorted = files.length > 1 ? sortTransactions(allTransactions, ascending) : allTransactions;
         if (files.length > 1) verifyBalances(sorted);
 
-        const verification = computeVerification(sorted, combinedStatementTotals);
+        const verification = computeVerification(sorted, combinedStatementTotals, ascending);
         if (verification) logVerificationSummary(verification);
 
         jobStore.update(jobId, { currentStage: 'categorize', currentFile: undefined });
         const categorized = await categorize(sorted);
+        if (verification) applyCatVerification(verification, categorized);
+        if (verification) logVerificationSummary(verification);
         jobStore.update(jobId, { transactionCount: categorized.length, currentStage: 'output' });
 
         const outputBuffer = await buildPdfOutputExcel(categorized, verification);
@@ -451,16 +484,18 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
                 }
             }
 
-            const { transactions, statementTotals } = await parseAllCells(pageCells, bankType);
+            const { transactions, statementTotals, ascending } = await parseAllCells(pageCells, bankType);
             if (transactions.length === 0) throw new Error('No transactions could be extracted from the document');
 
             console.log(`[Orchestrator] Parsed ${transactions.length} transactions:`, JSON.stringify(transactions, null, 2));
-            const verification = computeVerification(transactions, statementTotals);
+            const verification = computeVerification(transactions, statementTotals, ascending);
             if (verification) logVerificationSummary(verification);
 
             // ── Stage: categorize (OpenAI Assistant, 50 transactions per batch) ──
             jobStore.update(jobId, { currentStage: 'categorize' });
             const categorized = await categorize(transactions);
+            if (verification) applyCatVerification(verification, categorized);
+            if (verification) logVerificationSummary(verification);
             jobStore.update(jobId, { transactionCount: categorized.length, currentStage: 'output' });
 
             // ── Stage: output (build Excel) ───────────────────────────────────────

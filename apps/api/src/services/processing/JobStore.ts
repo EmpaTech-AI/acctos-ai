@@ -13,6 +13,7 @@ export interface ProcessingJob {
     pageCount?: number;
     currentFile?: number;
     totalFiles?: number;
+    duplicatesRemoved?: string[];
     error?: string;
     outputBuffer?: Buffer;
     createdAt: Date;

@@ -88,6 +88,8 @@ function applyFallback(items: CategorizedTransaction[], rawTransactions: object[
     if (items.length === rawTransactions.length) {
         for (let i = 0; i < items.length; i++) {
             const src = rawTransactions[i] as any;
+            const typeAndDesc = `${src['Type'] || ''} ${src['Description'] || ''}`.trim();
+            if (typeAndDesc) items[i]['Type and Description'] = typeAndDesc;
             applyFallbackToRow(items[i], src);
             deduplicateExpenseColumns(items[i]);
         }
@@ -105,6 +107,8 @@ function applyFallback(items: CategorizedTransaction[], rawTransactions: object[
     return rawTransactions.map((src_: any) => {
         const key = `${src_['Date']}|${src_['Balance'] ?? ''}`;
         const row = catByKey.get(key) ?? buildFallbackRow(src_);
+        const typeAndDesc = `${src_['Type'] || ''} ${src_['Description'] || ''}`.trim();
+        if (typeAndDesc) row['Type and Description'] = typeAndDesc;
         applyFallbackToRow(row, src_);
         deduplicateExpenseColumns(row);
         return row;
@@ -211,5 +215,88 @@ export async function categorize(transactions: ParsedTransaction[]): Promise<Cat
         })
     );
 
-    return batchResults.flat();
+    const results = batchResults.flat();
+
+    // ── Post-categorization direction reconciliation ──────────────────────────
+    // Compare AI results against parser-confirmed direction and fix mismatches.
+    const autoFixedIn: number[] = [];
+    const retryOutIndices: number[] = [];
+
+    for (let i = 0; i < results.length; i++) {
+        const t   = transactions[i];
+        const row = results[i];
+        const moneyIn  = parseMoney(t.moneyIn  || '');
+        const moneyOut = parseMoney(t.moneyOut || '');
+
+        if (moneyIn !== null && moneyIn > 0 && parseMoney(row.INCOME) === null) {
+            // Parser says IN but AI put it in an expense column — auto-fix to INCOME
+            const hasExpenseAmt = EXPENSE_CATS.filter(k => k !== 'INCOME')
+                .some(k => parseMoney((row as any)[k]) !== null);
+            if (hasExpenseAmt) {
+                for (const k of EXPENSE_CATS) if (k !== 'INCOME') (row as any)[k] = '';
+                row.INCOME = fmt(moneyIn);
+                autoFixedIn.push(i);
+            }
+        }
+
+        if (moneyOut !== null && moneyOut > 0 && parseMoney(row.INCOME) !== null) {
+            // Parser says OUT but AI classified as INCOME — retry with explicit instruction
+            retryOutIndices.push(i);
+        }
+    }
+
+    if (autoFixedIn.length > 0) {
+        console.log(`[Categorizer] Auto-fixed ${autoFixedIn.length} IN transaction(s) misclassified as expense.`);
+    }
+
+    if (retryOutIndices.length > 0) {
+        console.log(`[Categorizer] Retrying ${retryOutIndices.length} OUT transaction(s) misclassified as INCOME...`);
+        const retryInput = retryOutIndices.map(i => ({
+            ...formatTransactionsForAssistant([transactions[i]])[0],
+            '_note': 'OUTGOING PAYMENT — Money out. This is an expense. Do NOT put in INCOME. Choose the correct expense category.',
+        }));
+
+        const retried = await categorizeBatch(retryInput, apiKey);
+
+        for (let j = 0; j < retryOutIndices.length; j++) {
+            const i   = retryOutIndices[j];
+            const row = retried[j];
+            if (!row) continue;
+
+            const moneyOut = parseMoney(transactions[i].moneyOut || '');
+            if (parseMoney(row.INCOME) !== null) {
+                // Retry still misclassified — force to OTHER as last resort
+                row.INCOME = '';
+                if (!row.OTHER && moneyOut !== null) row.OTHER = '-' + fmt(moneyOut);
+                console.warn(`[Categorizer] "${transactions[i].description}" still misclassified after retry — forced to OTHER.`);
+            }
+            results[i] = row;
+        }
+    }
+
+    // ── Enforce parser amounts ────────────────────────────────────────────────
+    // AI chooses the category; parser owns the amount. Overwrite every row's
+    // amount with the exact value from the parser so category totals always match.
+    const EXP_ONLY = ['SALARY','OTHER','INSURANCE','LOAN','CASH','TRAVEL','PHONE','CHARGES','Bank_Transfer','HMRC','RENT','BILLS'] as const;
+
+    for (let i = 0; i < results.length; i++) {
+        const t   = transactions[i];
+        const row = results[i];
+        const moneyIn  = parseMoney(t.moneyIn  || '');
+        const moneyOut = parseMoney(t.moneyOut || '');
+
+        if (moneyIn !== null && moneyIn > 0) {
+            row.INCOME = fmt(moneyIn);
+            for (const k of EXP_ONLY) (row as any)[k] = '';
+        } else if (moneyOut !== null && moneyOut > 0) {
+            row.INCOME = '';
+            // Find which expense column AI chose (prefer most-specific over OTHER)
+            const filled = EXP_ONLY.filter(k => parseMoney((row as any)[k]) !== null);
+            const target = filled.find(k => k !== 'OTHER') ?? filled[0] ?? 'OTHER';
+            for (const k of EXP_ONLY) (row as any)[k] = '';
+            (row as any)[target] = '-' + fmt(moneyOut);
+        }
+    }
+
+    return results;
 }
