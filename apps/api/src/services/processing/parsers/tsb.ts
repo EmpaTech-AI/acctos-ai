@@ -135,9 +135,13 @@ export function parse(cells: Cell[]): ParseResult {
         const type    = format === 'new' ? mapType(rawType) : rawType;
 
         if (format === 'old' && !date && transactions.length > 0 && !paidIn && !paidOut) {
-            const last = transactions[transactions.length - 1];
-            if (type)    last.type        = normStr(`${last.type} ${type}`);
-            if (details) last.description = normStr(`${last.description} ${details}`);
+            // Only treat as description continuation when type is empty — page header rows
+            // (Date | Payment type | Details | …) and summary rows have non-empty type and
+            // must NOT be appended to the previous transaction.
+            if (!type && details) {
+                transactions[transactions.length - 1].description =
+                    normStr(`${transactions[transactions.length - 1].description} ${details}`);
+            }
             continue;
         }
 
