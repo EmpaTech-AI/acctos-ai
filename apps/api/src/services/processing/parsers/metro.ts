@@ -64,10 +64,21 @@ export function parse(cells: Cell[]): ParseResult {
     // ── Pass 1: physical rows with date fill-down ────────────────────────────
     const physical: PhysRow[] = [];
     let lastDate = '';
+    // Azure DI sometimes merges "Money in (£)" and "Balance (£)" into a single col[3] header cell.
+    // When this happens the data rows have no col[4]; col[3] holds the running balance, not money-in.
+    let mergedInBalCol = false;
 
     for (let i = startAt; i < table.length; i++) {
         const cols = table[i];
         if (cols.every(c => !c)) continue;           // blank row
+
+        // Re-detect column layout when a repeat page header is encountered.
+        const joined = cols.join(' ').toLowerCase();
+        if (/\bdate\b/.test(joined) && /transaction/.test(joined) && /money\s*out/.test(joined)) {
+            const col3Lower = (cols[3] || '').toLowerCase();
+            mergedInBalCol = /money\s*in/.test(col3Lower) && /balance/.test(col3Lower);
+            continue; // skip header rows — don't add them to physical[]
+        }
 
         const parsedDate = parseDateToDDMMYYYY(cols[0]);
         if (parsedDate) lastDate = parsedDate;
@@ -80,12 +91,16 @@ export function parse(cells: Cell[]): ParseResult {
         }
         const desc = [normStr(cols[1]), ...extras].filter(Boolean).join(' ').trim();
 
+        // When the "Money in (£) Balance (£)" header was merged, col[3] holds the balance.
+        const moneyIn  = mergedInBalCol ? null              : parseMoney(cols[3]);
+        const balance  = mergedInBalCol ? parseMoney(cols[3]) : parseMoney(cols[4]);
+
         physical.push({
             date:     parsedDate || lastDate,
             desc,
             moneyOut: parseMoney(cols[2]),
-            moneyIn:  parseMoney(cols[3]),
-            balance:  parseMoney(cols[4]),
+            moneyIn,
+            balance,
         });
     }
 
@@ -180,5 +195,5 @@ export function parse(cells: Cell[]): ParseResult {
         });
     }
 
-    return { transactions };
+    return { transactions, ascending: true };
 }

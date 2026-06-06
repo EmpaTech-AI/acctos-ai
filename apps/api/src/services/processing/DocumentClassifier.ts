@@ -68,6 +68,9 @@ export function detectBankFromContent(text: string): BankType {
     if (/\bzempler\b/.test(t))                                         return 'zempler';
     if (/\bmettle\b/.test(t) || t.includes('the mettle bank account')) return 'mettle';
     if (/\btide\b/.test(t))                                          return 'tide';
+    // Metro Bank — must appear before santander/monzo/rbs which can appear as payees in Metro statements.
+    // OCR often splits "Metro" as "M ETRO"; detect by BIC (MYMBGB2L) or domain as unique fallbacks.
+    if (/m\s*etro\s+bank/i.test(t) || t.includes('mymbgb') || t.includes('metrobankonline')) return 'metro';
     if (/\bsantander\b/.test(t))                                     return 'santander';
     if (/\blloyds\s+bank\b/.test(t))                                 return 'lloyds';
     if (/\bhsbc\b/.test(t))                                          return 'hsbc';
@@ -80,7 +83,6 @@ export function detectBankFromContent(text: string): BankType {
     if (/\bpockit\b/.test(t) || /help@pockit\.com/.test(t))          return 'pockit';
     if (/\bnationwide\b/.test(t))                                    return 'nationwide';
     if (/\bbarclays\b/.test(t))                                      return 'barclays';
-    if (/\bmetro bank\b/.test(t))                                    return 'metro';
     if (/\btsb\b/.test(t) || /203\s*284\s*1576/.test(t))            return 'tsb';
     if (/\brevolut\b/.test(t))                                       return 'revolut';
     if (/\blloyds\b/.test(t))                                        return 'lloyds';
