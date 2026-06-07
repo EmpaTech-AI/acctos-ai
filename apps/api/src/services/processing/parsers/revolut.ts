@@ -223,7 +223,7 @@ export function parse(cells: Cell[]): ParseResult {
 
         // ── Legacy 5-col: [date, type, desc, amount, balance] ────────────────
         if (rowIsFiveCols) {
-            let amountNum = parseMoney(c[3]);
+            let amountNum = parseMoneyFirst(c[3]);
             let balNum    = parseMoney(c[4]);
 
             // Handle smashed "amount balance" in col 3
