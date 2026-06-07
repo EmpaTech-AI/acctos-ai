@@ -32,8 +32,8 @@ import { parse as parseZempler }    from './src/services/processing/parsers/zemp
 import { parse as parseGeneric }    from './src/services/processing/parsers/generic.js';
 
 const filePaths = process.argv.slice(2);
-if (filePaths.length < 2) {
-    console.error('Usage: npx tsx test-batch.ts <file1.pdf> <file2.pdf> [...]');
+if (filePaths.length < 1) {
+    console.error('Usage: npx tsx test-batch.ts <file1.pdf> [file2.pdf] [...]');
     process.exit(1);
 }
 
