@@ -62,6 +62,11 @@ function numberToAmountString(n: number | null | undefined): string {
     return Math.abs(n).toFixed(2);
 }
 
+function balanceToString(n: number | null | undefined): string {
+    if (n === null || n === undefined || !Number.isFinite(n)) return '';
+    return n.toFixed(2);
+}
+
 function extractDateParts(val: string): DateParts | null {
     if (!val) return null;
     const s = normalizeSpace(val);
@@ -338,7 +343,7 @@ export function parse(cells: Cell[]): ParseResult {
             amountVal = extractEmbeddedAmount(descCell) ?? extractTrailingAmount(descCell);
         }
 
-        const balance = balanceVal !== null ? numberToAmountString(balanceVal) : '';
+        const balance = balanceVal !== null ? balanceToString(balanceVal) : '';
 
         if (dateParts) {
             flush();
@@ -394,7 +399,7 @@ export function parse(cells: Cell[]): ParseResult {
 
             const extraBalance = COL.balance >= 0 ? balanceToNumber(r.cells[COL.balance]) : null;
             if (!current.balance && extraBalance !== null) {
-                current.balance = numberToAmountString(extraBalance);
+                current.balance = balanceToString(extraBalance);
             }
         }
     }
