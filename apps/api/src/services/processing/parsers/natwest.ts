@@ -291,5 +291,5 @@ export function parse(cells: Cell[]): ParseResult {
         }
     }
 
-    return { transactions, statementTotals };
+    return { transactions, statementTotals, ascending: true };
 }
