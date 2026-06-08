@@ -108,10 +108,10 @@ export function parse(cells: Cell[]): ParseResult {
     // on row 1 (or later). Scan up to the first 8 rows.
     let header: Map<number, string> | undefined;
     let headerRowIndex = -1;
-    for (let r = 0; r <= Math.min(8, rows); r++) {
+    for (let r = 0; r <= Math.min(15, rows); r++) {
         const row = grid.get(r);
         if (row && isHeaderRow(row)) { header = row; headerRowIndex = r; break; }
-    }
+    } // scan up to row 15 to handle NatWest summary block pushing header to row 10+
 
     let is6col = false;
     let dateCol = 0, d1Col = 1, d2Col = -1, typeCol = -1;
@@ -141,6 +141,18 @@ export function parse(cells: Cell[]): ParseResult {
 
         // Blank D2 column: gap between d1Col and outCol in the 6-col layout
         if (is6col && d2Col === -1 && outCol > d1Col + 1) d2Col = d1Col + 1;
+
+        // Merged "Paid In(£) Withdrawn(£)" column — Azure DI collapsed both into one cell.
+        // The else-if chain above only sets outCol (withdrawn matches first), leaving inCol=-1.
+        // Detect by checking whether the outCol header text also contains "paid in" / "credit".
+        // Treat as a single amount column and use balance delta to determine direction.
+        if (!is6col && outCol >= 0 && inCol < 0) {
+            const outColText = normStr(header.get(outCol) ?? '').toLowerCase();
+            if (outColText.includes('paid in') || outColText.includes('credit')) {
+                amountCol = outCol;
+                outCol    = -1;
+            }
+        }
 
         // 4-col single-amount fallback when no amount/in/out columns found
         if (!is6col && inCol === -1 && outCol === -1 && amountCol === -1) {
@@ -236,20 +248,29 @@ export function parse(cells: Cell[]): ParseResult {
             currentDate = date;
             current = { date: currentDate, type: txType, description: txDesc, moneyOut, moneyIn, balance };
         } else if (current) {
-            // Continuation row — always merge into current transaction.
-            // NatWest 6-col spreads amounts onto the last continuation row, so we
-            // must not flush here even when an amount is present.
-            if (typeCol >= 0) {
-                // 4/5-col export format: d1 is the description column
-                if (d1) current.description = normStr(`${current.description} ${d1}`);
+            const hasAmt = !!(moneyIn || moneyOut);
+            // In single-amount-column mode (merged Paid-In/Withdrawn header), NatWest omits
+            // the date for same-day transactions after the first. Each such row owns its
+            // own balance, so treat it as a new transaction.
+            // Rows with an amount but NO balance are page footers/interest tables — skip them.
+            if (amountCol >= 0 && hasAmt && balance) {
+                flush();
+                current = { date: currentDate, type: txType, description: txDesc, moneyOut, moneyIn, balance };
+            } else if (amountCol >= 0 && hasAmt && !balance) {
+                // No balance → not a real transaction row (e.g. interest-rate table on page 3)
             } else {
-                // 6-col statement format: d1 is type, d2 is description
-                if (d1 && !current.type) current.type        = d1;
-                if (d2)                  current.description = normStr(`${current.description} ${d2}`);
+                // Standard continuation — merge description/amounts into current.
+                // NatWest 6-col spreads amounts onto the last continuation row.
+                if (typeCol >= 0) {
+                    if (d1) current.description = normStr(`${current.description} ${d1}`);
+                } else {
+                    if (d1 && !current.type) current.type        = d1;
+                    if (d2)                  current.description = normStr(`${current.description} ${d2}`);
+                }
+                if (balance && !current.balance)   current.balance  = balance;
+                if (moneyOut && !current.moneyOut) current.moneyOut = moneyOut;
+                if (moneyIn  && !current.moneyIn)  current.moneyIn  = moneyIn;
             }
-            if (balance && !current.balance)   current.balance  = balance;
-            if (moneyOut && !current.moneyOut) current.moneyOut = moneyOut;
-            if (moneyIn  && !current.moneyIn)  current.moneyIn  = moneyIn;
         } else if (hasAmount && currentDate) {
             // Orphaned amount with no preceding date row (page-break edge case)
             current = { date: currentDate, type: txType, description: txDesc, moneyOut, moneyIn, balance };
@@ -257,5 +278,18 @@ export function parse(cells: Cell[]): ParseResult {
     }
 
     flush();
-    return { transactions };
+
+    // Extract declared statement totals from the summary block (e.g. "Paid In £4,948.03 Withdrawn £3,755.76")
+    let statementTotals: { moneyIn: number; moneyOut: number } | undefined;
+    const paidInMatch  = ocrText.match(/paid\s+in\s+[£$]?([\d,]+(?:\.\d{1,2})?)/i);
+    const withdrawnMatch = ocrText.match(/withdrawn\s+[£$]?([\d,]+(?:\.\d{1,2})?)/i);
+    if (paidInMatch && withdrawnMatch) {
+        const moneyIn  = parseMoney(paidInMatch[1]);
+        const moneyOut = parseMoney(withdrawnMatch[1]);
+        if (moneyIn !== null && moneyOut !== null) {
+            statementTotals = { moneyIn, moneyOut };
+        }
+    }
+
+    return { transactions, statementTotals };
 }
