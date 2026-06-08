@@ -1,6 +1,15 @@
+import { readFileSync } from 'fs';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
 import { ParsedTransaction, formatTransactionsForAssistant } from './parsers/shared.js';
 
-const ASSISTANT_ID = 'asst_7WxK9GBeMrs86TmeBmtqfsC7';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname  = dirname(__filename);
+
+const SYSTEM_PROMPT = readFileSync(
+    join(__dirname, '../../prompts/transaction-categorizer-system.txt'),
+    'utf8'
+);
 
 export interface CategorizedTransaction {
     DATE: string;
@@ -49,7 +58,6 @@ function deduplicateExpenseColumns(row: CategorizedTransaction): void {
     }
     for (const [, cols] of byAbs) {
         if (cols.length <= 1) continue;
-        // Keep the most specific (first non-OTHER), clear the rest
         const keepIdx = cols.findIndex(c => c !== 'OTHER');
         const keepCol = keepIdx >= 0 ? cols[keepIdx] : cols[0];
         for (const col of cols) {
@@ -84,7 +92,6 @@ function buildFallbackRow(src: any): CategorizedTransaction {
  *  2. AI puts the same amount in multiple expense columns — deduplicate
  */
 function applyFallback(items: CategorizedTransaction[], rawTransactions: object[]): CategorizedTransaction[] {
-    // Fast path: counts match, align positionally
     if (items.length === rawTransactions.length) {
         for (let i = 0; i < items.length; i++) {
             const src = rawTransactions[i] as any;
@@ -96,7 +103,6 @@ function applyFallback(items: CategorizedTransaction[], rawTransactions: object[
         return items;
     }
 
-    // Counts differ: realign by (date|balance|amount) key so skipped transactions get fallback rows
     console.warn(`[Categorizer] Item count mismatch: got ${items.length}, expected ${rawTransactions.length}. Re-aligning by balance key.`);
     const catByKey = new Map<string, CategorizedTransaction>();
     for (const item of items) {
@@ -115,87 +121,51 @@ function applyFallback(items: CategorizedTransaction[], rawTransactions: object[
     });
 }
 
-async function pollRun(threadId: string, runId: string, apiKey: string, timeoutMs = 420000): Promise<void> {
-    const start = Date.now();
-    while (Date.now() - start < timeoutMs) {
-        await new Promise(r => setTimeout(r, 1500));
-        const res = await fetch(`https://api.openai.com/v1/threads/${threadId}/runs/${runId}`, {
-            headers: { Authorization: `Bearer ${apiKey}`, 'OpenAI-Beta': 'assistants=v2' },
-        });
-        const run = await res.json() as any;
-        if (run.status === 'completed') return;
-        if (['failed','cancelled','expired'].includes(run.status)) {
-            throw new Error(`Assistant run ${run.status}: ${run.last_error?.message || 'unknown'}`);
-        }
-    }
-    throw new Error(`Assistant run timed out after ${timeoutMs}ms`);
-}
-
 const BATCH_SIZE = 50;
+const MODEL      = 'gpt-4o-mini';
 
 async function categorizeBatch(batch: object[], apiKey: string): Promise<CategorizedTransaction[]> {
-    // Create thread
-    const threadRes = await fetch('https://api.openai.com/v1/threads', {
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
-        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json', 'OpenAI-Beta': 'assistants=v2' },
-        body: JSON.stringify({}),
+        headers: {
+            Authorization: `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            model: MODEL,
+            temperature: 0,
+            messages: [
+                { role: 'system', content: SYSTEM_PROMPT },
+                { role: 'user',   content: JSON.stringify(batch) },
+            ],
+        }),
     });
-    const thread = await threadRes.json() as any;
-    if (!thread.id) throw new Error('Failed to create thread: ' + JSON.stringify(thread));
 
-    try {
-        // Add message
-        await fetch(`https://api.openai.com/v1/threads/${thread.id}/messages`, {
-            method: 'POST',
-            headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json', 'OpenAI-Beta': 'assistants=v2' },
-            body: JSON.stringify({ role: 'user', content: JSON.stringify(batch) }),
-        });
-
-        // Run
-        const runRes = await fetch(`https://api.openai.com/v1/threads/${thread.id}/runs`, {
-            method: 'POST',
-            headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json', 'OpenAI-Beta': 'assistants=v2' },
-            body: JSON.stringify({ assistant_id: ASSISTANT_ID }),
-        });
-        const run = await runRes.json() as any;
-        if (!run.id) throw new Error('Failed to create run: ' + JSON.stringify(run));
-
-        await pollRun(thread.id, run.id, apiKey);
-
-        // Get messages
-        const msgsRes = await fetch(`https://api.openai.com/v1/threads/${thread.id}/messages`, {
-            headers: { Authorization: `Bearer ${apiKey}`, 'OpenAI-Beta': 'assistants=v2' },
-        });
-        const msgs = await msgsRes.json() as any;
-        const assistantMsg = msgs.data?.find((m: any) => m.role === 'assistant');
-        if (!assistantMsg) throw new Error('No assistant response received');
-
-        const content = assistantMsg.content[0]?.text?.value || '';
-        const cleaned = content.replace(/```json\s*/gi, '').replace(/```\s*/gi, '').trim();
-
-        let parsed: any;
-        try {
-            parsed = JSON.parse(cleaned);
-        } catch {
-            throw new Error('Assistant returned invalid JSON: ' + cleaned.slice(0, 300));
-        }
-
-        const items: CategorizedTransaction[] = Array.isArray(parsed) ? parsed : (parsed.items || []);
-        return applyFallback(items, batch);
-
-    } finally {
-        fetch(`https://api.openai.com/v1/threads/${thread.id}`, {
-            method: 'DELETE',
-            headers: { Authorization: `Bearer ${apiKey}`, 'OpenAI-Beta': 'assistants=v2' },
-        }).catch(() => {});
+    if (!res.ok) {
+        const err = await res.text();
+        throw new Error(`OpenAI API error ${res.status}: ${err}`);
     }
+
+    const data    = await res.json() as any;
+    const content = data.choices?.[0]?.message?.content || '';
+    const cleaned = content.replace(/```json\s*/gi, '').replace(/```\s*/gi, '').trim();
+
+    let parsed: any;
+    try {
+        parsed = JSON.parse(cleaned);
+    } catch {
+        throw new Error('OpenAI returned invalid JSON: ' + cleaned.slice(0, 300));
+    }
+
+    const items: CategorizedTransaction[] = Array.isArray(parsed) ? parsed : (parsed.items || []);
+    return applyFallback(items, batch);
 }
 
 export async function categorize(transactions: ParsedTransaction[]): Promise<CategorizedTransaction[]> {
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) throw new Error('OPENAI_API_KEY not set');
 
-    const inputArray = formatTransactionsForAssistant(transactions);
+    const inputArray   = formatTransactionsForAssistant(transactions);
     const totalBatches = Math.ceil(inputArray.length / BATCH_SIZE);
 
     const batches: object[][] = [];
@@ -290,7 +260,6 @@ export async function categorize(transactions: ParsedTransaction[]): Promise<Cat
             for (const k of EXP_ONLY) (row as any)[k] = '';
         } else if (moneyOut !== null && moneyOut > 0) {
             row.INCOME = '';
-            // Find which expense column AI chose (prefer most-specific over OTHER)
             const filled = EXP_ONLY.filter(k => parseMoney((row as any)[k]) !== null);
             const target = filled.find(k => k !== 'OTHER') ?? filled[0] ?? 'OTHER';
             for (const k of EXP_ONLY) (row as any)[k] = '';
