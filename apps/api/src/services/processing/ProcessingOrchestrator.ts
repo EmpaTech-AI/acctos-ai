@@ -72,7 +72,7 @@ async function parseAllCells(pageCells: Array<Cell[] | null>, bankType: BankType
             pendingRow = result.pendingRow;
         }
         if (pendingRow) allTransactions.push(pendingRow);
-        return { transactions: allTransactions };
+        return { transactions: allTransactions, ascending: true };
     } else {
         // Merge all pages into one flat cell array so that state like currentDate
         // carries across page boundaries. Each page's row indices are offset to
