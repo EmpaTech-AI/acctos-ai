@@ -1,7 +1,7 @@
 export type BankType =
     | 'hsbc' | 'revolut' | 'monzo' | 'wise' | 'starling'
     | 'natwest' | 'mettle' | 'nationwide' | 'santander' | 'barclays' | 'metro'
-    | 'lloyds' | 'tsb' | 'tide' | 'rbs' | 'virginmoney' | 'pockit'
+    | 'lloyds' | 'tsb' | 'tide' | 'rbs' | 'virginmoney' | 'pockit' | 'countingup'
     | 'generic';
 
 export type DocType = 'bank_statement' | 'vat';
@@ -40,6 +40,7 @@ function detectFormat(lower: string, mime: string): FileFormat {
 }
 
 function detectBank(lower: string): BankType {
+    if (lower.includes('countingup') || lower.includes('counting-up')) return 'countingup';
     if (lower.includes('hsbc'))                                   return 'hsbc';
     if (lower.includes('revolut'))                                return 'revolut';
     if (lower.includes('monzo'))                                  return 'monzo';
@@ -64,6 +65,7 @@ function detectBank(lower: string): BankType {
 export function detectBankFromContent(text: string): BankType {
     const t = text.toLowerCase();
     // Check institutional bank names first — before generic brand names that appear as payees
+    if (/\bcounting\s*up\b/.test(t) || t.includes('countingup'))         return 'countingup';
     if (/\bmettle\b/.test(t) || t.includes('the mettle bank account')) return 'mettle';
     if (/\btide\b/.test(t))                                          return 'tide';
     if (/\bsantander\b/.test(t))                                     return 'santander';

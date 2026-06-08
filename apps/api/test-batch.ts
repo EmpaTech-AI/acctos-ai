@@ -28,6 +28,7 @@ import { parse as parseRbs }        from './src/services/processing/parsers/rbs.
 import { parse as parseVirginMoney } from './src/services/processing/parsers/virginmoney.js';
 import { parse as parsePockit }     from './src/services/processing/parsers/pockit.js';
 import { parse as parseMettle }     from './src/services/processing/parsers/mettle.js';
+import { parse as parseCountingup } from './src/services/processing/parsers/countingup.js';
 import { parse as parseGeneric }    from './src/services/processing/parsers/generic.js';
 
 const filePaths = process.argv.slice(2);
@@ -54,6 +55,7 @@ function getParser(bankType: string) {
         case 'lloyds':      return parseLloyds;
         case 'tsb':         return parseTsb;
         case 'tide':        return parseTide;
+        case 'countingup':  return parseCountingup;
         default:            return parseGeneric;
     }
 }
