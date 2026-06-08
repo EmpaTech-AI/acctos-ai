@@ -107,7 +107,7 @@ export function parse(cells: Cell[]): ParseResult {
             const outAmt = parseMoney(c[2]);
             const inAmt  = parseMoney(c[3]);
             const balNum = parseMoney(c[4]);
-            const bal    = balNum !== null ? formatMoney(balNum) : '';
+            const bal    = balNum !== null ? balNum.toFixed(2) : '';
 
             let moneyIn = '', moneyOut = '';
 
@@ -193,7 +193,7 @@ export function parse(cells: Cell[]): ParseResult {
         if (rowIsSixCols) {
             const outAmt = parseMoneyFirst(c[3]);
             const inAmt  = parseMoneyFirst(c[4]);
-            const bal    = formatMoney(c5bal!);
+            const bal    = c5bal !== null ? c5bal.toFixed(2) : '';
 
             const d = desc.toLowerCase();
             const t = type.toUpperCase();
@@ -235,7 +235,7 @@ export function parse(cells: Cell[]): ParseResult {
             if (amountNum === null || amountNum === 0 || balNum === null) continue;
             const absAmt = Math.abs(amountNum);
 
-            const bal = formatMoney(balNum);
+            const bal = balNum !== null ? balNum.toFixed(2) : '';
             const amt = formatMoney(absAmt);
             const d   = desc.toLowerCase();
             const t   = type.toUpperCase();

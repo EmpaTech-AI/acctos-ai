@@ -9,6 +9,15 @@ function parseMoney(s: string): string {
     return Math.abs(n).toFixed(2);
 }
 
+function parseSignedBalance(s: string): string {
+    s = normStr(s);
+    if (!s) return '';
+    s = s.replace(/[£€,\s()]/g, '');
+    const n = Number(s);
+    if (!isFinite(n)) return '';
+    return n.toFixed(2);
+}
+
 function parseDate(s: string): string {
     s = normStr(s);
     // Tide format: 2 Jul 2025 / 30 Apr 2026 (4-digit year, exact)
@@ -95,7 +104,7 @@ export function parse(cells: Cell[]): ParseResult {
         const details = c.get(COL_DETAILS) ?? '';
         const paidIn  = parseMoney(c.get(COL_IN)  ?? '');
         const paidOut = parseMoney(c.get(COL_OUT) ?? '');
-        const balance = parseMoney(c.get(COL_BAL) ?? '');
+        const balance = parseSignedBalance(c.get(COL_BAL) ?? '');
         const date    = parseDate(dateRaw);
 
         // Skip header row

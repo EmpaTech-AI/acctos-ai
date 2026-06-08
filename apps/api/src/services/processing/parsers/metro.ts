@@ -176,7 +176,7 @@ export function parse(cells: Cell[]): ParseResult {
             description: t.desc || 'Unknown',
             moneyIn,
             moneyOut,
-            balance:     t.balance !== null ? formatMoney(t.balance) : '',
+            balance:     t.balance !== null ? t.balance.toFixed(2) : '',
         });
     }
 

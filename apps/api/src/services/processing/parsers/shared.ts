@@ -73,6 +73,12 @@ export function formatMoney(n: number | null): string {
     return Math.abs(n).toFixed(2);
 }
 
+/** Like parseMoney but preserves the sign — use for balance columns, not In/Out amounts. */
+export function balanceStr(s: string): string {
+    const n = parseMoney(s);
+    return n !== null ? n.toFixed(2) : '';
+}
+
 const MONTH_MAP: Record<string, number> = {
     jan:1,feb:2,mar:3,apr:4,may:5,jun:6,
     jul:7,aug:8,sep:9,oct:10,nov:11,dec:12

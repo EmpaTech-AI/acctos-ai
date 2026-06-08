@@ -1,6 +1,6 @@
 import {
     Cell, ParsedTransaction, ParseResult,
-    normStr, parseMoney, formatMoney, buildGrid,
+    normStr, parseMoney, formatMoney, balanceStr, buildGrid,
     parseDateToDDMMYYYY
 } from './shared.js';
 
@@ -98,7 +98,7 @@ export function parse(cells: Cell[]): ParseResult {
 
         const moneyOut = amt(outCell);
         const moneyIn  = amt(inCell);
-        const balance  = amt(balCell);
+        const balance  = balanceStr(balCell);
         const hasAmount = !!(moneyOut || moneyIn);
         const hasAny = !!(dateCell || descCell || hasAmount || balance);
 

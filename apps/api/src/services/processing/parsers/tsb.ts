@@ -9,6 +9,15 @@ function parseMoney(s: string): string {
     return Math.abs(n).toFixed(2);
 }
 
+function parseSignedBalance(s: string): string {
+    s = normStr(s);
+    if (!s) return '';
+    s = s.replace(/[£,\s]/g, '');
+    const n = Number(s);
+    if (!isFinite(n)) return '';
+    return n.toFixed(2);
+}
+
 function parseDate(s: string): string {
     s = normStr(s);
     // Web format: 2026-04-30
@@ -121,7 +130,7 @@ export function parse(cells: Cell[]): ParseResult {
         const details = c.get(COL_DETAILS) ?? '';
         const paidOut = parseMoney(c.get(COL_OUT) ?? '');
         const paidIn  = parseMoney(c.get(COL_IN)  ?? '');
-        const balance = parseMoney(c.get(COL_BAL) ?? '');
+        const balance = parseSignedBalance(c.get(COL_BAL) ?? '');
         const date    = parseDate(dateRaw);
         const type    = format === 'new' ? mapType(rawType) : rawType;
 

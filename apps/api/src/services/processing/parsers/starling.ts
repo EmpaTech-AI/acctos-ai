@@ -70,7 +70,7 @@ function extractFromSection(
 
         const balCol = layout === '6col' ? 5 : 4;
         const balNum = parseMoney(normStr(row.get(balCol) ?? ''));
-        const bal    = balNum !== null ? formatMoney(balNum) : '';
+        const bal    = balNum !== null ? balNum.toFixed(2) : '';
 
         let moneyIn  = '';
         let moneyOut = '';

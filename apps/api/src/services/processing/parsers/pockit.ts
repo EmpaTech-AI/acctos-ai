@@ -249,7 +249,7 @@ export function parse(cells: Cell[]): ParseResult {
         const moneyOut = t.moneyOut !== null && t.moneyOut > 0 ? formatMoney(t.moneyOut) : '';
         if (!moneyIn && !moneyOut) continue;
 
-        const balance = t.balance !== null ? formatMoney(t.balance) : '';
+        const balance = t.balance !== null ? t.balance.toFixed(2) : '';
         transactions.push({
             date:        t.date || '',
             type:        '',

@@ -84,7 +84,7 @@ export function parse(cells: Cell[], _opts?: { pendingFromPrev?: ParsedTransacti
             if (amountNum === null || amountNum === 0 || balNum === null) continue;
 
             const absAmt = Math.abs(amountNum);
-            const bal    = formatMoney(Math.abs(balNum));
+            const bal    = balNum.toFixed(2);
 
             // Primary: use sign from amount value
             let isOut = amountNum < 0;
@@ -121,7 +121,7 @@ export function parse(cells: Cell[], _opts?: { pendingFromPrev?: ParsedTransacti
             const outAmt = parseMoney(c[3]);
             const inAmt  = parseMoney(c[4]);
             const balNum = parseMoney(c[5]);
-            const bal    = balNum !== null ? formatMoney(balNum) : '';
+            const bal    = balNum !== null ? balNum.toFixed(2) : '';
 
             const d = desc.toLowerCase();
             const t = type.toUpperCase();
@@ -163,7 +163,7 @@ export function parse(cells: Cell[], _opts?: { pendingFromPrev?: ParsedTransacti
 
             if (amountNum === null || amountNum <= 0 || balNum === null) continue;
 
-            const bal = formatMoney(balNum);
+            const bal = balNum !== null ? balNum.toFixed(2) : '';
             const amt = formatMoney(amountNum);
             const d   = desc.toLowerCase();
             const t   = type.toUpperCase();
