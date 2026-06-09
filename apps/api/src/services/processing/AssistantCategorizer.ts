@@ -79,7 +79,7 @@ function applyFallbackToRow(row: CategorizedTransaction, src: any): void {
 function buildFallbackRow(src: any): CategorizedTransaction {
     const row = {} as CategorizedTransaction;
     row.DATE = src['Date'] || '';
-    row['Type and Description'] = `${src['Type'] || ''} ${src['Description'] || ''}`.trim();
+    row['Type and Description'] = src['Description'] || '';
     row.Balance = src['Balance'] || '';
     for (const k of EXPENSE_CATS) (row as any)[k] = '';
     applyFallbackToRow(row, src);
@@ -95,7 +95,7 @@ function applyFallback(items: CategorizedTransaction[], rawTransactions: object[
     if (items.length === rawTransactions.length) {
         for (let i = 0; i < items.length; i++) {
             const src = rawTransactions[i] as any;
-            const typeAndDesc = `${src['Type'] || ''} ${src['Description'] || ''}`.trim();
+            const typeAndDesc = src['Description'] || '';
             if (typeAndDesc) items[i]['Type and Description'] = typeAndDesc;
             applyFallbackToRow(items[i], src);
             deduplicateExpenseColumns(items[i]);
@@ -113,7 +113,7 @@ function applyFallback(items: CategorizedTransaction[], rawTransactions: object[
     return rawTransactions.map((src_: any) => {
         const key = `${src_['Date']}|${src_['Balance'] ?? ''}`;
         const row = catByKey.get(key) ?? buildFallbackRow(src_);
-        const typeAndDesc = `${src_['Type'] || ''} ${src_['Description'] || ''}`.trim();
+        const typeAndDesc = src_['Description'] || '';
         if (typeAndDesc) row['Type and Description'] = typeAndDesc;
         applyFallbackToRow(row, src_);
         deduplicateExpenseColumns(row);

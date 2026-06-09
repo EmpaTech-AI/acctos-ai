@@ -216,8 +216,7 @@ export function maxCol(cells: Cell[]): number {
 export function formatTransactionsForAssistant(transactions: ParsedTransaction[]): object[] {
     return transactions.map(t => ({
         'Date': t.date,
-        'Type': t.type || '',
-        'Description': t.description || '',
+        'Description': `${t.type || ''} ${t.description || ''}`.trim() || '',
         'Money in': t.moneyIn || '',
         'Money out': t.moneyOut || '',
         'Balance': t.balance || '',

@@ -82,7 +82,7 @@ If invalid or missing → ""
 
 DESCRIPTION NORMALIZATION
 
-Use input Type and Description
+Use input Description
 
 Convert to Title Case
 
