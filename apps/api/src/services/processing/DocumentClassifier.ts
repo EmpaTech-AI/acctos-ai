@@ -69,7 +69,11 @@ export function detectBankFromContent(text: string): BankType {
     // Check institutional bank names first — before generic brand names that appear as payees
     if (/\bzempler\b/.test(t))                                         return 'zempler';
     if (/\bcounting\s*up\b/.test(t) || t.includes('countingup'))         return 'countingup';
-    if (/\bmettle\b/.test(t) || t.includes('the mettle bank account')) return 'mettle';
+    // NatWest must come before Mettle — NatWest FSCS footer text mentions "mettle" as a subsidiary,
+    // so a generic /\bmettle\b/ check would misidentify NatWest statements as Mettle.
+    if (t.includes('nwbkgb2l') || /\bnatwest\b/.test(t) || /\bnat west\b/.test(t)) return 'natwest';
+    // Mettle: require specific branding text, not just the word "mettle" which appears in other banks' FSCS disclosures.
+    if (t.includes('the mettle bank account') || t.includes('mettle.co.uk')) return 'mettle';
     if (/\btide\b/.test(t))                                          return 'tide';
     // Metro Bank — must appear before santander/monzo/rbs which can appear as payees in Metro statements.
     // OCR often splits "Metro" as "M ETRO"; detect by BIC (MYMBGB2L) or domain as unique fallbacks.
@@ -80,7 +84,6 @@ export function detectBankFromContent(text: string): BankType {
     if (/\bmonzo\b/.test(t))                                         return 'monzo';
     if (/wise\.com\/help/.test(t) || /\bref:\s*[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i.test(t)) return 'wise';
     if (/\bstarling\b/.test(t))                                      return 'starling';
-    if (/\b(natwest|nat west|national westminster)\b/.test(t))       return 'natwest';
     if (/\b(rbs|royal bank of scotland)\b/.test(t))                  return 'rbs';
     if (t.includes('internet-banking.ib.apps.virginmoney.com/vm/homepage')) return 'virginmoney';
     if (/\bpockit\b/.test(t) || /help@pockit\.com/.test(t))          return 'pockit';
