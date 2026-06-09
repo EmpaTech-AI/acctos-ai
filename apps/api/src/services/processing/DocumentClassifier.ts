@@ -2,6 +2,7 @@ export type BankType =
     | 'hsbc' | 'revolut' | 'monzo' | 'wise' | 'starling'
     | 'natwest' | 'mettle' | 'nationwide' | 'santander' | 'barclays' | 'barclaycard' | 'metro'
     | 'lloyds' | 'tsb' | 'tide' | 'rbs' | 'virginmoney' | 'pockit' | 'zempler' | 'countingup'
+    | 'halifax'
     | 'generic';
 
 export type DocType = 'bank_statement' | 'vat';
@@ -48,6 +49,7 @@ function detectBank(lower: string): BankType {
     if (lower.includes('wise') || lower.includes('transferwise')) return 'wise';
     if (lower.includes('starling'))                               return 'starling';
     if (lower.includes('mettle'))                                  return 'mettle';
+    if (lower.includes('halifax'))                                 return 'halifax';
     if (lower.includes('natwest') || lower.includes('nat west'))  return 'natwest';
     if (lower.includes('rbs') || lower.includes('royal bank'))    return 'rbs';
     if (lower.includes('virgin money') || lower.includes('virginmoney') || lower.includes('virgin_money')) return 'virginmoney';
@@ -69,6 +71,9 @@ export function detectBankFromContent(text: string): BankType {
     // Check institutional bank names first — before generic brand names that appear as payees
     if (/\bzempler\b/.test(t))                                         return 'zempler';
     if (/\bcounting\s*up\b/.test(t) || t.includes('countingup'))         return 'countingup';
+    // Halifax: check before NatWest — Halifax statements contain "NATWEST BANK" as a payee
+    // which would otherwise trigger NatWest detection. Use footer text unique to Halifax.
+    if (t.includes('halifax is a division') || (/\bhalifax\b/.test(t) && t.includes('bank of scotland'))) return 'halifax';
     // NatWest must come before Mettle — NatWest FSCS footer text mentions "mettle" as a subsidiary,
     // so a generic /\bmettle\b/ check would misidentify NatWest statements as Mettle.
     if (t.includes('nwbkgb2l') || /\bnatwest\b/.test(t) || /\bnat west\b/.test(t)) return 'natwest';

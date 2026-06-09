@@ -201,5 +201,5 @@ export function parse(cells: Cell[], _opts?: { pendingFromPrev?: ParsedTransacti
         }
     }
 
-    return { transactions, ascending: true };
+    return { transactions };
 }

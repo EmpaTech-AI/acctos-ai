@@ -169,7 +169,7 @@ for (let fi = 0; fi < filePaths.length; fi++) {
             pendingRow = res.pendingRow;
         }
         if (pendingRow) txns.push(pendingRow);
-        parseResult = { transactions: txns, ascending: true };
+        parseResult = { transactions: txns };
     } else {
         parseResult = getParser(bankType)(combined);
     }
