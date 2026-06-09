@@ -727,5 +727,6 @@ export function parse(cells: Cell[]): ParseResult {
             moneyOut: tx.moneyOut || '',
             balance: tx.balance || '',
         })),
+        ascending: true,
     };
 }
