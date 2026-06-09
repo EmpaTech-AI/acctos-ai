@@ -74,6 +74,9 @@ export function detectBankFromContent(text: string): BankType {
     // Metro Bank — must appear before santander/monzo/rbs which can appear as payees in Metro statements.
     // OCR often splits "Metro" as "M ETRO"; detect by BIC (MYMBGB2L) or domain as unique fallbacks.
     if (/m\s*etro\s+bank/i.test(t) || t.includes('mymbgb') || t.includes('metrobankonline')) return 'metro';
+    // Nationwide before Santander — Nationwide statements contain "Direct debit SANTANDER" as a payee.
+    // Use specific branding text that only appears in Nationwide's own header/footer.
+    if (t.includes('nationwide.co.uk') || /\bnationwide\s+building\s+society\b/.test(t) || /\bflexaccount\b/.test(t)) return 'nationwide';
     if (/\bsantander\b/.test(t))                                     return 'santander';
     if (/\blloyds\s+bank\b/.test(t))                                 return 'lloyds';
     if (/\bhsbc\b/.test(t))                                          return 'hsbc';

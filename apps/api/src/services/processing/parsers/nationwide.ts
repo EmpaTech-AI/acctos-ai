@@ -32,28 +32,36 @@ function toDDMMYYYY(s: string): string {
     const dmY = s.match(/^(\d{1,2})\s+([A-Za-z]{3})\s+((?:19|20)\d{2})$/i);
     if (dmY) {
         const mm = MONTH_MAP[dmY[2].toUpperCase()];
-        if (!mm) return parseDateToDDMMYYYY(s) || s;
+        if (!mm) return parseDateToDDMMYYYY(s) || '';
         return `${dmY[1].padStart(2, '0')}/${mm}/${dmY[3]}`;
     }
 
-    return parseDateToDDMMYYYY(s) || s;
+    return parseDateToDDMMYYYY(s) || '';
 }
 
-// Nationwide header: date | description | out | in | balance (exact pattern)
-function isHeaderRow(row: Map<number, string>): boolean {
-    const vals = [...row.values()].map(v => normStr(v).toLowerCase());
-    return (
-        vals.some(v => v === 'date') &&
-        vals.some(v => v === 'description') &&
-        vals.some(v => v.includes('out')) &&
-        vals.some(v => v.includes('in') && !v.includes('description') && !v.includes('out')) &&
-        vals.some(v => v.includes('balance'))
-    );
+// Detect column indices from a Nationwide header row.
+// Returns null if the row is not a valid transaction header.
+function detectCols(row: Map<number, string>): { dateCol: number; descCol: number; outCol: number; inCol: number; balCol: number } | null {
+    let dateCol = -1, descCol = -1, outCol = -1, inCol = -1, balCol = -1;
+    for (const [c, v] of row) {
+        const lo = normStr(v).toLowerCase();
+        if (lo === 'date')                                                         dateCol = c;
+        else if (lo === 'description')                                             descCol = c;
+        else if (lo.includes('out'))                                               outCol  = c;
+        else if (lo.includes('balance'))                                           balCol  = c;
+        else if (lo.includes('in') && !lo.includes('description') && lo !== '£in') inCol  = c;
+        // "£In" is the Nationwide in-column label
+        else if (lo === '£in' || lo === 'in')                                      inCol  = c;
+    }
+    if (dateCol < 0 || descCol < 0 || outCol < 0 || inCol < 0) return null;
+    return { dateCol, descCol, outCol, inCol, balCol: balCol >= 0 ? balCol : outCol + 2 };
 }
 
 function amt(s: string): string {
+    if (/\d%/.test(s)) return '';  // reject "2.99% of the transaction amount" style fee-table strings
+    if (/^\s*[£$€]?\s*[\d,]+\.?\d*\s+[a-zA-Z]/.test(s)) return '';  // reject "£2.94 for 7 days" style fee-table strings
     const n = parseMoney(s);
-    return n !== null ? formatMoney(n) : '';
+    return n !== null && n !== 0 ? formatMoney(n) : '';
 }
 
 export function parse(cells: Cell[]): ParseResult {
@@ -67,9 +75,11 @@ export function parse(cells: Cell[]): ParseResult {
     let currentDate = '';
     let current: ParsedTransaction | null = null;
 
+    // Default column positions (most pages use 0-4); updated whenever a header row is found.
+    let dateCol = 0, descCol = 1, outCol = 2, inCol = 3, balCol = 4;
+
     function flush() {
         if (!current) return;
-        // Require both an amount and a description (matches Make.com finalize logic)
         if ((current.moneyIn || current.moneyOut) && current.description) {
             transactions.push(current);
         }
@@ -79,16 +89,19 @@ export function parse(cells: Cell[]): ParseResult {
     for (const r of sortedRows) {
         const row = grid.get(r)!;
 
-        if (isHeaderRow(row)) {
+        const cols = detectCols(row);
+        if (cols) {
+            // Update column positions from this page's header
+            ({ dateCol, descCol, outCol, inCol, balCol } = cols);
             flush();
             continue;
         }
 
-        const dateCell = normStr(row.get(0) ?? '');
-        const descCell = normStr(row.get(1) ?? '');
-        const outCell  = normStr(row.get(2) ?? '');
-        const inCell   = normStr(row.get(3) ?? '');
-        const balCell  = normStr(row.get(4) ?? '');
+        const dateCell = normStr(row.get(dateCol) ?? '');
+        const descCell = normStr(row.get(descCol) ?? '');
+        const outCell  = normStr(row.get(outCol) ?? '');
+        const inCell   = normStr(row.get(inCol) ?? '');
+        const balCell  = normStr(row.get(balCol) ?? '');
 
         // Standalone year row → update tracker, do not start a transaction
         if (isYearOnly(dateCell)) {
@@ -100,19 +113,23 @@ export function parse(cells: Cell[]): ParseResult {
         const moneyIn  = amt(inCell);
         const balance  = balanceStr(balCell);
         const hasAmount = !!(moneyOut || moneyIn);
-        const hasAny = !!(dateCell || descCell || hasAmount || balance);
 
+        // Resolve date — only valid if it parses to DD/MM/YYYY
+        const parsedDate = (() => {
+            if (!dateCell) return '';
+            const full = isDayMon(dateCell) && currentYear ? `${dateCell} ${currentYear}` : dateCell;
+            return toDDMMYYYY(full);
+        })();
+        if (parsedDate) currentDate = parsedDate;
+
+        const hasAny = !!(dateCell || descCell || hasAmount || balance);
         if (!hasAny) continue;
 
-        // Build full date: "5 MAR" + currentYear → "5 MAR 2026"
-        if (dateCell) {
-            let fullDate = dateCell;
-            if (isDayMon(dateCell) && currentYear) fullDate = `${dateCell} ${currentYear}`;
-            currentDate = toDDMMYYYY(fullDate) || currentDate;
-        }
-
-        if (dateCell || hasAmount) {
-            // New transaction — use currentDate when date cell is empty but amount is present
+        // Start a new transaction only when we have a proper date OR an amount on an already-dated row.
+        // This prevents fee-schedule rows ("Credit interest", "Arranged overdraft interest", etc.)
+        // from accidentally creating phantom transactions.
+        const startNew = parsedDate || (hasAmount && !!currentDate);
+        if (startNew) {
             flush();
             current = {
                 date: currentDate,
@@ -130,5 +147,5 @@ export function parse(cells: Cell[]): ParseResult {
     }
 
     flush();
-    return { transactions };
+    return { transactions, ascending: true };
 }
