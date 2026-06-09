@@ -112,7 +112,11 @@ function applyFallback(items: CategorizedTransaction[], rawTransactions: object[
 
     return rawTransactions.map((src_: any) => {
         const key = `${src_['Date']}|${src_['Balance'] ?? ''}`;
-        const row = catByKey.get(key) ?? buildFallbackRow(src_);
+        // Clone to prevent multiple rawTransactions sharing the same object reference.
+        // Without cloning, the enforce step's writes to the same object cause last-write-wins.
+        const row: CategorizedTransaction = catByKey.has(key)
+            ? { ...catByKey.get(key)! }
+            : buildFallbackRow(src_);
         const typeAndDesc = src_['Description'] || '';
         if (typeAndDesc) row['Type and Description'] = typeAndDesc;
         applyFallbackToRow(row, src_);
