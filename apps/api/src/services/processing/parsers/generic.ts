@@ -42,8 +42,12 @@ export function parse(cells: Cell[]): ParseResult {
     const transactions: ParsedTransaction[] = [];
 
     for (let r = startRow; r <= rows; r++) {
-        const rawDate = getCell(grid, r, dateCol);
+        let rawDate = getCell(grid, r, dateCol);
         if (!rawDate || !looksLikeDate(rawDate)) continue;
+
+        // Strip trailing non-date text (e.g. "30 May 25\nTransaction" → "30 May 25")
+        const leadingDate = rawDate.match(/^(\d{1,2}\s+[A-Za-z]{3,}\s+\d{2,4}|\d{1,2}[\/.\-]\d{1,2}[\/.\-]\d{2,4})/);
+        if (leadingDate) rawDate = leadingDate[1];
 
         const date = parseDateToDDMMYYYY(rawDate);
         if (!date) continue;
@@ -60,5 +64,17 @@ export function parse(cells: Cell[]): ParseResult {
         transactions.push({ date, type, description, moneyIn, moneyOut, balance });
     }
 
-    return { transactions };
+    // Detect sort direction from the parsed data: if first date < last date the PDF is oldest-first
+    let ascending: boolean | undefined;
+    if (transactions.length >= 2) {
+        const toNum = (d: string) => {
+            const [dd, mm, yyyy] = d.split('/');
+            return +yyyy * 10000 + +mm * 100 + +dd;
+        };
+        const first = toNum(transactions[0].date);
+        const last  = toNum(transactions[transactions.length - 1].date);
+        if (first < last) ascending = true;
+    }
+
+    return { transactions, ascending };
 }
