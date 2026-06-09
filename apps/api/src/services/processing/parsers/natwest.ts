@@ -127,6 +127,7 @@ export function parse(cells: Cell[]): ParseResult {
             else if (lo.includes('detail')) { hasDetails = true; detailCount++; if (detailCount === 1) d1Col = c; else d2Col = c; }
             else if (lo.includes('desc') || lo.includes('narrat'))                            d1Col = c;
             else if (lo === 'type' || lo.startsWith('type '))                                 typeCol = c;
+            else if (lo.includes('withdrawn') && lo.includes('paid in'))                        amountCol = c; // combined "Paid In(£) Withdrawn(£)" column
             else if (lo.includes('withdrawn') || lo.includes('paid out') || lo.includes('debit')) { hasWithdrawn = true; outCol = c; }
             else if (lo === 'od')                                                              odCol = c;
             else if (lo.includes('paid in') || lo.includes('credit'))                        { hasPaidIn = true; inCol = c; }
@@ -236,20 +237,28 @@ export function parse(cells: Cell[]): ParseResult {
             currentDate = date;
             current = { date: currentDate, type: txType, description: txDesc, moneyOut, moneyIn, balance };
         } else if (current) {
-            // Continuation row — always merge into current transaction.
-            // NatWest 6-col spreads amounts onto the last continuation row, so we
-            // must not flush here even when an amount is present.
-            if (typeCol >= 0) {
-                // 4/5-col export format: d1 is the description column
-                if (d1) current.description = normStr(`${current.description} ${d1}`);
+            // Continuation row — may be a true continuation (description wraps) or a
+            // separate same-date transaction (NatWest omits the date on rows 2+ of the
+            // same date group).  Distinguish: in 6-col mode amounts arrive on the final
+            // continuation line BEFORE current has an amount; in 4-col fallback mode
+            // each row is self-contained, so a continuation row with an amount while
+            // current already has one is a new transaction sharing the same date.
+            if (hasAmount && (current.moneyIn || current.moneyOut)) {
+                flush();
+                current = { date: currentDate, type: txType, description: txDesc, moneyOut, moneyIn, balance };
             } else {
-                // 6-col statement format: d1 is type, d2 is description
-                if (d1 && !current.type) current.type        = d1;
-                if (d2)                  current.description = normStr(`${current.description} ${d2}`);
+                if (typeCol >= 0) {
+                    // 4/5-col export format: d1 is the description column
+                    if (d1) current.description = normStr(`${current.description} ${d1}`);
+                } else {
+                    // 6-col statement format: d1 is type, d2 is description
+                    if (d1 && !current.type) current.type        = d1;
+                    if (d2)                  current.description = normStr(`${current.description} ${d2}`);
+                }
+                if (balance && !current.balance)   current.balance  = balance;
+                if (moneyOut && !current.moneyOut) current.moneyOut = moneyOut;
+                if (moneyIn  && !current.moneyIn)  current.moneyIn  = moneyIn;
             }
-            if (balance && !current.balance)   current.balance  = balance;
-            if (moneyOut && !current.moneyOut) current.moneyOut = moneyOut;
-            if (moneyIn  && !current.moneyIn)  current.moneyIn  = moneyIn;
         } else if (hasAmount && currentDate) {
             // Orphaned amount with no preceding date row (page-break edge case)
             current = { date: currentDate, type: txType, description: txDesc, moneyOut, moneyIn, balance };
@@ -257,5 +266,22 @@ export function parse(cells: Cell[]): ParseResult {
     }
 
     flush();
-    return { transactions };
+
+    // Extract declared totals from the Summary block (rows 0–8 of page 1).
+    // NatWest statements print "Paid In" / "Withdrawn" as label+value pairs.
+    let statementTotals: { moneyIn: number; moneyOut: number } | undefined;
+    let paidInDecl: number | null = null;
+    let withdrawnDecl: number | null = null;
+    for (const [r, row] of grid) {
+        if (r < 0 || r > 8) continue;
+        const label = normStr(row.get(0) ?? '').toLowerCase();
+        const val   = parseMoney(normStr(row.get(1) ?? ''));
+        if (label === 'paid in'   && val !== null) paidInDecl   = val;
+        if (label === 'withdrawn' && val !== null) withdrawnDecl = val;
+    }
+    if (paidInDecl !== null && withdrawnDecl !== null) {
+        statementTotals = { moneyIn: paidInDecl, moneyOut: withdrawnDecl };
+    }
+
+    return { transactions, statementTotals, ascending: true };
 }

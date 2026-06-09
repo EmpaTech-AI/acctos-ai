@@ -69,7 +69,9 @@ export function detectBankFromContent(text: string): BankType {
     // Check institutional bank names first — before generic brand names that appear as payees
     if (/\bzempler\b/.test(t))                                         return 'zempler';
     if (/\bcounting\s*up\b/.test(t) || t.includes('countingup'))         return 'countingup';
-    if (/\bmettle\b/.test(t) || t.includes('the mettle bank account')) return 'mettle';
+    // NatWest statements contain "Mettle" in their FSCS footer — check NatWest first.
+    if (/\b(national westminster)\b/.test(t))                            return 'natwest';
+    if ((/\bmettle\b/.test(t) || t.includes('the mettle bank account')) && !/\bnatwest\b/.test(t)) return 'mettle';
     if (/\btide\b/.test(t))                                          return 'tide';
     // Metro Bank — must appear before santander/monzo/rbs which can appear as payees in Metro statements.
     // OCR often splits "Metro" as "M ETRO"; detect by BIC (MYMBGB2L) or domain as unique fallbacks.
