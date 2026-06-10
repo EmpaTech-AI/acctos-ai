@@ -16,21 +16,31 @@ export function parse(cells: Cell[]): ParseResult {
 
     const grid = buildGrid(cells);
     const rows = maxRow(cells);
-    const cols = maxCol(cells);
 
-    // Detect column assignments from header row (row 0)
+    // Scan all rows to find a transaction header row.
+    // A valid header needs a 'date' column plus at least one of (in / out / balance).
+    // This handles PDFs where metadata/fee tables precede the transaction table.
     let dateCol = -1, descCol = -1, inCol = -1, outCol = -1, balCol = -1, typeCol = -1;
+    let headerRowIndex = -1;
 
-    const headerRow = grid.get(0);
-    if (headerRow) {
-        for (const [c, v] of headerRow) {
-            const lower = v.toLowerCase();
-            if (dateCol < 0 && (lower.includes('date') || lower.includes('datum'))) dateCol = c;
-            else if (descCol < 0 && (lower.includes('desc') || lower.includes('detail') || lower.includes('narrat') || lower.includes('memo') || lower.includes('explain'))) descCol = c;
-            else if (typeCol < 0 && (lower.includes('type') || lower.includes('code') || lower.includes('ref'))) typeCol = c;
-            else if (inCol < 0 && (lower.includes('in') || lower.includes('credit') || lower.includes('deposit') || lower.includes('paid in') || lower.includes('money in'))) inCol = c;
-            else if (outCol < 0 && (lower.includes('out') || lower.includes('debit') || lower.includes('withdraw') || lower.includes('paid out') || lower.includes('money out'))) outCol = c;
-            else if (balCol < 0 && lower.includes('bal')) balCol = c;
+    for (let r = 0; r <= rows; r++) {
+        const row = grid.get(r);
+        if (!row) continue;
+        let dc = -1, pc = -1, ic = -1, oc = -1, bc = -1, tc = -1;
+        for (const [c, v] of row) {
+            const lower = v.toLowerCase().trim();
+            if (dc < 0 && (lower.includes('date') || lower === 'datum')) dc = c;
+            else if (pc < 0 && (lower === 'transaction' || lower === 'transactions' || lower.includes('desc') || lower.includes('detail') || lower.includes('narrat') || lower === 'memo' || lower.includes('particulars') || lower.includes('explain'))) pc = c;
+            else if (tc < 0 && (lower === 'type' || lower === 'code' || lower === 'ref')) tc = c;
+            // Use specific patterns only — 'lower.includes("in")' is too broad (matches "business", "opening", "closing")
+            else if (ic < 0 && (lower === 'in' || lower === 'incoming' || lower === 'inward' || lower.includes('credit') || lower.includes('paid in') || lower.includes('money in') || lower.includes('deposit'))) ic = c;
+            else if (oc < 0 && (lower === 'out' || lower.includes('debit') || lower.includes('paid out') || lower.includes('money out') || lower.includes('withdraw'))) oc = c;
+            else if (bc < 0 && lower.includes('bal')) bc = c;
+        }
+        if (dc >= 0 && (ic >= 0 || oc >= 0 || bc >= 0)) {
+            dateCol = dc; descCol = pc; typeCol = tc; inCol = ic; outCol = oc; balCol = bc;
+            headerRowIndex = r;
+            break;
         }
     }
 
@@ -38,7 +48,7 @@ export function parse(cells: Cell[]): ParseResult {
     if (dateCol < 0) dateCol = 0;
     if (descCol < 0) descCol = 1;
 
-    const startRow = headerRow ? 1 : 0;
+    const startRow = headerRowIndex >= 0 ? headerRowIndex + 1 : 0;
     const transactions: ParsedTransaction[] = [];
 
     for (let r = startRow; r <= rows; r++) {
