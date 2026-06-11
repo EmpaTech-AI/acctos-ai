@@ -232,7 +232,7 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
 
         const allTransactions: ParsedTransaction[] = [];
         let confirmedBankType: BankType | null = null;
-        let combinedStatementTotals: { moneyIn: number; moneyOut: number } | undefined;
+        let combinedStatementTotals: { moneyIn: number; moneyOut: number; openingBalance?: number; closingBalance?: number } | undefined;
         let ascending = false;
 
         for (let fi = 0; fi < files.length; fi++) {
@@ -321,8 +321,17 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
             if (fileAscending) ascending = true;
             console.log(`[Orchestrator] File ${fi + 1}/${files.length} "${filename}": ${fileTransactions.length} transactions`);
             if (statementTotals) {
-                if (!combinedStatementTotals) combinedStatementTotals = { ...statementTotals };
-                else { combinedStatementTotals.moneyIn += statementTotals.moneyIn; combinedStatementTotals.moneyOut += statementTotals.moneyOut; }
+                if (!combinedStatementTotals) {
+                    combinedStatementTotals = { ...statementTotals };
+                } else {
+                    combinedStatementTotals.moneyIn += statementTotals.moneyIn;
+                    combinedStatementTotals.moneyOut += statementTotals.moneyOut;
+                    // Opening balance: keep the first file's value (already set above)
+                    // Closing balance: always use the latest file's declared value
+                    if (statementTotals.closingBalance !== undefined) {
+                        combinedStatementTotals.closingBalance = statementTotals.closingBalance;
+                    }
+                }
             }
             allTransactions.push(...fileTransactions);
         }
