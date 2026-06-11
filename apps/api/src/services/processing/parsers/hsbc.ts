@@ -574,7 +574,9 @@ export function parse(cells: Cell[]): ParseResult {
 
     for (const cell of sorted) {
         const col = cell.columnIndex;
-        const content = normStr(cell.content);
+        const rawContent = normStr(cell.content);
+        // Normalize OCR-corrupted contactless codes: ")))." or "))." → "))))" (last ')' misread as '.')
+        const content = /^\){2,}\.?$/.test(rawContent) ? ')))' : rawContent;
 
         if (cell.rowIndex !== lastRI) {
             if (lastRI !== -1 && rowHasData(cur)) rawRows.push(cur);
