@@ -74,6 +74,9 @@ export function detectBankFromContent(text: string): BankType {
     // Halifax: check before NatWest — Halifax statements contain "NATWEST BANK" as a payee
     // which would otherwise trigger NatWest detection. Use footer text unique to Halifax.
     if (t.includes('halifax is a division') || (/\bhalifax\b/.test(t) && t.includes('bank of scotland'))) return 'halifax';
+    // HSBC: check before NatWest — HSBC statements routinely contain "NATWEST" in ATM
+    // transaction descriptions (e.g. "CASH NATWEST APR18"). Identify by BIC prefix or product name.
+    if (t.includes('hbukgb') || t.includes('hsbc kinetic') || /\bhsbc\s+uk\b/.test(t)) return 'hsbc';
     // NatWest must come before Mettle — NatWest FSCS footer text mentions "mettle" as a subsidiary,
     // so a generic /\bmettle\b/ check would misidentify NatWest statements as Mettle.
     if (t.includes('nwbkgb2l') || /\bnatwest\b/.test(t) || /\bnat west\b/.test(t)) return 'natwest';

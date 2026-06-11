@@ -57,7 +57,15 @@ function isStatementFooterRow(row: Row): boolean {
 }
 
 function isAmount(v: string): boolean {
-    return Boolean(v) && /^[0-9,]+(\.\d{1,2})?$/.test(v.trim().replace(/,/g, ''));
+    return Boolean(v) && /^[0-9,]+(\.\d{1,2})?(\s+D)?$/.test(v.trim());
+}
+
+// Convert HSBC overdraft suffix to a negative number string: "475.57 D" → "-475.57"
+function normalizeBalance(v: string): string {
+    const t = (v || '').trim();
+    const m = t.match(/^([0-9,]+(?:\.\d{1,2})?)\s+D$/);
+    if (m) return '-' + m[1].replace(/,/g, '');
+    return t;
 }
 
 function isCode(v: string): boolean {
@@ -166,7 +174,7 @@ function applyAmountsToTxnFromRow(txn: PartialTxn, row: Row): void {
     }
 
     if (!outVal && !inVal) {
-        if (balVal && !txn.balance && !row.__skipBalanceForCurrentTxn) txn.balance = balVal;
+        if (balVal && !txn.balance && !row.__skipBalanceForCurrentTxn) txn.balance = normalizeBalance(balVal);
         return;
     }
     if (outVal && !txn.moneyOut && !txn.moneyIn) txn.moneyOut = outVal;
@@ -175,7 +183,7 @@ function applyAmountsToTxnFromRow(txn: PartialTxn, row: Row): void {
         if (!txn.moneyOut) txn.moneyOut = outVal;
         if (!txn.moneyIn) txn.moneyIn = inVal;
     }
-    if (balVal && !txn.balance && !row.__skipBalanceForCurrentTxn) txn.balance = balVal;
+    if (balVal && !txn.balance && !row.__skipBalanceForCurrentTxn) txn.balance = normalizeBalance(balVal);
 }
 
 // ── Balance helpers ─────────────────────────────────────────────────────────
@@ -198,7 +206,7 @@ function getOpeningBalance(rows: Row[]): number | null {
     for (const row of rows) {
         const txt = [row.c0, row.c1, row.c2].filter(Boolean).join(' ').replace(/\s+/g, ' ');
         if (/balance brought forward|brought forward/i.test(txt)) {
-            const b = parseMoney(row.c5 || row.c6 || row.c4 || '');
+            const b = parseMoney(normalizeBalance(row.c5 || row.c6 || row.c4 || ''));
             if (b !== null) return b;
         }
     }
@@ -208,9 +216,9 @@ function getOpeningBalance(rows: Row[]): number | null {
         if (!/\d{1,2}\s+[A-Za-z]{3}\s+\d{2,4}/.test(c0)) continue;
         if (isCode((row.c1 || '').trim()) || isCode((row.c0 || '').trim())) continue;
         const b =
-            parseMoney((row.c6 || '')) ??
-            parseMoney((row.c5 || '')) ??
-            parseMoney((row.c4 || ''));
+            parseMoney(normalizeBalance(row.c6 || '')) ??
+            parseMoney(normalizeBalance(row.c5 || '')) ??
+            parseMoney(normalizeBalance(row.c4 || ''));
         if (b !== null) return b;
     }
     return null;
@@ -222,10 +230,10 @@ function getPossibleBalanceFromRow(row: Row): string {
     const c4 = (row.c4 || '').trim();
     const c5 = (row.c5 || '').trim();
     const c6 = (row.c6 || '').trim();
-    if (isWideShiftedLayout(row)) return isAmount(c6) ? c6 : '';
-    if (isAmount(c5)) return c5;
-    if (isAmount(c6)) return c6;
-    if (row.maxCol <= 4 && isAmount(c4)) return c4;
+    if (isWideShiftedLayout(row)) return isAmount(c6) ? normalizeBalance(c6) : '';
+    if (isAmount(c5)) return normalizeBalance(c5);
+    if (isAmount(c6)) return normalizeBalance(c6);
+    if (row.maxCol <= 4 && isAmount(c4)) return normalizeBalance(c4);
     return '';
 }
 
@@ -240,11 +248,11 @@ function getBalanceOnlyFromRow(row: Row): string {
 
     if (isWideShiftedLayout(row)) {
         if (isAmount(c3) || isAmount(c4) || isAmount(c5)) return '';
-        return isAmount(c6) ? c6 : '';
+        return isAmount(c6) ? normalizeBalance(c6) : '';
     }
     if (isAmount(c3) || isAmount(c4)) return '';
-    if (isAmount(c5)) return c5;
-    if (isAmount(c6)) return c6;
+    if (isAmount(c5)) return normalizeBalance(c5);
+    if (isAmount(c6)) return normalizeBalance(c6);
     return '';
 }
 
@@ -520,6 +528,37 @@ function shouldMoveSameRowBalanceToPrevTxn(
     return almostEqual(running, balance);
 }
 
+// ── HSBC statement summary section ─────────────────────────────────────────
+
+// Extracts the "Account Summary" box that HSBC prints at the top of each statement:
+//   Opening Balance  450.71
+//   Payments In    4,391.00
+//   Payments Out   5,317.28
+//   Closing Balance  475.57 D
+function extractHsbcSummary(rows: Row[]): { openingBalance: number; closingBalance: number; moneyIn: number; moneyOut: number } | null {
+    let openBal: number | null = null;
+    let closeBal: number | null = null;
+    let pIn: number | null = null;
+    let pOut: number | null = null;
+
+    for (const row of rows) {
+        const label = (row.c0 || '').trim().toLowerCase();
+        // Stop scanning once we reach the transaction table header or a dated row
+        if (label === 'date' || /^\d{1,2}\s+[a-z]{3}\s+\d{2,4}/.test(label)) break;
+
+        const value = (row.c1 || '').trim();
+        if (label === 'opening balance') openBal = parseMoney(normalizeBalance(value));
+        else if (label === 'closing balance') closeBal = parseMoney(normalizeBalance(value));
+        else if (label === 'payments in') pIn = parseMoney(value);
+        else if (label === 'payments out') pOut = parseMoney(value);
+    }
+
+    if (openBal !== null && closeBal !== null) {
+        return { openingBalance: openBal, closingBalance: closeBal, moneyIn: pIn ?? 0, moneyOut: pOut ?? 0 };
+    }
+    return null;
+}
+
 // ── Main parse ──────────────────────────────────────────────────────────────
 
 export function parse(cells: Cell[]): ParseResult {
@@ -535,7 +574,9 @@ export function parse(cells: Cell[]): ParseResult {
 
     for (const cell of sorted) {
         const col = cell.columnIndex;
-        const content = normStr(cell.content);
+        const rawContent = normStr(cell.content);
+        // Normalize OCR-corrupted contactless codes: ")))." or "))." → "))))" (last ')' misread as '.')
+        const content = /^\){2,}\.?$/.test(rawContent) ? ')))' : rawContent;
 
         if (cell.rowIndex !== lastRI) {
             if (lastRI !== -1 && rowHasData(cur)) rawRows.push(cur);
@@ -573,7 +614,10 @@ export function parse(cells: Cell[]): ParseResult {
     // 2. Row repair and normalisation passes
     const rows = normalizeShiftedRows(repairMergedFeeRows(rawRows));
 
-    // 3. Opening balance
+    // 3. Extract declared summary totals (Opening/Closing Balance, Payments In/Out)
+    const hsbcSummary = extractHsbcSummary(rows);
+
+    // 4. Opening balance
     const openingBalance = getOpeningBalance(rows);
 
     // 4. Build transactions
@@ -594,12 +638,12 @@ export function parse(cells: Cell[]): ParseResult {
 
         // Carried/Brought Forward rows: extract their balance checkpoint and skip.
         if (CARRIED_FORWARD_RE.test(rowText)) {
-            const carriedBal =
+            const rawCarried =
                 isAmount((row.c6 || '').trim()) ? (row.c6 || '').trim() :
                 isAmount((row.c5 || '').trim()) ? (row.c5 || '').trim() :
                 isAmount((row.c4 || '').trim()) ? (row.c4 || '').trim() : '';
-            if (carriedBal && currentTxn && !currentTxn.balance) {
-                currentTxn.balance = carriedBal;
+            if (rawCarried && currentTxn && !currentTxn.balance) {
+                currentTxn.balance = normalizeBalance(rawCarried);
             }
             continue;
         }
@@ -728,5 +772,13 @@ export function parse(cells: Cell[]): ParseResult {
             balance: tx.balance || '',
         })),
         ascending: true,
+        ...(hsbcSummary ? {
+            statementTotals: {
+                moneyIn: hsbcSummary.moneyIn,
+                moneyOut: hsbcSummary.moneyOut,
+                openingBalance: hsbcSummary.openingBalance,
+                closingBalance: hsbcSummary.closingBalance,
+            },
+        } : {}),
     };
 }

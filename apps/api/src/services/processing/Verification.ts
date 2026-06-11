@@ -24,7 +24,7 @@ export interface VerificationSummary {
  */
 export function computeVerification(
     transactions: ParsedTransaction[],
-    declared?: { moneyIn: number; moneyOut: number },
+    declared?: { moneyIn: number; moneyOut: number; openingBalance?: number; closingBalance?: number },
     ascending = false,
 ): VerificationSummary | undefined {
     if (!transactions.length) return undefined;
@@ -38,10 +38,22 @@ export function computeVerification(
     const oldestBal  = parseMoney(oldest.balance);
 
     let openingBalance: number | null = null;
+    let closingBalance: number | null = closingBal;
     let balanceOk = true;
     let balanceDiff: number | null = null;
 
-    if (closingBal !== null && oldestBal !== null) {
+    const statedOpen = declared?.openingBalance ?? null;
+    const statedClose = declared?.closingBalance ?? null;
+
+    if (statedOpen !== null && statedClose !== null) {
+        // Use the bank's own declared Opening/Closing Balance (more reliable than deriving
+        // from transactions, which can lack balance values for overdraft rows).
+        openingBalance = statedOpen;
+        closingBalance = statedClose;
+        const expected = openingBalance + totalIn - totalOut;
+        balanceDiff = statedClose - expected;
+        balanceOk = Math.abs(balanceDiff) <= 0.02;
+    } else if (closingBal !== null && oldestBal !== null) {
         const oldestIn  = parseMoney(oldest.moneyIn)  ?? 0;
         const oldestOut = parseMoney(oldest.moneyOut) ?? 0;
         openingBalance = oldestBal - oldestIn + oldestOut;
@@ -65,7 +77,7 @@ export function computeVerification(
     return {
         totalIn, totalOut,
         openingBalance,
-        closingBalance: closingBal,
+        closingBalance,
         balanceOk, balanceDiff,
         declaredIn, declaredOut, declaredOk,
     };
