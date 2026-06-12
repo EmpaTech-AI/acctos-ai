@@ -90,6 +90,11 @@ function buildFallbackRow(src: any): CategorizedTransaction {
  * Apply fallback categorization and fix two known AI failure modes:
  *  1. AI returns fewer items than the batch (skipped transactions) — realign by balance key
  *  2. AI puts the same amount in multiple expense columns — deduplicate
+ *
+ * IMPORTANT: when realigning, consume each matched row from catByKey so two
+ * transactions with identical Date+Balance keys never share the same object.
+ * Object aliasing would cause enforcement to overwrite it twice and
+ * catIn/catOut to double-count it.
  */
 function applyFallback(items: CategorizedTransaction[], rawTransactions: object[]): CategorizedTransaction[] {
     if (items.length === rawTransactions.length) {
@@ -113,9 +118,8 @@ function applyFallback(items: CategorizedTransaction[], rawTransactions: object[
     return rawTransactions.map((src_: any) => {
         const key = `${src_['Date']}|${src_['Balance'] ?? ''}`;
         const matched = catByKey.get(key);
-        // Clone so multiple transactions sharing the same Date|Balance key each get
-        // their own object — Phase 3 overwrites amounts per-transaction in-place.
-        const row = matched ? { ...matched } : buildFallbackRow(src_);
+        if (matched) catByKey.delete(key);  // consume — prevents aliasing when multiple rows share the same key
+        const row = matched ? { ...matched } : buildFallbackRow(src_);  // shallow-clone to ensure unique object
         const typeAndDesc = src_['Description'] || '';
         if (typeAndDesc) row['Type and Description'] = typeAndDesc;
         applyFallbackToRow(row, src_);
@@ -127,7 +131,7 @@ function applyFallback(items: CategorizedTransaction[], rawTransactions: object[
 const BATCH_SIZE = 25;
 const MODEL      = 'gpt-4o-mini';
 
-async function categorizeBatch(batch: object[], apiKey: string, attempt = 1): Promise<CategorizedTransaction[]> {
+async function categorizeBatch(batch: object[], apiKey: string): Promise<CategorizedTransaction[]> {
     const res = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
         headers: {
@@ -146,13 +150,6 @@ async function categorizeBatch(batch: object[], apiKey: string, attempt = 1): Pr
     });
 
     if (!res.ok) {
-        const isRetryable = res.status === 500 || res.status === 429 || res.status === 503;
-        if (isRetryable && attempt < 3) {
-            const delay = attempt * 2000;
-            console.warn(`[Categorizer] OpenAI error ${res.status} — retrying in ${delay}ms (attempt ${attempt}/3)`);
-            await new Promise(r => setTimeout(r, delay));
-            return categorizeBatch(batch, apiKey, attempt + 1);
-        }
         const err = await res.text();
         throw new Error(`OpenAI API error ${res.status}: ${err}`);
     }
@@ -173,10 +170,48 @@ async function categorizeBatch(batch: object[], apiKey: string, attempt = 1): Pr
         throw new Error('OpenAI returned invalid JSON: ' + cleaned.slice(0, 300));
     }
 
-    const items: CategorizedTransaction[] = Array.isArray(parsed) ? parsed : (parsed.items || []);
+    let items: CategorizedTransaction[] = Array.isArray(parsed) ? parsed : (parsed.items || []);
     if (items.length === 0 && batch.length > 0) {
         console.warn(`[Categorizer] Empty response — finish_reason=${finishReason} tokens=${JSON.stringify(usage)} content_len=${cleaned.length} first_tx=${JSON.stringify(batch[0]).slice(0, 100)}`);
     }
+
+    // If GPT dropped items, retry the whole batch once before falling to realignment.
+    // Realignment uses a Date|Balance key — many transactions share the same key when
+    // Balance is empty, leading to object aliasing and double-counted catIn/catOut.
+    if (items.length !== batch.length) {
+        console.warn(`[Categorizer] Count mismatch (got ${items.length}, expected ${batch.length}) — retrying batch...`);
+        try {
+            const retryRes = await fetch('https://api.openai.com/v1/chat/completions', {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    model: MODEL, temperature: 0, max_tokens: 16384,
+                    messages: [
+                        { role: 'system', content: SYSTEM_PROMPT },
+                        { role: 'user',   content: JSON.stringify(batch) },
+                    ],
+                }),
+            });
+            if (retryRes.ok) {
+                const retryData = await retryRes.json() as any;
+                if (retryData.choices?.[0]?.finish_reason !== 'length') {
+                    const retryContent = (retryData.choices?.[0]?.message?.content || '')
+                        .replace(/```json\s*/gi, '').replace(/```\s*/gi, '').trim();
+                    try {
+                        const retryParsed = JSON.parse(retryContent);
+                        const retryItems: CategorizedTransaction[] = Array.isArray(retryParsed) ? retryParsed : (retryParsed.items || []);
+                        if (retryItems.length === batch.length) {
+                            console.log(`[Categorizer] Batch retry succeeded — correct count.`);
+                            items = retryItems;
+                        } else {
+                            console.warn(`[Categorizer] Retry still wrong count (${retryItems.length}), falling back to realignment.`);
+                        }
+                    } catch { /* keep original items */ }
+                }
+            }
+        } catch { /* keep original items */ }
+    }
+
     return applyFallback(items, batch);
 }
 
@@ -294,6 +329,29 @@ export async function categorize(transactions: ParsedTransaction[]): Promise<Cat
             row.INCOME = '';
             for (const k of EXP_ONLY) (row as any)[k] = '';
         }
+    }
+
+    // Post-enforcement sanity check — catIn/catOut must equal parser totals exactly.
+    // Any remaining diff indicates a bug (e.g. aliased objects, null results).
+    let postIn = 0, postOut = 0;
+    for (const row of results) {
+        const inc = parseMoney(row.INCOME);
+        if (inc !== null && inc > 0) postIn += inc;
+        for (const k of EXP_ONLY) {
+            const v = parseMoney((row as any)[k]);
+            if (v !== null && v !== 0) postOut += Math.abs(v);
+        }
+    }
+    const expIn  = transactions.reduce((s, t) => s + (parseMoney(t.moneyIn  || '') ?? 0), 0);
+    const expOut = transactions.reduce((s, t) => s + (parseMoney(t.moneyOut || '') ?? 0), 0);
+    if (Math.abs(postIn - expIn) > 0.05 || Math.abs(postOut - expOut) > 0.05) {
+        console.error(
+            `[Categorizer] POST-ENFORCEMENT MISMATCH — ` +
+            `catIn=${postIn.toFixed(2)} (expected ${expIn.toFixed(2)}, diff ${(postIn - expIn).toFixed(2)}), ` +
+            `catOut=${postOut.toFixed(2)} (expected ${expOut.toFixed(2)}, diff ${(postOut - expOut).toFixed(2)})`
+        );
+    } else {
+        console.log(`[Categorizer] Enforcement verified — catIn=${postIn.toFixed(2)} catOut=${postOut.toFixed(2)} ✓`);
     }
 
     return results;
