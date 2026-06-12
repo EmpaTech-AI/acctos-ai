@@ -64,6 +64,10 @@ function amt(s: string): string {
     return n !== null && n !== 0 ? formatMoney(n) : '';
 }
 
+// Nationwide page headers can appear mid-grid when Azure DI shifts columns.
+// Any row containing these labels must be skipped entirely.
+const PAGE_HEADER_RE = /\b(account\s*(no|number)|statement\s*(no|number|date)|sort\s+code|account\s+holder|account\s+name)\b/i;
+
 export function parse(cells: Cell[]): ParseResult {
     const grid = buildGrid(cells);
     const sortedRows = [...grid.keys()].filter(r => r >= 0).sort((a, b) => a - b);
@@ -88,6 +92,10 @@ export function parse(cells: Cell[]): ParseResult {
 
     for (const r of sortedRows) {
         const row = grid.get(r)!;
+
+        // Skip page-header rows regardless of column position (Azure DI can shift columns)
+        const rawRowText = [...row.values()].join(' ');
+        if (PAGE_HEADER_RE.test(rawRowText)) continue;
 
         const cols = detectCols(row);
         if (cols) {
