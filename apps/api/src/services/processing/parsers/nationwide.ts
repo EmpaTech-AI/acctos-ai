@@ -78,6 +78,7 @@ export function parse(cells: Cell[]): ParseResult {
     let currentYear = '';
     let currentDate = '';
     let current: ParsedTransaction | null = null;
+    let openingBalance: number | null = null;
 
     // Default column positions (most pages use 0-4); updated whenever a header row is found.
     let dateCol = 0, descCol = 1, outCol = 2, inCol = 3, balCol = 4;
@@ -111,9 +112,17 @@ export function parse(cells: Cell[]): ParseResult {
         const inCell   = normStr(row.get(inCol) ?? '');
         const balCell  = normStr(row.get(balCol) ?? '');
 
-        // Standalone year row → update tracker, do not start a transaction
+        // Standalone year row → update tracker, do not start a transaction.
+        // If the description reads "Balance from statement", capture the opening balance.
         if (isYearOnly(dateCell)) {
             currentYear = dateCell;
+            if (openingBalance === null) {
+                const desc = normStr(row.get(descCol) ?? '');
+                if (/balance\s+from\s+statement/i.test(desc)) {
+                    const n = parseMoney(normStr(row.get(balCol) ?? ''));
+                    if (n !== null) openingBalance = n;
+                }
+            }
             continue;
         }
 
@@ -155,5 +164,21 @@ export function parse(cells: Cell[]): ParseResult {
     }
 
     flush();
-    return { transactions, ascending: true };
+
+    // Derive closing balance from the last transaction that has a balance value
+    let closingBalance: number | null = null;
+    for (let i = transactions.length - 1; i >= 0; i--) {
+        const n = parseMoney(transactions[i].balance);
+        if (n !== null) { closingBalance = n; break; }
+    }
+
+    const hasTotals = openingBalance !== null || closingBalance !== null;
+    const statementTotals = hasTotals ? {
+        moneyIn:  transactions.reduce((s, t) => s + (parseMoney(t.moneyIn)  ?? 0), 0),
+        moneyOut: transactions.reduce((s, t) => s + (parseMoney(t.moneyOut) ?? 0), 0),
+        ...(openingBalance !== null && { openingBalance }),
+        ...(closingBalance !== null && { closingBalance }),
+    } : undefined;
+
+    return { transactions, statementTotals, ascending: true };
 }
