@@ -60,8 +60,6 @@ function detectCols(row: Map<number, string>): { dateCol: number; descCol: numbe
 function amt(s: string): string {
     if (/\d%/.test(s)) return '';  // reject "2.99% of the transaction amount" style fee-table strings
     if (/^\s*[£$€]?\s*[\d,]+\.?\d*\s+[a-zA-Z]/.test(s)) return '';  // reject "£2.94 for 7 days" style fee-table strings
-    if (/^\d{6,}$/.test(s.trim())) return '';  // reject bare integers ≥6 digits (account numbers, sort codes)
-    if (/\d\s+\d/.test(s)) return '';  // reject digit-space-digit e.g. "99 4 of 6" (statement/page numbers)
     const n = parseMoney(s);
     return n !== null && n !== 0 ? formatMoney(n) : '';
 }
@@ -80,9 +78,7 @@ export function parse(cells: Cell[]): ParseResult {
     let currentYear = '';
     let currentDate = '';
     let current: ParsedTransaction | null = null;
-    // origDesc: description of current at the moment it was created (before any continuation rows).
-    // Used to detect when continuation rows belong to the NEXT transaction, not the current one.
-    let origDesc = '';
+    let openingBalance: number | null = null;
 
     // Default column positions (most pages use 0-4); updated whenever a header row is found.
     let dateCol = 0, descCol = 1, outCol = 2, inCol = 3, balCol = 4;
@@ -93,7 +89,6 @@ export function parse(cells: Cell[]): ParseResult {
             transactions.push(current);
         }
         current = null;
-        origDesc = '';
     }
 
     for (const r of sortedRows) {
@@ -117,9 +112,17 @@ export function parse(cells: Cell[]): ParseResult {
         const inCell   = normStr(row.get(inCol) ?? '');
         const balCell  = normStr(row.get(balCol) ?? '');
 
-        // Standalone year row → update tracker, do not start a transaction
+        // Standalone year row → update tracker, do not start a transaction.
+        // If the description reads "Balance from statement", capture the opening balance.
         if (isYearOnly(dateCell)) {
             currentYear = dateCell;
+            if (openingBalance === null) {
+                const desc = normStr(row.get(descCol) ?? '');
+                if (/balance\s+from\s+statement/i.test(desc)) {
+                    const n = parseMoney(normStr(row.get(balCol) ?? ''));
+                    if (n !== null) openingBalance = n;
+                }
+            }
             continue;
         }
 
@@ -144,20 +147,15 @@ export function parse(cells: Cell[]): ParseResult {
         // from accidentally creating phantom transactions.
         const startNew = parsedDate || (hasAmount && !!currentDate);
         if (startNew) {
-            // Amount-only row (no date, no description) following continuation rows:
-            // the continuation text was added to the previous transaction but belongs to this new one.
-            // Steal it back so the previous transaction keeps only its original description.
-            if (!parsedDate && !descCell && hasAmount && current && origDesc !== current.description) {
-                const stolen = normStr(current.description.slice(origDesc.length));
-                current.description = origDesc;
-                flush();
-                current = { date: currentDate, type: '', description: stolen, moneyOut, moneyIn, balance };
-                origDesc = stolen;
-            } else {
-                flush();
-                current = { date: currentDate, type: '', description: descCell, moneyOut, moneyIn, balance };
-                origDesc = descCell;
-            }
+            flush();
+            current = {
+                date: currentDate,
+                type: '',
+                description: descCell,
+                moneyOut,
+                moneyIn,
+                balance,
+            };
         } else if (current) {
             // Continuation row: no date, no amount → append description, maybe fill balance
             if (descCell) current.description = normStr(`${current.description} ${descCell}`);
@@ -166,5 +164,21 @@ export function parse(cells: Cell[]): ParseResult {
     }
 
     flush();
-    return { transactions, ascending: true };
+
+    // Derive closing balance from the last transaction that has a balance value
+    let closingBalance: number | null = null;
+    for (let i = transactions.length - 1; i >= 0; i--) {
+        const n = parseMoney(transactions[i].balance);
+        if (n !== null) { closingBalance = n; break; }
+    }
+
+    const hasTotals = openingBalance !== null || closingBalance !== null;
+    const statementTotals = hasTotals ? {
+        moneyIn:  transactions.reduce((s, t) => s + (parseMoney(t.moneyIn)  ?? 0), 0),
+        moneyOut: transactions.reduce((s, t) => s + (parseMoney(t.moneyOut) ?? 0), 0),
+        ...(openingBalance !== null && { openingBalance }),
+        ...(closingBalance !== null && { closingBalance }),
+    } : undefined;
+
+    return { transactions, statementTotals, ascending: true };
 }
