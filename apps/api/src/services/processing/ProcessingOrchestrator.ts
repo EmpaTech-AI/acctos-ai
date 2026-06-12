@@ -233,6 +233,7 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
         const allTransactions: ParsedTransaction[] = [];
         let confirmedBankType: BankType | null = null;
         let combinedStatementTotals: { moneyIn: number; moneyOut: number; openingBalance?: number; closingBalance?: number } | undefined;
+        const fileTotals: Array<{ moneyIn: number; moneyOut: number; openingBalance?: number; closingBalance?: number }> = [];
         let ascending = false;
 
         for (let fi = 0; fi < files.length; fi++) {
@@ -321,19 +322,35 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
             if (fileAscending) ascending = true;
             console.log(`[Orchestrator] File ${fi + 1}/${files.length} "${filename}": ${fileTransactions.length} transactions`);
             if (statementTotals) {
+                fileTotals.push(statementTotals);
                 if (!combinedStatementTotals) {
                     combinedStatementTotals = { ...statementTotals };
                 } else {
                     combinedStatementTotals.moneyIn += statementTotals.moneyIn;
                     combinedStatementTotals.moneyOut += statementTotals.moneyOut;
-                    // Opening balance: keep the first file's value (already set above)
-                    // Closing balance: always use the latest file's declared value
-                    if (statementTotals.closingBalance !== undefined) {
-                        combinedStatementTotals.closingBalance = statementTotals.closingBalance;
-                    }
                 }
             }
             allTransactions.push(...fileTransactions);
+        }
+
+        // Chain resolution: files may be uploaded in any order (e.g. alphabetical).
+        // Find the true first file (openingBalance not matched by any closingBalance) and
+        // true last file (closingBalance not matched by any openingBalance), then set the
+        // combined opening/closing accordingly instead of using upload-order values.
+        if (combinedStatementTotals && fileTotals.length > 1) {
+            const allClose = new Set(
+                fileTotals.filter(t => t.closingBalance !== undefined).map(t => Math.round(t.closingBalance! * 100))
+            );
+            const allOpen = new Set(
+                fileTotals.filter(t => t.openingBalance !== undefined).map(t => Math.round(t.openingBalance! * 100))
+            );
+            const firstFile = fileTotals.find(t => t.openingBalance !== undefined && !allClose.has(Math.round(t.openingBalance * 100)));
+            const lastFile  = fileTotals.find(t => t.closingBalance !== undefined && !allOpen.has(Math.round(t.closingBalance * 100)));
+            if (firstFile?.openingBalance !== undefined) combinedStatementTotals.openingBalance = firstFile.openingBalance;
+            if (lastFile?.closingBalance  !== undefined) combinedStatementTotals.closingBalance  = lastFile.closingBalance;
+        } else if (combinedStatementTotals && fileTotals.length === 1) {
+            combinedStatementTotals.openingBalance = fileTotals[0].openingBalance;
+            combinedStatementTotals.closingBalance  = fileTotals[0].closingBalance;
         }
 
         if (allTransactions.length === 0) throw new Error('No transactions found in any of the uploaded files');
