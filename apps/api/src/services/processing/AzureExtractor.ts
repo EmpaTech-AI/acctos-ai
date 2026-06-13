@@ -1,5 +1,15 @@
 import { DocumentAnalysisClient, AzureKeyCredential } from '@azure/ai-form-recognizer';
 import { Cell } from './parsers/shared.js';
+import { splitIntoChunks } from './PdfSplitter.js';
+
+const CHUNK_SIZE = 10; // pages per chunk when falling back from a size error
+
+function isSizeError(err: any): boolean {
+    if (err?.statusCode === 413) return true;
+    const msg: string = (err?.message ?? err?.code ?? '').toLowerCase();
+    return msg.includes('too large') || msg.includes('file size') || msg.includes('content length')
+        || msg.includes('maximum') || msg.includes('exceed') || msg.includes('invalidrequest');
+}
 
 export interface PageData {
     cells: Cell[];
@@ -48,30 +58,44 @@ export async function analyzePage(pageBuffer: Buffer): Promise<PageData> {
     return { cells, content: result.content ?? '' };
 }
 
-/** Analyze multiple pages with a concurrency limit of 3 (matching Make's rate limit). */
+/** Analyze multiple pages with a concurrency limit of 3 (matching Make's rate limit).
+ *  If a buffer is rejected by Azure due to size, it is automatically split into
+ *  CHUNK_SIZE-page pieces and each chunk is analysed separately. */
 export async function analyzePages(pageBuffers: Buffer[]): Promise<Array<PageData | null>> {
     getClient();
 
     const CONCURRENCY = 3;
-    const results: Array<PageData | null> = new Array(pageBuffers.length).fill(null);
+    // Each slot may expand into multiple results if a chunk fallback fires.
+    const resultGroups: Array<PageData | null>[] = [];
 
     for (let i = 0; i < pageBuffers.length; i += CONCURRENCY) {
         const batch = pageBuffers.slice(i, i + CONCURRENCY);
-        const batchResults = await Promise.all(
+        const batchGroups = await Promise.all(
             batch.map(async (buf, batchIdx) => {
                 const pageIdx = i + batchIdx;
                 try {
-                    return await analyzePage(buf);
+                    return [await analyzePage(buf)];
                 } catch (err: any) {
-                    console.error(`[AzureExtractor] Page ${pageIdx + 1} failed: ${err.message}`);
-                    return null;
+                    if (isSizeError(err)) {
+                        console.warn(`[AzureExtractor] Buffer ${pageIdx + 1} too large for Azure DI — retrying in ${CHUNK_SIZE}-page chunks...`);
+                        try {
+                            const chunks = await splitIntoChunks(buf, CHUNK_SIZE);
+                            // Recursive call handles concurrency limit for the chunks.
+                            const chunkResults = await analyzePages(chunks);
+                            console.log(`[AzureExtractor] Chunked fallback: ${chunkResults.filter(Boolean).length}/${chunks.length} chunks succeeded.`);
+                            return chunkResults;
+                        } catch (splitErr: any) {
+                            console.error(`[AzureExtractor] Chunked fallback failed: ${splitErr.message}`);
+                        }
+                    } else {
+                        console.error(`[AzureExtractor] Buffer ${pageIdx + 1} failed: ${err.message}`);
+                    }
+                    return [null] as (PageData | null)[];
                 }
             })
         );
-        for (let j = 0; j < batchResults.length; j++) {
-            results[i + j] = batchResults[j];
-        }
+        resultGroups.push(...batchGroups);
     }
 
-    return results;
+    return resultGroups.flat();
 }

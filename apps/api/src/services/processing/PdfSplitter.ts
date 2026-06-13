@@ -42,3 +42,27 @@ export async function getPageCount(pdfBuffer: Buffer): Promise<number> {
     const doc = await PDFDocument.load(pdfBuffer);
     return doc.getPageCount();
 }
+
+/**
+ * Split a PDF (including encrypted ones) into chunks of `chunkSize` pages each.
+ * Used as a fallback when Azure DI rejects a large single-file submission.
+ * For encrypted PDFs we load with ignoreEncryption — Azure DI can still decrypt
+ * each chunk because owner-only-password PDFs have readable content streams.
+ */
+export async function splitIntoChunks(pdfBuffer: Buffer, chunkSize: number): Promise<Buffer[]> {
+    const srcDoc = await PDFDocument.load(pdfBuffer, { ignoreEncryption: true });
+    const pageCount = srcDoc.getPageCount();
+    const chunks: Buffer[] = [];
+
+    for (let start = 0; start < pageCount; start += chunkSize) {
+        const end = Math.min(start + chunkSize, pageCount);
+        const chunkDoc = await PDFDocument.create();
+        const indices = Array.from({ length: end - start }, (_, i) => start + i);
+        const copied = await chunkDoc.copyPages(srcDoc, indices);
+        copied.forEach(p => chunkDoc.addPage(p));
+        chunks.push(Buffer.from(await chunkDoc.save()));
+    }
+
+    console.log(`[PdfSplitter] Split ${pageCount}-page PDF into ${chunks.length} chunks of ≤${chunkSize} pages.`);
+    return chunks;
+}
