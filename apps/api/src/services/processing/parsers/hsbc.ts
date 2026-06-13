@@ -477,7 +477,16 @@ function normalizeShiftedRows(inputRows: Row[]): Row[] {
         }
         // Continuation row: c1 has description text, c2 has an amount → shift
         if (!c0 && c1 && !isCode(c1) && isAmount(c2) && !c3) {
-            out.push({ ...row, c1: '', c2: c1, c3: c2, c4, c5, c6: row.c6 || '', maxCol });
+            // On compact-layout pages (col4=Balance, no col5/col6), c4 holds the balance.
+            // After shifting c2→c3, c4 must move to c5 so it is treated as balance, not Paid In.
+            const compactBal = isAmount(c4) && !c5 && !row.c6;
+            out.push({
+                ...row, c1: '', c2: c1, c3: c2,
+                c4: compactBal ? '' : c4,
+                c5: compactBal ? c4 : (c5 || ''),
+                c6: row.c6 || '',
+                maxCol: compactBal ? Math.max(maxCol, 5) : maxCol,
+            });
             continue;
         }
         // Continuation row: c1 has description text, c3 has an amount, c2 is empty → shift
@@ -688,12 +697,16 @@ export function parse(cells: Cell[]): ParseResult {
         // Condition: current txn already has a movement amount (so we are past its header row)
         //            AND this row has non-empty description AND a paid-out/paid-in amount.
         if (!codeHit && txnHasRealAmount(currentTxn)) {
+            const iC1 = (row.c1 || '').trim();
             const iC2 = (row.c2 || '').trim();
             const iC3 = (row.c3 || '').trim();
             const iC4 = (row.c4 || '').trim();
             const hasNewAmt = isAmount(iC3) || isAmount(iC4);
-            const hasDesc   = iC2 && !isAmount(iC2) && !SKIP_DESC_EXACT_RE.test(iC2) && !CARRIED_FORWARD_RE.test(iC2);
-            const isFeeRow  = /\btransaction fee\b|\bnon-sterling\b/i.test(iC2);
+            // Description is normally in c2; fall back to c1 when c2 is empty
+            // (e.g. rows where Azure DI put the merchant name in c1 with no code prefix).
+            const descCand  = iC2 || iC1;
+            const hasDesc   = !!descCand && !isAmount(descCand) && !SKIP_DESC_EXACT_RE.test(descCand) && !CARRIED_FORWARD_RE.test(descCand);
+            const isFeeRow  = /\btransaction fee\b|\bnon-sterling\b/i.test(descCand);
             if (hasNewAmt && hasDesc && !isFeeRow) {
                 // If ))) appears in the middle of the accumulated description it marks where
                 // the second merchant begins (Azure DI merged two contactless rows into one
