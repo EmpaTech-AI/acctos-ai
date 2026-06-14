@@ -131,27 +131,32 @@ function applyFallback(items: CategorizedTransaction[], rawTransactions: object[
 const BATCH_SIZE = 25;
 const MODEL      = 'gpt-4o-mini';
 
-async function categorizeBatch(batch: object[], apiKey: string): Promise<CategorizedTransaction[]> {
+async function fetchCompletion(batch: object[], apiKey: string, attempt = 0): Promise<Response> {
     const res = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
-        headers: {
-            Authorization: `Bearer ${apiKey}`,
-            'Content-Type': 'application/json',
-        },
+        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
-            model: MODEL,
-            temperature: 0,
-            max_tokens: 16384,
+            model: MODEL, temperature: 0, max_tokens: 16384,
             messages: [
                 { role: 'system', content: SYSTEM_PROMPT },
                 { role: 'user',   content: JSON.stringify(batch) },
             ],
         }),
     });
+    // Retry once on transient 5xx (e.g. Cloudflare 520 in front of OpenAI)
+    if (!res.ok && res.status >= 500 && attempt === 0) {
+        console.warn(`[Categorizer] OpenAI ${res.status} — retrying after 3s...`);
+        await new Promise(r => setTimeout(r, 3000));
+        return fetchCompletion(batch, apiKey, 1);
+    }
+    return res;
+}
+
+async function categorizeBatch(batch: object[], apiKey: string): Promise<CategorizedTransaction[]> {
+    const res = await fetchCompletion(batch, apiKey);
 
     if (!res.ok) {
-        const err = await res.text();
-        throw new Error(`OpenAI API error ${res.status}: ${err}`);
+        throw new Error(`OpenAI API error ${res.status}`);
     }
 
     const data         = await res.json() as any;

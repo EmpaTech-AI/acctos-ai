@@ -186,8 +186,10 @@ export interface FileInput {
 /**
  * Start a batch job: parse all files, sort by date, verify balances, categorize, produce one Excel.
  * Deduplicates files by SHA-256 content hash before processing.
+ * @param bankHint  Optional bank type override — use when files are named-page splits of a known
+ *                  bank's statement and filename/content detection would be unreliable.
  */
-export function startBatchProcessingJob(files: FileInput[], tracking?: TrackingContext): string {
+export function startBatchProcessingJob(files: FileInput[], tracking?: TrackingContext, bankHint?: BankType): string {
     const jobId = randomUUID();
 
     // Deduplicate by content hash — identical bytes across differently-named files get dropped
@@ -218,7 +220,7 @@ export function startBatchProcessingJob(files: FileInput[], tracking?: TrackingC
         return jobId;
     }
 
-    runBatchJob(jobId, uniqueFiles, tracking).catch(err => {
+    runBatchJob(jobId, uniqueFiles, tracking, bankHint).catch(err => {
         console.error(`[Orchestrator] Batch job ${jobId} unhandled crash:`, err);
         jobStore.update(jobId, { status: 'failed', error: String(err?.message ?? err) });
     });
@@ -226,12 +228,13 @@ export function startBatchProcessingJob(files: FileInput[], tracking?: TrackingC
     return jobId;
 }
 
-async function runBatchJob(jobId: string, files: FileInput[], tracking?: TrackingContext): Promise<void> {
+async function runBatchJob(jobId: string, files: FileInput[], tracking?: TrackingContext, bankHint?: BankType): Promise<void> {
     try {
         jobStore.update(jobId, { status: 'processing', totalFiles: files.length });
 
         const allTransactions: ParsedTransaction[] = [];
-        let confirmedBankType: BankType | null = null;
+        let confirmedBankType: BankType | null = bankHint ?? null;
+        if (confirmedBankType) console.log(`[Orchestrator] Bank hint applied: ${confirmedBankType}`);
         let combinedStatementTotals: { moneyIn: number; moneyOut: number; openingBalance?: number; closingBalance?: number } | undefined;
         const fileTotals: Array<{ moneyIn: number; moneyOut: number; openingBalance?: number; closingBalance?: number }> = [];
         let ascending = false;

@@ -7,6 +7,7 @@ import { authenticateToken, requireRole, AuthenticatedRequest } from '../middlew
 import { createError } from '../middleware/errorHandler.js';
 import { ADMIN_ROLES } from '../utils/roles.js';
 import { startProcessingJob, startBatchProcessingJob } from '../services/processing/ProcessingOrchestrator.js';
+import { BankType } from '../services/processing/DocumentClassifier.js';
 
 const upload = multer({
     storage: multer.memoryStorage(),
@@ -196,6 +197,10 @@ router.post('/import', requireRole(...ADMIN_ROLES), upload.array('files', 20), a
         const tenantId = req.user!.tenantId;
         const tracking = tenantId ? { prisma: req.app.locals.prisma, tenantId } : undefined;
 
+        // Optional bank type hint for multi-file batches where filenames don't contain the bank name
+        // (e.g. page-split exports: "Statements__page1-20.pdf"). Passed as query param ?bankType=santander.
+        const bankHint = (req.query.bankType as BankType | undefined) || undefined;
+
         // Single file: use original path (supports Excel + PDF)
         // Multiple files: batch path (PDF only, sorts by date, one combined output)
         const jobId = files.length === 1
@@ -203,6 +208,7 @@ router.post('/import', requireRole(...ADMIN_ROLES), upload.array('files', 20), a
             : startBatchProcessingJob(
                 files.map(f => ({ filename: f.originalname, mimeType: f.mimetype, buffer: f.buffer })),
                 tracking,
+                bankHint,
             );
 
         res.json({ success: true, jobId });
