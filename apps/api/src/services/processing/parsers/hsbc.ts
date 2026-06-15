@@ -491,7 +491,18 @@ function normalizeShiftedRows(inputRows: Row[]): Row[] {
         }
         // Continuation row: c1 has description text, c3 has an amount, c2 is empty → shift
         if (!c0 && c1 && !isCode(c1) && !c2 && isAmount(c3)) {
-            out.push({ ...row, c1: '', c2: c1, c3, c4, c5, c6: row.c6 || '', maxCol });
+            // On compact-layout pages (5 cols: Date|Type+Desc|PaidOut|PaidIn|Balance),
+            // c3=PaidIn and c4=Balance. Shift amounts to standard positions so
+            // applyAmountsToTxnFromRow reads them correctly: c4=PaidIn, c5=Balance.
+            const compactPage = row.maxCol <= 4 && isAmount(c4) && !c5 && !row.c6;
+            if (compactPage) {
+                out.push({
+                    ...row, c1: '', c2: c1, c3: '', c4: c3, c5: c4, c6: row.c6 || '',
+                    maxCol: Math.max(row.maxCol || 0, 5),
+                });
+            } else {
+                out.push({ ...row, c1: '', c2: c1, c3, c4, c5, c6: row.c6 || '', maxCol });
+            }
             continue;
         }
 
