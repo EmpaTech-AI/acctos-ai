@@ -57,7 +57,7 @@ function isStatementFooterRow(row: Row): boolean {
 }
 
 function isAmount(v: string): boolean {
-    return Boolean(v) && /^[0-9,]+(\.\d{1,2})?(\s+D)?$/.test(v.trim());
+    return Boolean(v) && /^[0-9,]+\.\d{1,2}(\s+D)?$/.test(v.trim());
 }
 
 // Convert HSBC overdraft suffix to a negative number string: "475.57 D" → "-475.57"
@@ -485,6 +485,12 @@ function normalizeShiftedRows(inputRows: Row[]): Row[] {
             out.push({ ...row, c1: '', c2: c1, c3, c4, c5, c6: row.c6 || '', maxCol });
             continue;
         }
+        // Transaction-start row: date in c0, description in c1 (no code), c2 empty, c3 has amount → shift c1→c2
+        // Azure DI sometimes omits the payment-type code column and places description straight in c1.
+        if (c0 && /\d{1,2}\s+[A-Za-z]{3}/.test(c0) && c1 && !isCode(c1) && !c2 && isAmount(c3)) {
+            out.push({ ...row, c1: '', c2: c1, c3, c4, c5, c6: row.c6 || '', maxCol });
+            continue;
+        }
 
         out.push(row);
     }
@@ -568,6 +574,20 @@ export function parse(cells: Cell[]): ParseResult {
     const sorted = [...cells].sort((a, b) =>
         a.rowIndex !== b.rowIndex ? a.rowIndex - b.rowIndex : a.columnIndex - b.columnIndex);
 
+    // Detect compact 5-col pages: header has "Paid out" at columnIndex=2 (instead of 3).
+    // On compact pages shift col 2→3, 3→4, 4→5 so the rest of the parser sees standard positions.
+    const compactRows = new Set<number>();
+    {
+        let compact = false;
+        for (const cell of sorted) {
+            if (cell.rowIndex < 0) continue;
+            const lo = normStr(cell.content).toLowerCase();
+            if      (cell.columnIndex === 2 && (lo.includes('paid out') || lo.includes('money out'))) compact = true;
+            else if (cell.columnIndex === 3 && (lo.includes('paid out') || lo.includes('money out'))) compact = false;
+            if (compact) compactRows.add(cell.rowIndex);
+        }
+    }
+
     const rawRows: Row[] = [];
     let cur = emptyRow();
     let lastRI = -1;
@@ -584,11 +604,14 @@ export function parse(cells: Cell[]): ParseResult {
             lastRI = cell.rowIndex;
         }
 
-        if (col > cur.maxCol) cur.maxCol = col;
+        // Compact layout: shift amount/balance columns right so standard paths apply
+        const ec = (compactRows.has(cell.rowIndex) && col >= 2 && col <= 4) ? col + 1 : col;
 
-        if (col === 0) {
+        if (ec > cur.maxCol) cur.maxCol = ec;
+
+        if (ec === 0) {
             cur.c0 = content;
-        } else if (col >= 1 && col <= 6) {
+        } else if (ec >= 1 && ec <= 6) {
             if (col === 1 && content && CODES.includes(content.trim()) && rowHasData(cur)) {
                 const code = content.trim();
                 const hasAmt = !!(cur.c3 || cur.c4 || cur.c5 || cur.c6);
@@ -604,7 +627,7 @@ export function parse(cells: Cell[]): ParseResult {
                 cur.c2 = cur.c2 ? `${cur.c2} ${code}`.trim() : code;
                 continue;
             }
-            const key = `c${col}` as keyof Row;
+            const key = `c${ec}` as keyof Row;
             const ex = cur[key] as string;
             (cur as any)[key] = ex ? `${ex} ${content}`.trim() : content;
         }
