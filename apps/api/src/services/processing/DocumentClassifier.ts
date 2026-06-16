@@ -88,7 +88,9 @@ export function detectBankFromContent(text: string): BankType {
     if (/m\s*etro\s+bank/i.test(t) || t.includes('mymbgb') || t.includes('metrobankonline')) return 'metro';
     // Nationwide before Santander — Nationwide statements contain "Direct debit SANTANDER" as a payee.
     // Use specific branding text that only appears in Nationwide's own header/footer.
-    if (t.includes('nationwide.co.uk') || /\bnationwide\s+building\s+society\b/.test(t) || /\bflexaccount\b/.test(t)) return 'nationwide';
+    // "Nationwide Building Society ATM" is an ATM location description that appears in other banks'
+    // statements — exclude it with a negative lookahead so only true Nationwide headers match.
+    if (t.includes('nationwide.co.uk') || /\bnationwide\s+building\s+society\b(?!\s+atm)/i.test(t) || /\bflexaccount\b/.test(t)) return 'nationwide';
     if (/\bsantander\b/.test(t))                                     return 'santander';
     if (/\blloyds\s+bank\b/.test(t))                                 return 'lloyds';
     if (/\bhsbc\b/.test(t))                                          return 'hsbc';
