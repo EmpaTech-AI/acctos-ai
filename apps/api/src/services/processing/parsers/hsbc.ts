@@ -165,6 +165,13 @@ function applyAmountsToTxnFromRow(txn: PartialTxn, row: Row): void {
         if (isAmount(c5)) balVal = c5;
         else if (isAmount(c6)) balVal = c6;
         else if (isAmount(c4)) balVal = c4;
+    } else if (!c5 && !c6 && isAmount(c3) && isAmount(c4)) {
+        // 5-column section (c2=Paid out, c3=Paid in, c4=Balance) detected when both
+        // c3 and c4 carry amounts while c5/c6 are absent. After normalizeShiftedRows
+        // outward amounts shift c2→c3, so this covers both inward and outward cases.
+        // Set c3 into outVal so forceDirectionByType can flip CR transactions to moneyIn.
+        outVal = c3;
+        balVal = c4;
     } else {
         // Standard HSBC layout: c3=Money Out, c4=Money In, c5/c6=Balance
         if (isAmount(c3)) outVal = c3;
@@ -678,6 +685,16 @@ export function parse(cells: Cell[]): ParseResult {
             }
 
             currentTxn = { date: currentDate, type: codeHit.code, description: '', moneyOut: '', moneyIn: '', balance: '' };
+        }
+
+        // Dated row with no transaction code: OCR missed the code (seen at the start of some
+        // statement pages). Create a synthetic codeless transaction so the amount isn't lost.
+        if (!codeHit && !currentTxn && dateMatch) {
+            const rowC2 = (row.c2 || '').trim();
+            const isBroughtForward = /\b(brought|carried)\s+fo/i.test(rowText);
+            if (!isBroughtForward && rowC2 && !SKIP_DESC_EXACT_RE.test(rowC2) && !isAmount(rowC2)) {
+                currentTxn = { date: currentDate, type: '', description: '', moneyOut: '', moneyIn: '', balance: '' };
+            }
         }
 
         if (!currentTxn) continue;
