@@ -59,6 +59,7 @@ function getParser(bankType: BankType): StandardParser {
         case 'barclaycard': return parseBarclaycard;
         case 'zempler':    return parseZempler;
         case 'countingup': return parseCountingup;
+        case 'anna':       return parseAnna;
         case 'metro':      return parseMetro;
         case 'lloyds':     return parseLloyds;
         case 'tsb':        return parseTsb;
