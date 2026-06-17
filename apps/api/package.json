@@ -15,6 +15,7 @@
         "test:watch": "vitest"
     },
     "dependencies": {
+        "@anthropic-ai/sdk": "^0.104.2",
         "@azure/ai-form-recognizer": "^5.1.0",
         "@prisma/client": "^5.8.0",
         "@types/multer": "^2.1.0",

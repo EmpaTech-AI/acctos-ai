@@ -1,6 +1,7 @@
 import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { Anthropic } from '@anthropic-ai/sdk';
 import { ParsedTransaction, formatTransactionsForAssistant } from './parsers/shared.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -131,6 +132,41 @@ function applyFallback(items: CategorizedTransaction[], rawTransactions: object[
 const BATCH_SIZE = 25;
 const MODEL      = 'gpt-4o-mini';
 
+class QuotaExhaustedError extends Error {
+    constructor() { super('openai_quota_exhausted'); }
+}
+
+// Flipped to true the first time OpenAI returns insufficient_quota.
+// All subsequent batches skip OpenAI and go straight to Claude.
+let openAIQuotaExhausted = false;
+
+const CLAUDE_FALLBACK_MODEL = 'claude-haiku-4-5-20251001';
+
+async function categorizeBatchWithClaude(batch: object[]): Promise<CategorizedTransaction[]> {
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) throw new Error('OpenAI quota exhausted and ANTHROPIC_API_KEY is not set — cannot fall back to Claude.');
+
+    console.warn(`[Categorizer] Falling back to Claude (${CLAUDE_FALLBACK_MODEL}) for batch of ${batch.length} transactions`);
+
+    const client = new Anthropic({ apiKey });
+    const message = await client.messages.create({
+        model: CLAUDE_FALLBACK_MODEL,
+        max_tokens: 16384,
+        system: SYSTEM_PROMPT,
+        messages: [{ role: 'user', content: JSON.stringify(batch) }],
+    });
+
+    const content = message.content[0].type === 'text' ? message.content[0].text : '';
+    const cleaned = content.replace(/```json\s*/gi, '').replace(/```\s*/gi, '').trim();
+
+    let parsed: any;
+    try { parsed = JSON.parse(cleaned); }
+    catch { throw new Error('Claude returned invalid JSON: ' + cleaned.slice(0, 300)); }
+
+    const items: CategorizedTransaction[] = Array.isArray(parsed) ? parsed : (parsed.items || []);
+    return applyFallback(items, batch);
+}
+
 const MAX_RETRIES = 4;
 
 async function fetchCompletion(batch: object[], apiKey: string, attempt = 0): Promise<Response> {
@@ -152,7 +188,8 @@ async function fetchCompletion(batch: object[], apiKey: string, attempt = 0): Pr
             const body = await res.clone().json().catch(() => ({})) as any;
             const code = body?.error?.code as string | undefined;
             if (code === 'insufficient_quota') {
-                throw new Error('OpenAI quota exhausted — account has no remaining credits. Please top up at platform.openai.com/billing.');
+                openAIQuotaExhausted = true;
+                throw new QuotaExhaustedError();
             }
             // Rate limited — respect Retry-After header or use exponential backoff
             const retryAfter = Number(res.headers.get('retry-after') || '0');
@@ -174,7 +211,15 @@ async function fetchCompletion(batch: object[], apiKey: string, attempt = 0): Pr
 }
 
 async function categorizeBatch(batch: object[], apiKey: string): Promise<CategorizedTransaction[]> {
-    const res = await fetchCompletion(batch, apiKey);
+    if (openAIQuotaExhausted) return categorizeBatchWithClaude(batch);
+
+    let res: Response;
+    try {
+        res = await fetchCompletion(batch, apiKey);
+    } catch (err) {
+        if (err instanceof QuotaExhaustedError) return categorizeBatchWithClaude(batch);
+        throw err;
+    }
 
     if (!res.ok) {
         throw new Error(`OpenAI API error ${res.status}`);
