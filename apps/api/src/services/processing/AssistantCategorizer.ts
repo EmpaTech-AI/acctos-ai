@@ -1,7 +1,7 @@
 import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import Anthropic from '@anthropic-ai/sdk';
+import { Anthropic } from '@anthropic-ai/sdk';
 import { ParsedTransaction, formatTransactionsForAssistant } from './parsers/shared.js';
 
 const __filename = fileURLToPath(import.meta.url);
