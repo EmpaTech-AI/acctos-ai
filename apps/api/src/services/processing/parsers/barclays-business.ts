@@ -45,6 +45,9 @@ function parseDateCell(s: string, resolveYear: (mon: number) => number): string 
     s = normStr(s);
     if (!s) return '';
 
+    // Azure DI sometimes adds spaces around separators: "09/10 /2025" → "09/10/2025"
+    s = s.replace(/\s*([\/.\-])\s*/g, '$1');
+
     // DD/MM/YYYY
     let m = s.match(/^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})$/);
     if (m) {
