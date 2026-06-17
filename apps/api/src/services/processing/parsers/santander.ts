@@ -365,7 +365,11 @@ export function parse(cells: Cell[]): ParseResult {
         let outRaw = '';
         let bRaw   = '';
 
-        if (inCol !== null && outCol !== null) {
+        // Only use detected header columns when the row actually has enough columns.
+        // A 5-col header (inCol=2, outCol=3, balCol=4) found on one page must not be
+        // applied to 4-col rows (maxC=3) on other pages — that would read Balance as MoneyOut.
+        const minRequired = Math.max(outCol ?? 0, balCol ?? 0, inCol ?? 0);
+        if (inCol !== null && outCol !== null && maxC >= minRequired) {
             inRaw  = v[inCol]  ?? '';
             outRaw = v[outCol] ?? '';
             bRaw   = balCol !== null ? (v[balCol] ?? '') : '';

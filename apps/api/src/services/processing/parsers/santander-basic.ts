@@ -290,6 +290,42 @@ function buildDescriptionFromRow(row: Row, COL: ColLayout): string {
     return normalizeSpace(parts.join(' '));
 }
 
+function extractDeclaredTotals(rows: Row[]): {
+    openingBalance?: number;
+    closingBalance?: number;
+    moneyIn?: number;
+    moneyOut?: number;
+} {
+    const result: { openingBalance?: number; closingBalance?: number; moneyIn?: number; moneyOut?: number } = {};
+    for (const r of rows) {
+        if (isHeaderRow(r)) break; // stop at the transaction table
+        const joined = r.cells.join(' ');
+        const lo = joined.toLowerCase();
+        // Pick the last cell that parses as an amount (the value column)
+        const lastAmt = () => {
+            for (let i = r.cells.length - 1; i >= 0; i--) {
+                const n = balanceToNumber(r.cells[i]);
+                if (n !== null) return n;
+            }
+            return null;
+        };
+        if (lo.includes('balance brought forward') || lo.includes('brought forward balance') || lo.includes('balance carried forward')) {
+            const n = lastAmt();
+            if (n !== null) result.openingBalance = n;
+        } else if (/total\s+(?:money\s+in|credits?)/i.test(joined)) {
+            const n = lastAmt();
+            if (n !== null) result.moneyIn = Math.abs(n);
+        } else if (/total\s+(?:money\s+out|debits?)/i.test(joined)) {
+            const n = lastAmt();
+            if (n !== null) result.moneyOut = Math.abs(n);
+        } else if (/balance\s+at\s+close\s+of\s+business/i.test(joined)) {
+            const n = lastAmt();
+            if (n !== null) result.closingBalance = n;
+        }
+    }
+    return result;
+}
+
 export function parse(cells: Cell[]): ParseResult {
     const defaultYear = extractDefaultYear(cells);
     const rows = buildGrid(cells);
@@ -405,5 +441,16 @@ export function parse(cells: Cell[]): ParseResult {
     }
 
     flush();
-    return { transactions, ascending: true };
+    const declared = extractDeclaredTotals(rows);
+    const statementTotals =
+        declared.moneyIn !== undefined || declared.moneyOut !== undefined ||
+        declared.openingBalance !== undefined || declared.closingBalance !== undefined
+            ? {
+                moneyIn:        declared.moneyIn        ?? 0,
+                moneyOut:       declared.moneyOut       ?? 0,
+                openingBalance: declared.openingBalance,
+                closingBalance: declared.closingBalance,
+              }
+            : undefined;
+    return { transactions, statementTotals, ascending: true };
 }
