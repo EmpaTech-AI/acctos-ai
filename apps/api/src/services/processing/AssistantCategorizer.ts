@@ -131,6 +131,8 @@ function applyFallback(items: CategorizedTransaction[], rawTransactions: object[
 const BATCH_SIZE = 25;
 const MODEL      = 'gpt-4o-mini';
 
+const MAX_RETRIES = 4;
+
 async function fetchCompletion(batch: object[], apiKey: string, attempt = 0): Promise<Response> {
     const res = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
@@ -143,12 +145,31 @@ async function fetchCompletion(batch: object[], apiKey: string, attempt = 0): Pr
             ],
         }),
     });
-    // Retry once on transient 5xx (e.g. Cloudflare 520 in front of OpenAI)
-    if (!res.ok && res.status >= 500 && attempt === 0) {
-        console.warn(`[Categorizer] OpenAI ${res.status} — retrying after 3s...`);
-        await new Promise(r => setTimeout(r, 3000));
-        return fetchCompletion(batch, apiKey, 1);
+
+    if (!res.ok && attempt < MAX_RETRIES) {
+        if (res.status === 429) {
+            // Read body to distinguish quota exhaustion from rate limiting
+            const body = await res.clone().json().catch(() => ({})) as any;
+            const code = body?.error?.code as string | undefined;
+            if (code === 'insufficient_quota') {
+                throw new Error('OpenAI quota exhausted — account has no remaining credits. Please top up at platform.openai.com/billing.');
+            }
+            // Rate limited — respect Retry-After header or use exponential backoff
+            const retryAfter = Number(res.headers.get('retry-after') || '0');
+            const waitMs = retryAfter > 0 ? retryAfter * 1000 : Math.min(60000 * (attempt + 1), 120000);
+            console.warn(`[Categorizer] OpenAI 429 rate limit — waiting ${Math.round(waitMs / 1000)}s before retry (attempt ${attempt + 1}/${MAX_RETRIES})...`);
+            await new Promise(r => setTimeout(r, waitMs));
+            return fetchCompletion(batch, apiKey, attempt + 1);
+        }
+        if (res.status >= 500) {
+            // Transient server error — short backoff
+            const waitMs = 3000 * (attempt + 1);
+            console.warn(`[Categorizer] OpenAI ${res.status} — retrying after ${waitMs / 1000}s (attempt ${attempt + 1}/${MAX_RETRIES})...`);
+            await new Promise(r => setTimeout(r, waitMs));
+            return fetchCompletion(batch, apiKey, attempt + 1);
+        }
     }
+
     return res;
 }
 
@@ -232,17 +253,15 @@ export async function categorize(transactions: ParsedTransaction[]): Promise<Cat
         batches.push(inputArray.slice(i, i + BATCH_SIZE));
     }
 
-    console.log(`[Categorizer] Running ${totalBatches} batch(es) in parallel — ${inputArray.length} transactions total`);
+    console.log(`[Categorizer] Running ${totalBatches} batch(es) sequentially — ${inputArray.length} transactions total`);
 
-    const batchResults = await Promise.all(
-        batches.map((batch, idx) => {
-            console.log(`[Categorizer] Batch ${idx + 1}/${totalBatches} started — ${batch.length} transactions`);
-            return categorizeBatch(batch, apiKey).then(result => {
-                console.log(`[Categorizer] Batch ${idx + 1}/${totalBatches} done`);
-                return result;
-            });
-        })
-    );
+    const batchResults: CategorizedTransaction[][] = [];
+    for (let idx = 0; idx < batches.length; idx++) {
+        const batch = batches[idx];
+        console.log(`[Categorizer] Batch ${idx + 1}/${totalBatches} started — ${batch.length} transactions`);
+        batchResults.push(await categorizeBatch(batch, apiKey));
+        console.log(`[Categorizer] Batch ${idx + 1}/${totalBatches} done`);
+    }
 
     const results = batchResults.flat();
 
