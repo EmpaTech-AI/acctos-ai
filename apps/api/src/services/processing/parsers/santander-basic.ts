@@ -40,6 +40,8 @@ function normalizeAmount(val: unknown): string {
     if (/[A-Z]{3}\b/i.test(raw) || raw.includes('/')) return '';
     const s = raw.replace(/\s+/g, '');
     if (!/^-?\d{1,3}(?:,\d{3})*(?:\.\d{2})?$|^-?\d+(?:\.\d{2})?$/.test(s)) return '';
+    // Reject leading-zero integers (e.g. "0004") — these are reference/mandate numbers, not money amounts.
+    if (/^0\d+$/.test(s)) return '';
     return s;
 }
 

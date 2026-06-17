@@ -110,6 +110,8 @@ export function detectBankFromContent(text: string): BankType {
     if (t.includes('internet-banking.ib.apps.virginmoney.com/vm/homepage')) return 'virginmoney';
     if (/\bpockit\b/.test(t) || /help@pockit\.com/.test(t))          return 'pockit';
     if (/\bnationwide\b/.test(t))                                    return 'nationwide';
+    // Nationwide without "nationwide" in text — detected by unique footer/summary phrase
+    if (t.includes('balance carried forward to next statement'))     return 'nationwide';
     if (/\bbarclaycard\b/i.test(t))                                  return 'barclaycard';
     if (/\bbarclays\b/.test(t))                                      return 'barclays';
     if (/\btsb\b/.test(t) || /203\s*284\s*1576/.test(t))            return 'tsb';
