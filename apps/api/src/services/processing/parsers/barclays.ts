@@ -397,10 +397,27 @@ function parseNormal(cells: Cell[]): ParseResult {
         const remapped = extractColMap(row);
         if (remapped) { COL = remapped; continue; }
 
-        const moneyIn  = COL.in  >= 0 ? parseMoney(gv(row, COL.in))  : null;
-        const moneyOut = COL.out >= 0 ? parseMoney(gv(row, COL.out)) : null;
-        const balance  = parseMoney(gv(row, COL.bal));
+        let moneyIn  = COL.in  >= 0 ? parseMoney(gv(row, COL.in))  : null;
+        let moneyOut = COL.out >= 0 ? parseMoney(gv(row, COL.out)) : null;
+        let balance  = parseMoney(gv(row, COL.bal));
         const dateCell = gv(row, COL.date);
+
+        // Barclays Business Account stores outgoing amounts as negative (e.g. "-£107.69").
+        // A positive value in the money-out column when balance is absent means the balance
+        // has overflowed into that cell (short rows at page breaks) — reassign it.
+        if (moneyOut !== null) {
+            if (moneyOut < 0) {
+                moneyOut = Math.abs(moneyOut);
+            } else if (moneyOut > 0 && balance === null) {
+                balance = moneyOut;
+                moneyOut = null;
+            }
+        }
+        if (moneyIn !== null && moneyIn < 0) {
+            moneyOut = (moneyOut === null) ? Math.abs(moneyIn) : moneyOut;
+            moneyIn = null;
+        }
+
         const movement = (moneyIn ?? 0) > 0 || (moneyOut ?? 0) > 0;
 
         // Skip rows with unreasonably large amounts (footnotes, phone numbers, etc.)
