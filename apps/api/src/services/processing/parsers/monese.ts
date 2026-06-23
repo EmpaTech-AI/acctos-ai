@@ -250,19 +250,42 @@ export function parse(cells: Cell[]): ParseResult {
             const amtRaw = gv(row, COL.amount);
             const parsed = parseSignedAmount(amtRaw);
             if (parsed) {
-                if (parsed.sign === 1)  moneyIn  = parsed.amount;
-                else                    moneyOut = parsed.amount;
+                // If col2 also has a signed amount, it's the real amount and col3 is a
+                // negative balance (Monese column-shift: amount=col2, balance=col3).
+                // e.g. "DOG AND GUN INN | -£2.60 | -£0.71" where col3=-£0.71 is balance.
+                const shiftedFirst = COL.desc >= 0 ? parseSignedAmount(gv(row, COL.desc)) : null;
+                if (shiftedFirst) {
+                    if (shiftedFirst.sign === 1) moneyIn  = shiftedFirst.amount;
+                    else                         moneyOut = shiftedFirst.amount;
+                    amtFromDescCol = true;
+                } else {
+                    if (parsed.sign === 1)  moneyIn  = parsed.amount;
+                    else                    moneyOut = parsed.amount;
+                }
             } else if (amtRaw) {
                 // col3 has no signed amount — check col2 for column-shifted amount
                 if (COL.desc >= 0) {
-                    const shifted = parseSignedAmount(gv(row, COL.desc));
+                    const descRaw = gv(row, COL.desc);
+                    const shifted = parseSignedAmount(descRaw);
                     if (shifted) {
+                        // Signed shift: col2 has ±£xxx → amount=col2, balance=col3
                         if (shifted.sign === 1) moneyIn  = shifted.amount;
                         else                    moneyOut = shifted.amount;
                         amtFromDescCol = true;
+                    } else {
+                        // Unsigned shift: col2 has £xxx (unsigned fee) AND col3 has £xxx (balance)
+                        // e.g. Azure DI produces "Ja | £0.15 | £783.20" where col2=amount, col3=balance
+                        const unsignedM = descRaw.match(/^£\s*([\d,]+\.\d{2})$/);
+                        if (unsignedM && /^£\s*[\d,]+\.\d{2}$/.test(amtRaw)) {
+                            const amt = parseFloat(unsignedM[1].replace(/,/g, ''));
+                            if (isFinite(amt) && amt > 0) {
+                                moneyOut = amt;
+                                amtFromDescCol = true;
+                            }
+                        }
                     }
                 }
-                // Unsigned £xxx.xx in col3 with no sign → treat as OUT (fee)
+                // Unsigned £xxx.xx in col3 — only if no col2 shift was detected
                 if (moneyIn === null && moneyOut === null) {
                     const m2 = amtRaw.match(/^£\s*([\d,]+\.\d{2})$/);
                     if (m2) {
@@ -286,8 +309,8 @@ export function parse(cells: Cell[]): ParseResult {
             // Skip amount col — either it was used normally or it's the shifted balance
             if (c === COL.amount && (parseSignedAmount(row[c]) || amtFromDescCol)) continue;
             if (c === COL.bal && parseBalance(row[c]) !== null) continue;
-            // For pure column-shift rows (col2 IS the signed amount), skip col2 too
-            if (amtFromDescCol && c === COL.desc && /^[+\-]\s*£/.test(row[c])) continue;
+            // col2 was used as the amount (signed or unsigned shift) — always skip it
+            if (amtFromDescCol && c === COL.desc) continue;
             descParts.push(row[c]);
         }
         const desc = descParts.filter(Boolean).join(' ').trim();
