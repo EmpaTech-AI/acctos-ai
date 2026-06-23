@@ -25,7 +25,7 @@ const MONEY_FMT = '#,##0.00';
 const VER_LABEL_COL = 19;
 const VER_VALUE_COL = 20;
 
-function addVerificationSide(ws: ExcelJS.Worksheet, v: VerificationSummary): void {
+function addVerificationSide(ws: ExcelJS.Worksheet, v: VerificationSummary, fileSummaries?: FileSummary[]): void {
     let r = 3;
 
     const write = (label: string, value?: number | string | null, bold = false) => {
@@ -61,7 +61,23 @@ function addVerificationSide(ws: ExcelJS.Worksheet, v: VerificationSummary): voi
         write(balStatus, null, true);
     }
 
-    if (v.declaredIn != null && v.declaredOut != null) {
+    // Per-file verification status
+    const verifiable = (fileSummaries ?? []).filter(f => f.declaredIn != null && f.declaredOut != null);
+    if (verifiable.length > 0) {
+        const almostEqual = (a: number, b: number) => Math.abs(a - b) < 0.02;
+        const failed = verifiable.filter(f =>
+            !almostEqual(f.parsedIn, f.declaredIn!) || !almostEqual(f.parsedOut, f.declaredOut!)
+        );
+        write('');
+        write('── Per-file verification ──', null, true);
+        if (failed.length === 0) {
+            write(`✓ All ${verifiable.length} file${verifiable.length === 1 ? '' : 's'} verified`, null, true);
+        } else {
+            write(`⚠ ${failed.length} of ${verifiable.length} file${verifiable.length === 1 ? '' : 's'} failed`, null, true);
+            write('  (see Files tab for details)');
+        }
+    } else if (v.declaredIn != null && v.declaredOut != null) {
+        // Fallback: single-file or no fileSummaries — use combined declared check
         write('');
         write('Declared in (by bank)',  v.declaredIn);
         write('Declared out (by bank)', v.declaredOut);
@@ -255,7 +271,7 @@ export async function buildPdfOutputExcel(transactions: CategorizedTransaction[]
 
     // Verification summary: placed to the right of the table (cols 19-20), no background colours
     if (verification) {
-        addVerificationSide(ws, verification);
+        addVerificationSide(ws, verification, fileSummaries);
     }
 
     // Per-file summary sheet (only when multiple files were processed)
