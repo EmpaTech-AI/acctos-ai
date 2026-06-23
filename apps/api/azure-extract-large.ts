@@ -5,7 +5,9 @@
  * and saves a manifest so batch-process-folder knows the parser and totals.
  *
  * Usage:
- *   npx tsx azure-extract-large.ts "<dir>" "<filename.pdf.pdf>" <parser> [chunkSize=20]
+ *   npx tsx azure-extract-large.ts "<dir>" "<filename.pdf.pdf>" <parser> [chunkSize=20] [--force]
+ *
+ * Add --force to re-extract already-cached chunks.
  *
  * Example:
  *   npx tsx azure-extract-large.ts "C:\...\whole file 2022-2024" \
@@ -26,13 +28,14 @@ for (const line of envLines) {
     if (m) process.env[m[1].trim()] = m[2].trim();
 }
 
-import { splitIntoChunks } from './src/services/processing/PdfSplitter.js';
+import { splitIntoChunks, splitPdf } from './src/services/processing/PdfSplitter.js';
 import { analyzePages } from './src/services/processing/AzureExtractor.js';
 
 const DIR        = process.argv[2];
 const FILE       = process.argv[3];
 const PARSER     = process.argv[4] ?? 'unknown';
 const CHUNK_SIZE = parseInt(process.argv[5] ?? '20', 10);
+const FORCE      = process.argv.includes('--force');
 
 if (!DIR || !FILE) {
     console.error('Usage: npx tsx azure-extract-large.ts "<dir>" "<file.pdf.pdf>" <parser> [chunkSize=20]');
@@ -69,7 +72,7 @@ for (let i = 0; i < totalChunks; i++) {
 
     partFiles.push(partName);
 
-    if (existsSync(cachePath)) {
+    if (existsSync(cachePath) && !FORCE) {
         console.log(`SKIP (cached): ${partName}`);
         continue;
     }
@@ -80,8 +83,13 @@ for (let i = 0; i < totalChunks; i++) {
         console.log(`Saved split PDF: ${partName}`);
     }
 
+    // Split chunk into individual pages and analyze each separately.
+    // This matches the page-by-page approach used for single files and avoids
+    // Azure DI table-detection differences when processing multi-page documents.
     console.log(`Extracting chunk ${i + 1}/${totalChunks}: ${partName} ...`);
-    const pageData = await analyzePages([chunks[i]]);
+    const chunkPages = await splitPdf(chunks[i]);
+    const pageData   = await analyzePages(chunkPages);
+    console.log(`  ${chunkPages.length} pages → ${pageData.filter(Boolean).length} analyzed`);
     writeFileSync(cachePath, JSON.stringify(pageData, null, 2));
     console.log(`  → cached: ${cacheName}`);
 }
