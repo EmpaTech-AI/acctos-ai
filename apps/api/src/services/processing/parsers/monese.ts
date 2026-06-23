@@ -307,7 +307,8 @@ export function parse(cells: Cell[]): ParseResult {
         }
 
         // Merge pending description from before
-        const fullDesc = normStr((pendingDesc ? pendingDesc + ' ' : '') + desc) || '[No Description]';
+        const rawDesc  = normStr((pendingDesc ? pendingDesc + ' ' : '') + desc);
+        const fullDesc = rawDesc || ((moneyOut ?? 0) <= 1 && (moneyIn ?? 0) === 0 ? 'FX Fee' : 'Card Transaction');
         pendingDesc = '';
 
         rows.push({ date: effectiveDate, desc: fullDesc, moneyIn, moneyOut, balance });
