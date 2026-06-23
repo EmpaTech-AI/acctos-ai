@@ -129,8 +129,9 @@ function applyFallback(items: CategorizedTransaction[], rawTransactions: object[
     });
 }
 
-const BATCH_SIZE = 25;
-const MODEL      = 'gpt-4o-mini';
+const BATCH_SIZE     = 25;
+const PARALLEL_LIMIT = 10;
+const MODEL          = 'gpt-4o-mini';
 
 class QuotaExhaustedError extends Error {
     constructor() { super('openai_quota_exhausted'); }
@@ -298,15 +299,21 @@ export async function categorize(transactions: ParsedTransaction[]): Promise<Cat
         batches.push(inputArray.slice(i, i + BATCH_SIZE));
     }
 
-    console.log(`[Categorizer] Running ${totalBatches} batch(es) sequentially — ${inputArray.length} transactions total`);
+    console.log(`[Categorizer] Running ${totalBatches} batch(es) in parallel (limit ${PARALLEL_LIMIT}) — ${inputArray.length} transactions total`);
 
-    const batchResults: CategorizedTransaction[][] = [];
-    for (let idx = 0; idx < batches.length; idx++) {
-        const batch = batches[idx];
-        console.log(`[Categorizer] Batch ${idx + 1}/${totalBatches} started — ${batch.length} transactions`);
-        batchResults.push(await categorizeBatch(batch, apiKey));
-        console.log(`[Categorizer] Batch ${idx + 1}/${totalBatches} done`);
-    }
+    const batchResults: CategorizedTransaction[][] = new Array(batches.length);
+    let nextIdx = 0;
+    const worker = async () => {
+        while (true) {
+            const idx = nextIdx++;
+            if (idx >= batches.length) break;
+            const batch = batches[idx];
+            console.log(`[Categorizer] Batch ${idx + 1}/${totalBatches} started — ${batch.length} transactions`);
+            batchResults[idx] = await categorizeBatch(batch, apiKey);
+            console.log(`[Categorizer] Batch ${idx + 1}/${totalBatches} done`);
+        }
+    };
+    await Promise.all(Array.from({ length: Math.min(PARALLEL_LIMIT, batches.length) }, worker));
 
     const results = batchResults.flat();
 
