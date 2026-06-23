@@ -38,6 +38,7 @@ import { parse as parseBarclaycard } from './parsers/barclaycard.js';
 import { parse as parseZempler } from './parsers/zempler.js';
 import { parse as parseCountingup } from './parsers/countingup.js';
 import { parse as parseAnna } from './parsers/anna.js';
+import { parse as parseMonese } from './parsers/monese.js';
 import { parse as parseGeneric } from './parsers/generic.js';
 import { parse as parseFallback } from './parsers/fallback.js';
 
@@ -62,6 +63,7 @@ function getParser(bankType: BankType): StandardParser {
         case 'zempler':    return parseZempler;
         case 'countingup': return parseCountingup;
         case 'anna':       return parseAnna;
+        case 'monese':     return parseMonese;
         case 'metro':      return parseMetro;
         case 'lloyds':     return parseLloyds;
         case 'tsb':        return parseTsb;

@@ -2,7 +2,7 @@ export type BankType =
     | 'hsbc' | 'revolut' | 'monzo' | 'wise' | 'starling'
     | 'natwest' | 'mettle' | 'nationwide' | 'santander' | 'barclays' | 'barclays-business' | 'barclaycard' | 'metro'
     | 'lloyds' | 'tsb' | 'tide' | 'rbs' | 'virginmoney' | 'pockit' | 'zempler' | 'countingup'
-    | 'halifax' | 'anna'
+    | 'halifax' | 'anna' | 'monese'
     | 'generic';
 
 export type DocType = 'bank_statement' | 'vat';
@@ -41,6 +41,7 @@ function detectFormat(lower: string, mime: string): FileFormat {
 }
 
 function detectBank(lower: string): BankType {
+    if (lower.includes('monese'))                                 return 'monese';
     if (lower.includes('zempler'))                                return 'zempler';
     if (lower.includes('countingup') || lower.includes('counting-up')) return 'countingup';
     if (lower.includes('hsbc'))                                   return 'hsbc';
@@ -71,6 +72,7 @@ function detectBank(lower: string): BankType {
 export function detectBankFromContent(text: string): BankType {
     const t = text.toLowerCase();
     // Check institutional bank names first — before generic brand names that appear as payees
+    if (/^monese/i.test(t) || t.includes('monese.com') || /\bmonese\b/.test(t)) return 'monese';
     if (/\bzempler\b/.test(t))                                         return 'zempler';
     if (/\bcounting\s*up\b/.test(t) || t.includes('countingup'))         return 'countingup';
     // Halifax: check before NatWest — Halifax statements contain "NATWEST BANK" as a payee

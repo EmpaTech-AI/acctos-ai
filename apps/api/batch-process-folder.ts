@@ -23,6 +23,7 @@ import { parse as parseSantander } from './src/services/processing/parsers/santa
 import { parse as parseBarclays } from './src/services/processing/parsers/barclays.js';
 import { parse as parseBarclaysBusiness } from './src/services/processing/parsers/barclays-business.js';
 import { parse as parseHsbc } from './src/services/processing/parsers/hsbc.js';
+import { parse as parseMonese } from './src/services/processing/parsers/monese.js';
 
 const FOLDER = process.argv[2];
 if (!FOLDER) { console.error('Usage: npx tsx batch-process-folder.ts "<folder>"\n'); process.exit(1); }
@@ -34,6 +35,7 @@ function getParser(bank: string): ((cells: Cell[]) => ParseResult) | null {
         case 'barclays':          return parseBarclays;
         case 'barclays-business': return parseBarclaysBusiness;
         case 'hsbc':              return parseHsbc;
+        case 'monese':            return parseMonese;
         default:           return null;
     }
 }
