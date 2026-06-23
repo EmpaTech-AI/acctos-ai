@@ -106,7 +106,47 @@ interface Row {
     balance:  number | null;
 }
 
+// ── Statement totals extraction ───────────────────────────────────────────────
+// Monese puts a summary table on the first page:
+//   "Opening balance" | "£62.36"
+//   "Payments in"     | "+£65,436.36"
+//   "Payments out"    | "-£65,409.07"
+//   "Closing balance" | "£89.65"
+function extractStatementTotals(cells: Cell[]): ParseResult['statementTotals'] | undefined {
+    const byKey: Record<string, string> = {};
+    // Build label→value map from 2-column rows
+    const grid = buildGrid(cells);
+    const rowIdxs = [...grid.keys()].filter(r => r >= 0).sort((a, b) => a - b);
+    for (const r of rowIdxs) {
+        const label = normStr(getCell(grid, r, 0)).toLowerCase();
+        const val   = normStr(getCell(grid, r, 1));
+        if (label) byKey[label] = val;
+    }
+
+    const inRaw  = byKey['payments in'];
+    const outRaw = byKey['payments out'];
+    if (!inRaw && !outRaw) return undefined;
+
+    const parsePound = (s: string) => {
+        const m = s?.match(/£\s*([\d,]+\.\d{2})/);
+        return m ? parseFloat(m[1].replace(/,/g, '')) : null;
+    };
+
+    const moneyIn  = parsePound(inRaw  ?? '');
+    const moneyOut = parsePound(outRaw ?? '');
+    if (moneyIn === null && moneyOut === null) return undefined;
+
+    return {
+        moneyIn:        moneyIn  ?? 0,
+        moneyOut:       moneyOut ?? 0,
+        openingBalance: parsePound(byKey['opening balance'] ?? '') ?? undefined,
+        closingBalance: parsePound(byKey['closing balance'] ?? '') ?? undefined,
+    };
+}
+
 export function parse(cells: Cell[]): ParseResult {
+    const statementTotals = extractStatementTotals(cells);
+
     const availYears = extractYearsFromCells(cells);
     const startYear  = availYears[0] ?? new Date().getFullYear();
     const resolveYear = makeYearResolver(startYear);
@@ -121,7 +161,7 @@ export function parse(cells: Cell[]): ParseResult {
         return row;
     });
 
-    if (!table.length) return { transactions: [] };
+    if (!table.length) return { transactions: [], statementTotals };
 
     // ── Column detection ──────────────────────────────────────────────────────
     // Default: Processed Date | Payment Made | Description | Amount | Balance
@@ -361,5 +401,5 @@ export function parse(cells: Cell[]): ParseResult {
         });
     }
 
-    return { transactions, ascending: true };
+    return { transactions, ascending: true, statementTotals };
 }
