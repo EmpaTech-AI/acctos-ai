@@ -239,7 +239,32 @@ async function categorizeBatch(batch: object[], apiKey: string): Promise<Categor
     try {
         parsed = JSON.parse(cleaned);
     } catch {
-        throw new Error('OpenAI returned invalid JSON: ' + cleaned.slice(0, 300));
+        // Truncated/malformed JSON — retry once before giving up.
+        console.warn(`[Categorizer] Invalid JSON from OpenAI — retrying batch...`);
+        try {
+            const retryRes = await fetch('https://api.openai.com/v1/chat/completions', {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    model: MODEL, temperature: 0, max_tokens: 16384,
+                    messages: [
+                        { role: 'system', content: SYSTEM_PROMPT },
+                        { role: 'user',   content: JSON.stringify(batch) },
+                    ],
+                }),
+            });
+            if (retryRes.ok) {
+                const retryData = await retryRes.json() as any;
+                const retryContent = (retryData.choices?.[0]?.message?.content || '')
+                    .replace(/```json\s*/gi, '').replace(/```\s*/gi, '').trim();
+                parsed = JSON.parse(retryContent);
+                console.log(`[Categorizer] JSON retry succeeded.`);
+            } else {
+                throw new Error(`retry HTTP ${retryRes.status}`);
+            }
+        } catch (retryErr) {
+            throw new Error('OpenAI returned invalid JSON (retry also failed): ' + cleaned.slice(0, 300));
+        }
     }
 
     let items: CategorizedTransaction[] = Array.isArray(parsed) ? parsed : (parsed.items || []);
