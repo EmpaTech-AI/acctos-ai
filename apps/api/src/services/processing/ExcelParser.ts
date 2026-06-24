@@ -125,7 +125,9 @@ function extractDeterministic(rawRows: any[][], schemaMap: Record<string, string
         if (!moneyIn && !moneyOut) continue;
 
         const balance    = balCol >= 0 ? cellToBalance(row[balCol]) : '';
-        const typeAndDesc = type ? `${type} ${desc}`.trim() : desc;
+        const typeAndDesc = (type && desc && !desc.toLowerCase().startsWith(type.toLowerCase()))
+            ? `${type} ${desc}`.trim()
+            : (desc || type);
 
         result.push({
             Date: date,
