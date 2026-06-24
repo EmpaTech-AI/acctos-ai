@@ -462,7 +462,7 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
             // Convert ExcelTransaction → ParsedTransaction for categorization (both modes)
             const parsed = excelTransactions.map(t => ({
                 date:        t.Date,
-                type:        t.Type,
+                type:        '',                       // 'Type and Description' already includes the type code
                 description: t['Type and Description'],
                 moneyIn:     t['Money in'],
                 moneyOut:    t['Money out'],
