@@ -387,6 +387,22 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
         const verification = computeVerification(sorted, combinedStatementTotals, ascending);
         if (verification) logVerificationSummary(verification);
 
+        // ── NOTIFICATION HOOK ────────────────────────────────────────────────────
+        // TODO: Wire up email / webhook when notification service is connected.
+        // See batch-process-folder.ts for the full comment with implementation guide.
+        //
+        // Two triggers:
+        //   1. Per-file failure — isFileFailed(f) for any f in fileSummaries
+        //      → operator alert: our parser/categorizer produced wrong totals
+        //
+        //   2. Chain gap — computeChainVerification(fileSummaries, totalIn, totalOut)
+        //      returns { ok: false } when all individual files pass but the overall
+        //      opening→closing doesn't close — client omitted a statement month.
+        //      → client contact alert: missing statement file(s)
+        //
+        // Both checks should only send if processing succeeded (no exception above).
+        // ────────────────────────────────────────────────────────────────────────
+
         jobStore.update(jobId, { currentStage: 'categorize', currentFile: undefined });
         const categorized = await categorize(sorted);
         if (verification) applyCatVerification(verification, categorized);

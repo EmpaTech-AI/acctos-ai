@@ -5,7 +5,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { CategorizedTransaction } from './AssistantCategorizer.js';
 import { ExcelTransaction } from './ExcelParser.js';
-import { VerificationSummary } from './Verification.js';
+import { VerificationSummary, computeChainVerification } from './Verification.js';
 import { FileSummary } from './JobStore.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -80,6 +80,23 @@ function addVerificationSide(ws: ExcelJS.Worksheet, v: VerificationSummary, file
         write('── Per-file verification ──', null, true);
         if (failed.length === 0) {
             write(`✓ All ${verifiable.length} file${verifiable.length === 1 ? '' : 's'} verified`, null, true);
+
+            // Chain continuity — only meaningful when every individual file is correct.
+            // A non-zero diff means the opening of file N+1 doesn't match the closing of
+            // file N, i.e. the client likely omitted one or more statements.
+            const chain = computeChainVerification(fileSummaries!, v.totalIn, v.totalOut);
+            if (chain) {
+                write('');
+                write('── Chain continuity ──', null, true);
+                write('Opening (first file)', chain.chainOpeningBalance);
+                write('Closing (last file)',  chain.chainClosingBalance);
+                write('');
+                if (chain.ok) {
+                    write('✓ No gaps detected', null, true);
+                } else {
+                    write(`⚠ Gap: ${chain.diff > 0 ? '+' : ''}${chain.diff.toFixed(2)} — possible missing file`, null, true);
+                }
+            }
         } else {
             write(`⚠ ${failed.length} of ${verifiable.length} file${verifiable.length === 1 ? '' : 's'} failed`, null, true);
             write('  (see Files tab for details)');

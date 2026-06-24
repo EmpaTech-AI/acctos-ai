@@ -1,5 +1,6 @@
 import { ParsedTransaction, parseMoney } from './parsers/shared.js';
 import type { CategorizedTransaction } from './AssistantCategorizer.js';
+import type { FileSummary } from './JobStore.js';
 
 export interface VerificationSummary {
     totalIn: number;
@@ -141,4 +142,48 @@ export function logVerificationSummary(v: VerificationSummary): void {
             );
         }
     }
+}
+
+// ── Chain continuity ─────────────────────────────────────────────────────────
+
+export interface ChainVerification {
+    chainOpeningBalance: number;  // opening balance of the first file in the set
+    chainClosingBalance: number;  // closing balance of the last file in the set
+    expectedClosing: number;      // chainOpen + totalIn - totalOut
+    diff: number;                 // actualClosing - expectedClosing (≈0 means no gaps)
+    ok: boolean;
+}
+
+/**
+ * Check whether the opening balance of the first file + all IN - all OUT equals
+ * the closing balance of the last file.  A non-zero diff indicates a missing
+ * statement somewhere in the chain.
+ *
+ * Only call this after all individual per-file checks have passed — a failed
+ * individual file would make the chain diff meaningless.
+ *
+ * @param fileSummaries  Summaries in the order files were processed (chronological).
+ * @param totalIn        Sum of parsedIn across all files.
+ * @param totalOut       Sum of parsedOut across all files.
+ */
+export function computeChainVerification(
+    fileSummaries: FileSummary[],
+    totalIn: number,
+    totalOut: number,
+): ChainVerification | undefined {
+    const withOpen  = fileSummaries.filter(f => f.openingBalance != null);
+    const withClose = fileSummaries.filter(f => f.closingBalance != null);
+    if (!withOpen.length || !withClose.length) return undefined;
+
+    const chainOpen  = withOpen[0].openingBalance!;
+    const chainClose = withClose[withClose.length - 1].closingBalance!;
+    const expected   = Math.round((chainOpen + totalIn - totalOut) * 100) / 100;
+    const diff       = Math.round((chainClose - expected) * 100) / 100;
+    return {
+        chainOpeningBalance: chainOpen,
+        chainClosingBalance: chainClose,
+        expectedClosing: expected,
+        diff,
+        ok: Math.abs(diff) < 0.02,
+    };
 }
