@@ -123,6 +123,36 @@ allTransactions.sort((a, b) => dateToSortKey(a.date) - dateToSortKey(b.date));
 console.log(`\nCombined: ${allTransactions.length} transactions across ${fileResults.length} files`);
 
 // Step 3: Build file summaries for verification sidebar
+//
+// Chunked-file detection: when all files are parts of the same base document
+// (e.g. _part01.pdf.pdf … _part10.pdf.pdf), the "Total Money In/Out" printed
+// on the statement header covers the WHOLE document, not a single chunk.
+// The parser finds those declared totals in whichever chunk contains the
+// header page — comparing that chunk's transactions alone against the whole-
+// document total would always fail.  Instead, lift the declared totals to the
+// combined level only, and leave individual part summaries without them.
+const PART_RE = /^(.+)_part\d{2}\.pdf\.pdf$/i;
+const partBases = fileResults.map(r => PART_RE.exec(r.filename)?.[1]);
+const isChunkedFile = partBases.every(b => b != null) && new Set(partBases).size === 1;
+
+// For a chunked file, collect whole-document totals from all parts
+// (only one chunk will have them) and suppress them at the part level.
+// Opening/closing balance are also per-document, not per-chunk — suppress
+// those too so the per-file check doesn't compare a 20-page chunk against
+// the 2-year opening/closing balance.
+let combinedDeclaredIn:   number | undefined;
+let combinedDeclaredOut:  number | undefined;
+let combinedOpeningBal:   number | undefined;
+let combinedClosingBal:   number | undefined;
+if (isChunkedFile) {
+    for (const r of fileResults) {
+        if (r.statementTotals?.moneyIn        != null) combinedDeclaredIn  = r.statementTotals.moneyIn;
+        if (r.statementTotals?.moneyOut       != null) combinedDeclaredOut = r.statementTotals.moneyOut;
+        if (r.statementTotals?.openingBalance != null) combinedOpeningBal  = r.statementTotals.openingBalance;
+        if (r.statementTotals?.closingBalance != null) combinedClosingBal  = r.statementTotals.closingBalance;
+    }
+}
+
 const fileSummaries: FileSummary[] = fileResults.map(r => {
     const parsedIn  = r.transactions.reduce((s, t) => s + (parseMoney(t.moneyIn)  ?? 0), 0);
     const parsedOut = r.transactions.reduce((s, t) => s + (parseMoney(t.moneyOut) ?? 0), 0);
@@ -131,20 +161,33 @@ const fileSummaries: FileSummary[] = fileResults.map(r => {
         transactions:    r.transactions.length,
         parsedIn,
         parsedOut,
-        declaredIn:      r.statementTotals?.moneyIn,
-        declaredOut:     r.statementTotals?.moneyOut,
-        openingBalance:  r.statementTotals?.openingBalance,
-        closingBalance:  r.statementTotals?.closingBalance,
+        // For chunked files all statement-level values belong to the whole
+        // document — suppress them at part level to avoid misleading per-file
+        // failures (a 20-page chunk vs. a 2-year declared total).
+        declaredIn:      isChunkedFile ? undefined : r.statementTotals?.moneyIn,
+        declaredOut:     isChunkedFile ? undefined : r.statementTotals?.moneyOut,
+        openingBalance:  isChunkedFile ? undefined : r.statementTotals?.openingBalance,
+        closingBalance:  isChunkedFile ? undefined : r.statementTotals?.closingBalance,
     };
 });
 
-// Step 4: Combined verification (sum of all declared totals that have them)
+// Step 4: Combined verification
 const totalParsedIn  = fileSummaries.reduce((s, f) => s + f.parsedIn,  0);
 const totalParsedOut = fileSummaries.reduce((s, f) => s + f.parsedOut, 0);
-const declared = fileSummaries.some(f => f.declaredIn != null) ? {
-    moneyIn:  fileSummaries.reduce((s, f) => s + (f.declaredIn  ?? 0), 0),
-    moneyOut: fileSummaries.reduce((s, f) => s + (f.declaredOut ?? 0), 0),
-} : undefined;
+
+// For a chunked file use the lifted whole-document totals; otherwise sum
+// whatever individual files declared.
+const declared = isChunkedFile
+    ? (combinedDeclaredIn != null ? {
+        moneyIn:        combinedDeclaredIn,
+        moneyOut:       combinedDeclaredOut ?? 0,
+        openingBalance: combinedOpeningBal,
+        closingBalance: combinedClosingBal,
+    } : undefined)
+    : (fileSummaries.some(f => f.declaredIn != null) ? {
+        moneyIn:  fileSummaries.reduce((s, f) => s + (f.declaredIn  ?? 0), 0),
+        moneyOut: fileSummaries.reduce((s, f) => s + (f.declaredOut ?? 0), 0),
+    } : undefined);
 
 const verification = computeVerification(allTransactions, declared, true /* ascending after sort */);
 
