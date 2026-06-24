@@ -201,14 +201,18 @@ router.post('/import', requireRole(...ADMIN_ROLES), upload.array('files', 20), a
         // (e.g. page-split exports: "Statements__page1-20.pdf"). Passed as query param ?bankType=santander.
         const bankHint = (req.query.bankType as BankType | undefined) || undefined;
 
+        // Processing mode: 'bank_statement' (default) or 'vat'
+        const processingMode = req.query.processingMode === 'vat' ? 'vat' : 'bank_statement';
+
         // Single file: use original path (supports Excel + PDF)
         // Multiple files: batch path (PDF only, sorts by date, one combined output)
         const jobId = files.length === 1
-            ? startProcessingJob(files[0].originalname, files[0].mimetype, files[0].buffer, tracking)
+            ? startProcessingJob(files[0].originalname, files[0].mimetype, files[0].buffer, tracking, processingMode)
             : startBatchProcessingJob(
                 files.map(f => ({ filename: f.originalname, mimeType: f.mimetype, buffer: f.buffer })),
                 tracking,
                 bankHint,
+                processingMode,
             );
 
         res.json({ success: true, jobId });

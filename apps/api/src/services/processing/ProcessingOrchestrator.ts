@@ -7,7 +7,7 @@ import { splitPdf } from './PdfSplitter.js';
 import { analyzePages } from './AzureExtractor.js';
 import { categorize } from './AssistantCategorizer.js';
 import { parseExcel } from './ExcelParser.js';
-import { buildPdfOutputExcel, buildExcelOutputExcel } from './ExcelOutputBuilder.js';
+import { buildPdfOutputExcel, buildExcelOutputExcel, buildVatOutputExcel } from './ExcelOutputBuilder.js';
 import { Cell, ParsedTransaction, ParseResult } from './parsers/shared.js';
 import { computeVerification, applyCatVerification, logVerificationSummary } from './Verification.js';
 
@@ -196,7 +196,7 @@ export interface FileInput {
  * @param bankHint  Optional bank type override — use when files are named-page splits of a known
  *                  bank's statement and filename/content detection would be unreliable.
  */
-export function startBatchProcessingJob(files: FileInput[], tracking?: TrackingContext, bankHint?: BankType): string {
+export function startBatchProcessingJob(files: FileInput[], tracking?: TrackingContext, bankHint?: BankType, processingMode?: 'bank_statement' | 'vat'): string {
     const jobId = randomUUID();
 
     // Deduplicate by content hash — identical bytes across differently-named files get dropped
@@ -227,7 +227,7 @@ export function startBatchProcessingJob(files: FileInput[], tracking?: TrackingC
         return jobId;
     }
 
-    runBatchJob(jobId, uniqueFiles, tracking, bankHint).catch(err => {
+    runBatchJob(jobId, uniqueFiles, tracking, bankHint, processingMode).catch(err => {
         console.error(`[Orchestrator] Batch job ${jobId} unhandled crash:`, err);
         jobStore.update(jobId, { status: 'failed', error: String(err?.message ?? err) });
     });
@@ -235,7 +235,7 @@ export function startBatchProcessingJob(files: FileInput[], tracking?: TrackingC
     return jobId;
 }
 
-async function runBatchJob(jobId: string, files: FileInput[], tracking?: TrackingContext, bankHint?: BankType): Promise<void> {
+async function runBatchJob(jobId: string, files: FileInput[], tracking?: TrackingContext, bankHint?: BankType, processingMode?: 'bank_statement' | 'vat'): Promise<void> {
     try {
         jobStore.update(jobId, { status: 'processing', totalFiles: files.length });
 
@@ -409,7 +409,9 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
         if (verification) logVerificationSummary(verification);
         jobStore.update(jobId, { transactionCount: categorized.length, currentStage: 'output' });
 
-        const outputBuffer = await buildPdfOutputExcel(categorized, verification, fileSummaries.length > 1 ? fileSummaries : undefined);
+        const outputBuffer = processingMode === 'vat'
+            ? await buildVatOutputExcel(categorized)
+            : await buildPdfOutputExcel(categorized, verification, fileSummaries.length > 1 ? fileSummaries : undefined);
         jobStore.update(jobId, { status: 'completed', outputBuffer, completedAt: new Date() });
         console.log(`[Orchestrator] Batch job ${jobId} completed — ${allTransactions.length} transactions from ${files.length} file(s)`);
 
@@ -425,11 +427,12 @@ export function startProcessingJob(
     mimeType: string,
     fileBuffer: Buffer,
     tracking?: TrackingContext,
+    processingMode?: 'bank_statement' | 'vat',
 ): string {
     const jobId = randomUUID();
     jobStore.create(jobId, filename);
 
-    runJob(jobId, filename, mimeType, fileBuffer, tracking).catch(err => {
+    runJob(jobId, filename, mimeType, fileBuffer, tracking, processingMode).catch(err => {
         console.error(`[Orchestrator] Job ${jobId} unhandled crash:`, err);
         jobStore.update(jobId, { status: 'failed', error: String(err?.message ?? err) });
     });
@@ -437,7 +440,7 @@ export function startProcessingJob(
     return jobId;
 }
 
-async function runJob(jobId: string, filename: string, mimeType: string, fileBuffer: Buffer, tracking?: TrackingContext): Promise<void> {
+async function runJob(jobId: string, filename: string, mimeType: string, fileBuffer: Buffer, tracking?: TrackingContext, processingMode?: 'bank_statement' | 'vat'): Promise<void> {
     try {
         // ── Stage: classify ──────────────────────────────────────────────────────
         jobStore.update(jobId, { status: 'processing', currentStage: 'classify' });
@@ -572,7 +575,9 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
             jobStore.update(jobId, { transactionCount: categorized.length, currentStage: 'output' });
 
             // ── Stage: output (build Excel) ───────────────────────────────────────
-            outputBuffer = await buildPdfOutputExcel(categorized, verification);
+            outputBuffer = processingMode === 'vat'
+                ? await buildVatOutputExcel(categorized)
+                : await buildPdfOutputExcel(categorized, verification);
         }
 
         jobStore.update(jobId, { status: 'completed', outputBuffer, completedAt: new Date() });

@@ -9,7 +9,8 @@ import { VerificationSummary, computeChainVerification } from './Verification.js
 import { FileSummary } from './JobStore.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const TEMPLATE_PATH = join(__dirname, 'template-bank-statement.xlsx');
+const TEMPLATE_PATH     = join(__dirname, 'template-bank-statement.xlsx');
+const VAT_TEMPLATE_PATH = join(__dirname, 'template-vat.xlsx');
 
 // Category column keys → Excel columns E–P (1-based: 5–16)
 const CAT_COLS: (keyof CategorizedTransaction)[] = [
@@ -326,6 +327,61 @@ export async function buildPdfOutputExcel(transactions: CategorizedTransaction[]
 
     // Freeze first 2 rows
     ws.views = [{ state: 'frozen', xSplit: 0, ySplit: 2, topLeftCell: 'A3' }];
+
+    const arrayBuffer = await workbook.xlsx.writeBuffer();
+    return Buffer.from(arrayBuffer);
+}
+
+// ── VAT output ────────────────────────────────────────────────────────────────
+
+const VAT_EXPENSE_CATS = [
+    'SALARY','OTHER','INSURANCE','LOAN','CASH','TRAVEL','PHONE',
+    'CHARGES','Bank_Transfer','HMRC','RENT','BILLS',
+] as const;
+
+function parseCatMoney(s: unknown): number {
+    if (!s) return 0;
+    const n = Number(String(s).replace(/,/g, '').trim());
+    return isFinite(n) ? Math.abs(n) : 0;
+}
+
+/**
+ * Build a VAT-template Excel from categorized transactions.
+ * Income rows (INCOME > 0) → Sales sheet, col E (NET AMOUNT).
+ * Expense rows (any expense category > 0) → Expenses sheet, col E (GROSS).
+ * Columns: C = date, D = description, E = amount.
+ */
+export async function buildVatOutputExcel(transactions: CategorizedTransaction[]): Promise<Buffer> {
+    const templateBuf = readFileSync(VAT_TEMPLATE_PATH);
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(templateBuf as unknown as ArrayBuffer);
+
+    const salesWs    = workbook.getWorksheet('Sales');
+    const expensesWs = workbook.getWorksheet('Expenses');
+    if (!salesWs || !expensesWs) throw new Error('template-vat.xlsx is missing Sales or Expenses sheet');
+
+    const FIRST_DATA_ROW = 5;
+    let salesRow    = FIRST_DATA_ROW;
+    let expensesRow = FIRST_DATA_ROW;
+
+    for (const t of transactions) {
+        const incomeAmt  = parseCatMoney(t.INCOME);
+        const expenseAmt = VAT_EXPENSE_CATS.reduce((s, k) => s + parseCatMoney((t as any)[k]), 0);
+
+        if (incomeAmt > 0) {
+            const row = salesWs.getRow(salesRow++);
+            row.getCell(3).value = t.DATE;
+            row.getCell(4).value = t['Type and Description'];
+            row.getCell(5).value = incomeAmt;
+            row.commit();
+        } else if (expenseAmt > 0) {
+            const row = expensesWs.getRow(expensesRow++);
+            row.getCell(3).value = t.DATE;
+            row.getCell(4).value = t['Type and Description'];
+            row.getCell(5).value = expenseAmt;
+            row.commit();
+        }
+    }
 
     const arrayBuffer = await workbook.xlsx.writeBuffer();
     return Buffer.from(arrayBuffer);

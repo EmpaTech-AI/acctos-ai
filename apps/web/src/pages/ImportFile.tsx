@@ -350,6 +350,7 @@ export default function ImportFile() {
     const [recentJobs, setRecentJobs] = useState<RecentJob[]>([]);
     const [previewJobId, setPreviewJobId] = useState<string | null>(null);
     const [previewFilename, setPreviewFilename] = useState('');
+    const [processingMode, setProcessingMode] = useState<'bank_statement' | 'vat'>('bank_statement');
     const fileInputRef = useRef<HTMLInputElement>(null);
     const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
     const jobRef  = useRef<Job | null>(null);
@@ -501,7 +502,7 @@ export default function ImportFile() {
             : `${selectedFiles.length} files`;
 
         try {
-            const res = await axios.post('/v1/users/import', formData, {
+            const res = await axios.post(`/v1/users/import?processingMode=${processingMode}`, formData, {
                 headers: { 'Content-Type': 'multipart/form-data' },
                 onUploadProgress: (e) => {
                     if (e.total) setUploadProgress(Math.round((e.loaded * 100) / e.total));
@@ -536,7 +537,7 @@ export default function ImportFile() {
             <div className="card" style={{ maxWidth: 620 }}>
 
                 {/* ── Header ── */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1.75rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1.25rem' }}>
                     <div style={{
                         width: 40, height: 40, borderRadius: '0.75rem',
                         background: 'rgba(99,102,241,0.15)',
@@ -545,12 +546,48 @@ export default function ImportFile() {
                         <FileUp size={20} color="#6366f1" />
                     </div>
                     <div>
-                        <p style={{ margin: 0, fontWeight: 600, fontSize: '0.95rem' }}>Bank Statement Processor</p>
+                        <p style={{ margin: 0, fontWeight: 600, fontSize: '0.95rem' }}>
+                            {processingMode === 'vat' ? 'VAT Processor' : 'Bank Statement Processor'}
+                        </p>
                         <p style={{ margin: 0, fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                            Upload a PDF or Excel bank statement to extract and categorize transactions
+                            {processingMode === 'vat'
+                                ? 'Upload a PDF bank statement to populate the VAT Sales & Expenses template'
+                                : 'Upload a PDF or Excel bank statement to extract and categorize transactions'}
                         </p>
                     </div>
                 </div>
+
+                {/* ── Mode selector ── */}
+                {!isProcessing && !isCompleted && (
+                    <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1.5rem' }}>
+                        {([
+                            { key: 'bank_statement', label: 'Bank Statement' },
+                            { key: 'vat',            label: 'VAT' },
+                        ] as const).map(({ key, label }) => {
+                            const active = processingMode === key;
+                            return (
+                                <button
+                                    key={key}
+                                    onClick={() => setProcessingMode(key)}
+                                    style={{
+                                        flex: 1,
+                                        padding: '0.5rem 0.75rem',
+                                        borderRadius: '0.5rem',
+                                        border: active ? '1.5px solid #6366f1' : '1.5px solid rgba(255,255,255,0.1)',
+                                        background: active ? 'rgba(99,102,241,0.15)' : 'rgba(255,255,255,0.03)',
+                                        color: active ? '#a5b4fc' : 'var(--text-muted)',
+                                        fontWeight: active ? 600 : 400,
+                                        fontSize: '0.85rem',
+                                        cursor: 'pointer',
+                                        transition: 'all 0.2s',
+                                    }}
+                                >
+                                    {label}
+                                </button>
+                            );
+                        })}
+                    </div>
+                )}
 
                 {/* ── Pipeline visualization ── */}
                 <div style={{
