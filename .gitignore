@@ -40,7 +40,25 @@ coverage/
 
 # Runtime logs
 apps/api/api.log
+apps/api/server.log
+apps/api/server.err
+apps/api/server-err.log
 apps/web/web.log
+apps/web/vite.log
+apps/web/vite.err
+server.log
+server.err
+
+# Ad-hoc debug/check/temp scripts
+apps/api/check-*.ts
+apps/api/check-*.mjs
+apps/api/debug-*.ts
+apps/api/azure-extract-*.ts
+apps/api/tmp-*.ts
+apps/api/patch-*.ts
+apps/api/compare-*.ts
+apps/api/test-excel-*.ts
+apps/api/apps/
 
 # Test output artefacts (processed statements, test xlsx results)
 apps/api/*_processed*.xlsx
