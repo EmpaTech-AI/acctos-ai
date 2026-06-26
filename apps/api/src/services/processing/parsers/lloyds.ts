@@ -155,7 +155,12 @@ export function parse(cells: Cell[]): ParseResult {
         if (!date) continue;
 
         const rowText = normStr(`${type} ${details}`).toUpperCase();
-        if (rowText.includes('BALANCE BROUGHT FORWARD') || rowText.includes('BALANCE CARRIED FORWARD')) continue;
+        if (
+            rowText.includes('BALANCE BROUGHT FORWARD') ||
+            rowText.includes('BALANCE CARRIED FORWARD') ||
+            rowText.includes('STATEMENT CLOSING BALANCE') ||
+            rowText.includes('STATEMENT OPENING BALANCE')
+        ) continue;
         if (!paidIn && !paidOut) continue;
 
         transactions.push({ date, type, description: details, moneyIn: paidIn, moneyOut: paidOut, balance });
