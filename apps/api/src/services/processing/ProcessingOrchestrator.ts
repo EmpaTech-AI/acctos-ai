@@ -45,6 +45,32 @@ import { parse as parseFallback } from './parsers/fallback.js';
 
 type StandardParser = (cells: Cell[]) => ParseResult;
 
+// ── Error classification ──────────────────────────────────────────────────────
+// 'client' = bad/unsupported file uploaded by the client
+// 'system' = our infrastructure or code failed
+const CLIENT_ERROR_PATTERNS = [
+    /no transactions (could be extracted|found)/i,
+    /excel files not supported in multi-file/i,
+    /unsupported file/i,
+    /password.protected/i,
+    /corrupt/i,
+];
+
+function classifyError(err: Error): 'client' | 'system' {
+    const msg = err.message || '';
+    return CLIENT_ERROR_PATTERNS.some(p => p.test(msg)) ? 'client' : 'system';
+}
+
+// ── Stage timing helper ───────────────────────────────────────────────────────
+function makeStageTimer() {
+    const starts: Partial<Record<string, number>> = {};
+    return {
+        start(stage: string) { starts[stage] = Date.now(); },
+        elapsed(stage: string): number { return starts[stage] ? Math.round((Date.now() - starts[stage]!) / 1000) : 0; },
+        all(): Partial<Record<string, number>> { return starts; },
+    };
+}
+
 function getParser(bankType: BankType): StandardParser {
     switch (bankType) {
         case 'hsbc':       return parseHsbc;
@@ -237,6 +263,7 @@ export function startBatchProcessingJob(files: FileInput[], tracking?: TrackingC
 }
 
 async function runBatchJob(jobId: string, files: FileInput[], tracking?: TrackingContext, bankHint?: BankType, processingMode?: 'bank_statement' | 'vat'): Promise<void> {
+    const timer = makeStageTimer();
     try {
         jobStore.update(jobId, { status: 'processing', totalFiles: files.length });
 
@@ -447,14 +474,18 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
 
     } catch (err: any) {
         const stage = jobStore.get(jobId)?.currentStage;
-        console.error(`[Orchestrator] Batch job ${jobId} failed at stage "${stage}":`, err.message);
-        jobStore.update(jobId, { status: 'failed', error: err.message || String(err), completedAt: new Date() });
+        const errorType = classifyError(err);
+        const elapsed = stage ? timer.elapsed(stage) : 0;
+        console.error(`[Orchestrator][${errorType.toUpperCase()}] Batch job ${jobId} failed at stage "${stage}" (${elapsed}s):`, err.message);
+        jobStore.update(jobId, { status: 'failed', error: err.message || String(err), errorType, completedAt: new Date() });
         notifyJobFailed({
             jobId,
             tenantId: tracking?.tenantId,
             filename: `batch (${files.length} files)`,
             stage,
+            stageElapsedSec: elapsed,
             error: err.message || String(err),
+            errorType,
         });
     }
 }
@@ -478,8 +509,10 @@ export function startProcessingJob(
 }
 
 async function runJob(jobId: string, filename: string, mimeType: string, fileBuffer: Buffer, tracking?: TrackingContext, processingMode?: 'bank_statement' | 'vat'): Promise<void> {
+    const timer = makeStageTimer();
     try {
         // ── Stage: classify ──────────────────────────────────────────────────────
+        timer.start('classify');
         jobStore.update(jobId, { status: 'processing', currentStage: 'classify' });
         const classification = classify(filename, mimeType);
         jobStore.update(jobId, {
@@ -493,6 +526,7 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
 
         if (classification.fileFormat === 'excel') {
             // ── Stage: extract (OpenAI two-pass for Excel) ───────────────────────
+            timer.start('extract');
             const excelTransactions = await parseExcel(fileBuffer);
             if (excelTransactions.length === 0) throw new Error('No transactions found in spreadsheet');
 
@@ -505,8 +539,10 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
                 moneyOut:    t['Money out'],
                 balance:     t.Balance,
             }));
+            timer.start('categorize');
             jobStore.update(jobId, { transactionCount: parsed.length, currentStage: 'categorize' });
             const categorized = await categorize(parsed);
+            timer.start('output');
             jobStore.update(jobId, { transactionCount: categorized.length, currentStage: 'output' });
 
             if (processingMode === 'vat') {
@@ -517,6 +553,7 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
 
         } else {
             // ── Stage: extract (Azure DI page splitting + cell extraction) ───────
+            timer.start('extract');
             const pageBuffers = await splitPdf(fileBuffer);
             jobStore.update(jobId, { pageCount: pageBuffers.length });
             const pageData = await analyzePages(pageBuffers);
@@ -599,6 +636,7 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
             });
 
             // ── Stage: parse (bank-specific parser) ──────────────────────────────
+            timer.start('parse');
             jobStore.update(jobId, { currentStage: 'parse' });
 
             let bankType = classification.bankType;
@@ -615,7 +653,7 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
             const { transactions, statementTotals, ascending } = await parseAllCells(pageCells, bankType);
             if (transactions.length === 0) throw new Error('No transactions could be extracted from the document');
 
-            console.log(`[Orchestrator] Parsed ${transactions.length} transactions:`, JSON.stringify(transactions, null, 2));
+            console.log(`[Orchestrator] Parsed ${transactions.length} transactions from "${filename}"`);
             const verification = computeVerification(transactions, statementTotals, ascending);
             if (verification) logVerificationSummary(verification);
 
@@ -639,10 +677,12 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
             }
 
             // ── Stage: categorize (OpenAI Assistant, 50 transactions per batch) ──
+            timer.start('categorize');
             jobStore.update(jobId, { currentStage: 'categorize' });
             const categorized = await categorize(transactions);
             if (verification) applyCatVerification(verification, categorized);
             if (verification) logVerificationSummary(verification);
+            timer.start('output');
             jobStore.update(jobId, { transactionCount: categorized.length, currentStage: 'output' });
 
             // ── Stage: output (build Excel) ───────────────────────────────────────
@@ -656,10 +696,13 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
 
     } catch (err: any) {
         const stage = jobStore.get(jobId)?.currentStage;
-        console.error(`[Orchestrator] Job ${jobId} failed at stage "${stage}":`, err.message);
+        const errorType = classifyError(err);
+        const elapsed = stage ? timer.elapsed(stage) : 0;
+        console.error(`[Orchestrator][${errorType.toUpperCase()}] Job ${jobId} failed at stage "${stage}" (${elapsed}s):`, err.message);
         jobStore.update(jobId, {
             status: 'failed',
             error: err.message || String(err),
+            errorType,
             completedAt: new Date(),
         });
         notifyJobFailed({
@@ -667,7 +710,9 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
             tenantId: tracking?.tenantId,
             filename,
             stage,
+            stageElapsedSec: elapsed,
             error: err.message || String(err),
+            errorType,
         });
     }
 }

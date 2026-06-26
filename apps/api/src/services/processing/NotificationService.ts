@@ -58,7 +58,9 @@ export interface JobFailedAlert {
     tenantId?: string;
     filename: string;
     stage?:   string;
+    stageElapsedSec?: number;
     error:    string;
+    errorType?: 'client' | 'system';
 }
 
 export interface ChainGapAlert {
@@ -97,15 +99,62 @@ export function notifyParserError(alert: ParserErrorAlert): void {
 
 // ── Team: job crashed ─────────────────────────────────────────────────────────
 
+const STAGE_LABELS: Record<string, string> = {
+    classify:   'File classification',
+    extract:    'Azure Document Intelligence (OCR)',
+    parse:      'Bank parser (transaction extraction)',
+    categorize: 'AI categorization (OpenAI)',
+    output:     'Excel output generation',
+};
+
+const CLIENT_ERROR_ACTIONS: Record<string, string> = {
+    extract:    'Ask the client to re-export or re-scan the file. It may be damaged, password-protected, or in an unsupported format.',
+    parse:      'Ask the client to provide the original bank export (not a printout or screenshot). The file may be from an unsupported bank.',
+    classify:   'Ask the client to upload the original file in PDF or Excel format.',
+    categorize: 'Check the file content — the transactions may be in an unexpected format.',
+    output:     'The file content is unusual. Try processing again or inspect the transactions manually.',
+};
+
+const SYSTEM_ERROR_ACTIONS: Record<string, string> = {
+    extract:    'Check Azure Document Intelligence service status. The client can retry — the file is likely fine.',
+    parse:      'This is likely a code bug in our parser. Check the server logs for a stack trace.',
+    classify:   'Unexpected classification failure. Check server logs.',
+    categorize: 'Check OpenAI API status and quota. The client can retry once the issue is resolved.',
+    output:     'Unexpected error building the Excel output. Check server logs.',
+};
+
 export function notifyJobFailed(alert: JobFailedAlert): void {
-    const subject = `[Acctos] Processing job failed — ${alert.filename}`;
+    const isClientError = alert.errorType === 'client';
+    const stageLabel = STAGE_LABELS[alert.stage ?? ''] ?? alert.stage ?? 'unknown';
+    const elapsed = alert.stageElapsedSec ? `${alert.stageElapsedSec}s` : 'unknown';
+
+    const actionMap = isClientError ? CLIENT_ERROR_ACTIONS : SYSTEM_ERROR_ACTIONS;
+    const action = actionMap[alert.stage ?? ''] ?? 'Check the server logs for more details.';
+
+    const errorTypeLabel = isClientError
+        ? 'CLIENT ERROR — problem with the uploaded file'
+        : 'SYSTEM ERROR — our infrastructure or code failed';
+
+    const subject = isClientError
+        ? `[Acctos] File could not be processed — ${alert.filename}`
+        : `[Acctos] SYSTEM ERROR — ${alert.filename}`;
+
     const text = [
-        `Job: ${alert.jobId}`,
-        `Tenant: ${alert.tenantId ?? 'unknown'}`,
-        `File: ${alert.filename}`,
-        `Stage: ${alert.stage ?? 'unknown'}`,
+        `Type: ${errorTypeLabel}`,
         ``,
-        `Error: ${alert.error}`,
+        `File: ${alert.filename}`,
+        `Stage: ${stageLabel}`,
+        `Time in stage: ${elapsed}`,
+        `Tenant: ${alert.tenantId ?? 'unknown'}`,
+        ``,
+        `Error message:`,
+        `  ${alert.error}`,
+        ``,
+        `What to do:`,
+        `  ${action}`,
+        ``,
+        `──────────────────────────`,
+        `Job ID: ${alert.jobId}`,
     ].join('\n');
 
     console.error(`[ALERT:job_failed] ${subject}\n${text}`);

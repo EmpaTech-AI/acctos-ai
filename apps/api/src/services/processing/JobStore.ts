@@ -26,6 +26,9 @@ export interface ProcessingJob {
     totalFiles?: number;
     duplicatesRemoved?: string[];
     error?: string;
+    /** 'client' = bad/unsupported file; 'system' = our infrastructure/code failed */
+    errorType?: 'client' | 'system';
+    stageTiming?: Partial<Record<ProcessingStage, number>>;
     outputBuffer?: Buffer;
     createdAt: Date;
     completedAt?: Date;
