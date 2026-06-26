@@ -10,7 +10,7 @@ import { parseExcel } from './ExcelParser.js';
 import { buildPdfOutputExcel, buildExcelOutputExcel, buildVatOutputExcel } from './ExcelOutputBuilder.js';
 import { Cell, ParsedTransaction, ParseResult } from './parsers/shared.js';
 import { computeVerification, applyCatVerification, logVerificationSummary, computeChainVerification } from './Verification.js';
-import { notifyParserError, notifyChainGap } from './NotificationService.js';
+import { notifyParserError, notifyChainGap, notifyJobFailed } from './NotificationService.js';
 
 interface TrackingContext {
     prisma: PrismaClient;
@@ -449,6 +449,13 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
         const stage = jobStore.get(jobId)?.currentStage;
         console.error(`[Orchestrator] Batch job ${jobId} failed at stage "${stage}":`, err.message);
         jobStore.update(jobId, { status: 'failed', error: err.message || String(err), completedAt: new Date() });
+        notifyJobFailed({
+            jobId,
+            tenantId: tracking?.tenantId,
+            filename: `batch (${files.length} files)`,
+            stage,
+            error: err.message || String(err),
+        });
     }
 }
 
@@ -654,6 +661,13 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
             status: 'failed',
             error: err.message || String(err),
             completedAt: new Date(),
+        });
+        notifyJobFailed({
+            jobId,
+            tenantId: tracking?.tenantId,
+            filename,
+            stage,
+            error: err.message || String(err),
         });
     }
 }
