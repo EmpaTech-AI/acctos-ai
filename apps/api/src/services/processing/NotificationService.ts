@@ -17,16 +17,16 @@
  *   - Always logs to console.
  *   - Sends email via Resend when RESEND_API_KEY is set.
  *     RESEND_FROM_EMAIL : sender address (default: notifications@acctos.ai)
- *     ALERT_TEAM_EMAIL  : team recipient (default: vasillozev@gmail.com)
- *     ALERT_CLIENT_EMAIL: client recipient (default: vasillozev@gmail.com)
+ *     ALERT_TEAM_EMAIL  : team recipient (default: vasil.lozev@aiassist.bg)
+ *     ALERT_CLIENT_EMAIL: client recipient (default: vasil.lozev@aiassist.bg)
  *
  * All functions are fire-and-forget — they never throw and never delay processing.
  */
 
 import { Resend } from 'resend';
 
-const TEAM_EMAIL   = process.env.ALERT_TEAM_EMAIL   || 'vasillozev@gmail.com';
-const CLIENT_EMAIL = process.env.ALERT_CLIENT_EMAIL || 'vasillozev@gmail.com';
+const TEAM_EMAIL   = process.env.ALERT_TEAM_EMAIL   || 'vasil.lozev@aiassist.bg';
+const CLIENT_EMAIL = process.env.ALERT_CLIENT_EMAIL || 'vasil.lozev@aiassist.bg';
 const FROM_EMAIL   = process.env.RESEND_FROM_EMAIL  || 'notifications@acctos.ai';
 
 function getResend(): Resend | null {
