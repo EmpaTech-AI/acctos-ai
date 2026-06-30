@@ -62,7 +62,12 @@ async function parseFile(pdfPath: string): Promise<FileResult | null> {
     if (!existsSync(cachePath)) return null;
 
     const pages: any[] = JSON.parse(readFileSync(cachePath, 'utf8'));
-    const cells: Cell[] = [{ rowIndex: -1, columnIndex: -1, content: '' }];
+    // Combine all page content for the synthetic context cell (same as ProcessingOrchestrator)
+    const combinedContent = pages
+        .filter(Boolean)
+        .map((p: any) => p.content ?? (p.cells ?? []).map((c: any) => c.content).join(' '))
+        .join(' ');
+    const cells: Cell[] = [{ rowIndex: -1, columnIndex: -1, content: combinedContent }];
     let rowOffset = 0;
     for (const page of pages) {
         if (!page) continue;
@@ -74,7 +79,7 @@ async function parseFile(pdfPath: string): Promise<FileResult | null> {
         if (maxRow >= 0) rowOffset += maxRow + 10000;
     }
 
-    const allText = pages.map((p: any) => (p?.cells ?? []).map((c: any) => c.content).join(' ')).join(' ');
+    const allText = combinedContent;
     const bank = detectBankFromContent(allText) ?? 'unknown';
     const parser = getParser(bank);
     if (!parser) {

@@ -582,9 +582,46 @@ function parseNormal(cells: Cell[]): ParseResult {
     return { transactions, ascending: true };
 }
 
+// ── Statement totals extraction ───────────────────────────────────────────────
+// Barclays summary section has 2-col rows: col0=label, col1=£amount
+// e.g. "Start balance" | "£770.10"  /  "Money out" | "£5,866.49"
+
+function extractBarclaysStatementTotals(cells: Cell[]): ParseResult['statementTotals'] | undefined {
+    const rows = new Map<number, Map<number, string>>();
+    for (const c of cells) {
+        if (c.rowIndex < 0) continue;
+        if (!rows.has(c.rowIndex)) rows.set(c.rowIndex, new Map());
+        rows.get(c.rowIndex)!.set(c.columnIndex, c.content);
+    }
+    let moneyIn: number | undefined;
+    let moneyOut: number | undefined;
+    let openingBalance: number | undefined;
+    let closingBalance: number | undefined;
+    for (const colMap of rows.values()) {
+        const c0 = normStr(colMap.get(0) ?? '').toLowerCase();
+        const c1 = normStr(colMap.get(1) ?? '');
+        if (c0 === 'start balance' || c0 === 'opening balance') {
+            const v = parseMoney(c1); if (v !== null) openingBalance = Math.abs(v);
+        } else if (c0 === 'end balance' || c0 === 'closing balance') {
+            const v = parseMoney(c1); if (v !== null) closingBalance = v;
+        } else if (c0 === 'money out') {
+            const v = parseMoney(c1); if (v !== null) moneyOut = Math.abs(v);
+        } else if (c0 === 'money in') {
+            const v = parseMoney(c1); if (v !== null) moneyIn = Math.abs(v);
+        }
+    }
+    if (moneyIn === undefined || moneyOut === undefined) return undefined;
+    return { moneyIn, moneyOut, openingBalance, closingBalance };
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 export function parse(cells: Cell[]): ParseResult {
     const ctx = cells.find(c => c.rowIndex < 0)?.content ?? '';
-    return /Premier BK AC/i.test(ctx) ? parsePremier(cells) : parseNormal(cells);
+    const result = /Premier BK AC/i.test(ctx) ? parsePremier(cells) : parseNormal(cells);
+    if (!result.statementTotals) {
+        const totals = extractBarclaysStatementTotals(cells);
+        if (totals) result.statementTotals = totals;
+    }
+    return result;
 }
