@@ -92,10 +92,25 @@ function addVerificationSide(ws: ExcelJS.Worksheet, v: VerificationSummary, file
                 write('Opening (first file)', chain.chainOpeningBalance);
                 write('Closing (last file)',  chain.chainClosingBalance);
                 write('');
+                // Per-period gap checks (file N closing vs file N+1 opening)
+                if (chain.gaps.length > 0) {
+                    write('Per-period checks:', null, true);
+                    for (const g of chain.gaps) {
+                        // Strip .pdf.pdf suffix for readability
+                        const label = g.afterFile.replace(/\.pdf\.pdf$/i, '');
+                        const sign  = g.diff > 0 ? '+' : '';
+                        write(`⚠ After ${label}: close=${g.expectedOpen.toFixed(2)}, next open=${g.actualOpen.toFixed(2)} (${sign}${g.diff.toFixed(2)})`, null, true);
+                    }
+                    write('');
+                }
+                // Overall net check
                 if (chain.ok) {
                     write('✓ No gaps detected', null, true);
+                } else if (chain.gaps.length === 0) {
+                    // Only overall diff — no per-period mismatch
+                    write(`⚠ Net gap: ${chain.diff > 0 ? '+' : ''}${chain.diff.toFixed(2)} — possible missing file`, null, true);
                 } else {
-                    write(`⚠ Gap: ${chain.diff > 0 ? '+' : ''}${chain.diff.toFixed(2)} — possible missing file`, null, true);
+                    write(`⚠ ${chain.gaps.length} gap${chain.gaps.length > 1 ? 's' : ''} detected — likely missing statement${chain.gaps.length > 1 ? 's' : ''}`, null, true);
                 }
             }
         } else {

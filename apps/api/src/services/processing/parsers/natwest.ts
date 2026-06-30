@@ -163,6 +163,33 @@ export function parse(cells: Cell[]): ParseResult {
         if (!is6col && inCol === -1 && outCol === -1 && amountCol === -1) {
             amountCol = balCol > 2 ? balCol - 1 : 2;
         }
+
+        // "Date Description" merged header: Azure DI sometimes collapses the Date and
+        // Description column labels into one cell (col0 = "Date Description") while
+        // keeping them as separate columns in the data rows.
+        //
+        // Two variants observed in NatWest date-range statements:
+        //   A) col0="Date Description" | col1="Paid In(£)" | col2="Withdrawn(£)" | col3="Bal"
+        //      → data rows have 5 columns: Date | Desc | In | Out | Bal
+        //      → shift all column indices right by 1; d1Col = dateCol + 1
+        //   B) col0="Date Description" | col1="Paid In(£) Withdrawn(£)" | col2="Bal"
+        //      → data rows also have 3 columns: Date+Desc merged | Amount | Bal
+        //      → description IS in col0 (= dateCol); d1Col = dateCol
+        const dateCellText = normStr(hdr.get(dateCol) ?? '').toLowerCase();
+        if (dateCellText.startsWith('date ') && dateCellText.includes('desc')) {
+            if (inCol >= 0 || outCol >= 0) {
+                // Variant A: separate In/Out — data has an extra description column
+                d1Col = dateCol + 1;
+                if (inCol     >= 0) inCol++;
+                if (outCol    >= 0) outCol++;
+                if (amountCol >= 0) amountCol++;
+                if (balCol    >= 0) balCol++;
+                if (odCol     >= 0) odCol++;
+            } else {
+                // Variant B: merged amount column — description shares col0 with date
+                d1Col = dateCol;
+            }
+        }
     }
 
     if (header) {
@@ -316,8 +343,10 @@ export function parse(cells: Cell[]): ParseResult {
                     if (d1 && !current.type) current.type        = d1;
                     if (d2)                  current.description = normStr(`${current.description} ${d2}`);
                 } else {
-                    // 5-col merged or 4-col: d1 IS the description
-                    if (d1) current.description = normStr(`${current.description} ${d1}`);
+                    // 5-col merged or 4-col: d1 IS the description.
+                    // Guard: when d1Col == dateCol (variant B "Date Description" merged
+                    // header), continuation rows are footer/disclaimer text — skip them.
+                    if (d1Col !== dateCol && d1) current.description = normStr(`${current.description} ${d1}`);
                 }
                 if (balance && !current.balance)   current.balance  = balance;
                 if (moneyOut && !current.moneyOut) current.moneyOut = moneyOut;

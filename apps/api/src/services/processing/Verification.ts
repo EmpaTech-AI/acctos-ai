@@ -146,12 +146,21 @@ export function logVerificationSummary(v: VerificationSummary): void {
 
 // ── Chain continuity ─────────────────────────────────────────────────────────
 
+export interface ChainGap {
+    afterFile:     string;  // filename of the file whose closing balance doesn't match
+    beforeFile:    string;  // filename of the next file whose opening balance differs
+    expectedOpen:  number;  // closing balance of afterFile (expected opening of next file)
+    actualOpen:    number;  // actual opening balance of beforeFile
+    diff:          number;  // actualOpen - expectedOpen
+}
+
 export interface ChainVerification {
     chainOpeningBalance: number;  // opening balance of the first file in the set
     chainClosingBalance: number;  // closing balance of the last file in the set
     expectedClosing: number;      // chainOpen + totalIn - totalOut
     diff: number;                 // actualClosing - expectedClosing (≈0 means no gaps)
     ok: boolean;
+    gaps: ChainGap[];             // per-period: file[N].closing vs file[N+1].opening
 }
 
 /**
@@ -179,11 +188,32 @@ export function computeChainVerification(
     const chainClose = withClose[withClose.length - 1].closingBalance!;
     const expected   = Math.round((chainOpen + totalIn - totalOut) * 100) / 100;
     const diff       = Math.round((chainClose - expected) * 100) / 100;
+
+    // Per-period gap detection: for each consecutive pair of files, check whether
+    // file[N].closingBalance matches file[N+1].openingBalance (within £0.02).
+    const gaps: ChainGap[] = [];
+    for (let i = 0; i < fileSummaries.length - 1; i++) {
+        const cur  = fileSummaries[i];
+        const next = fileSummaries[i + 1];
+        if (cur.closingBalance == null || next.openingBalance == null) continue;
+        const gapDiff = Math.round((next.openingBalance - cur.closingBalance) * 100) / 100;
+        if (Math.abs(gapDiff) >= 0.02) {
+            gaps.push({
+                afterFile:    cur.filename,
+                beforeFile:   next.filename,
+                expectedOpen: cur.closingBalance,
+                actualOpen:   next.openingBalance,
+                diff:         gapDiff,
+            });
+        }
+    }
+
     return {
         chainOpeningBalance: chainOpen,
         chainClosingBalance: chainClose,
         expectedClosing: expected,
         diff,
-        ok: Math.abs(diff) < 0.02,
+        ok: Math.abs(diff) < 0.02 && gaps.length === 0,
+        gaps,
     };
 }
