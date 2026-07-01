@@ -15,7 +15,7 @@ import {
     getAzureCache, saveAzureCache,
     createJobRecord, updateJobRecord, saveOutputFile,
 } from '../SupabaseService.js';
-import { uploadToDriveFolder } from '../google/GoogleService.js';
+import { uploadToDriveFolder, uploadToDriveSubfolder } from '../google/GoogleService.js';
 
 function getDriveFolderId(processingMode?: 'bank_statement' | 'vat'): string {
     return processingMode === 'vat'
@@ -238,7 +238,7 @@ export interface FileInput {
  * @param bankHint  Optional bank type override — use when files are named-page splits of a known
  *                  bank's statement and filename/content detection would be unreliable.
  */
-export function startBatchProcessingJob(files: FileInput[], tracking?: TrackingContext, bankHint?: BankType, processingMode?: 'bank_statement' | 'vat'): string {
+export function startBatchProcessingJob(files: FileInput[], tracking?: TrackingContext, bankHint?: BankType, processingMode?: 'bank_statement' | 'vat', emailSubject?: string): string {
     const jobId = randomUUID();
 
     // Deduplicate by content hash — identical bytes across differently-named files get dropped
@@ -270,7 +270,7 @@ export function startBatchProcessingJob(files: FileInput[], tracking?: TrackingC
         return jobId;
     }
 
-    runBatchJob(jobId, uniqueFiles, tracking, bankHint, processingMode).catch(err => {
+    runBatchJob(jobId, uniqueFiles, tracking, bankHint, processingMode, emailSubject).catch(err => {
         console.error(`[Orchestrator] Batch job ${jobId} unhandled crash:`, err);
         jobStore.update(jobId, { status: 'failed', error: String(err?.message ?? err) });
     });
@@ -278,7 +278,7 @@ export function startBatchProcessingJob(files: FileInput[], tracking?: TrackingC
     return jobId;
 }
 
-async function runBatchJob(jobId: string, files: FileInput[], tracking?: TrackingContext, bankHint?: BankType, processingMode?: 'bank_statement' | 'vat'): Promise<void> {
+async function runBatchJob(jobId: string, files: FileInput[], tracking?: TrackingContext, bankHint?: BankType, processingMode?: 'bank_statement' | 'vat', emailSubject?: string): Promise<void> {
     const timer = makeStageTimer();
     try {
         jobStore.update(jobId, { status: 'processing', totalFiles: files.length });
@@ -514,8 +514,14 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
             });
             const folderId = getDriveFolderId(processingMode);
             if (folderId) {
-                await uploadToDriveFolder(outputBuffer, driveFilename(_batchName), folderId)
-                    .catch(e => console.warn('[Orchestrator] Drive upload (batch) failed:', e?.message));
+                const fn = driveFilename(_batchName);
+                if (emailSubject) {
+                    await uploadToDriveSubfolder(outputBuffer, fn, folderId, emailSubject)
+                        .catch(e => console.warn('[Orchestrator] Drive upload (batch) failed:', e?.message));
+                } else {
+                    await uploadToDriveFolder(outputBuffer, fn, folderId)
+                        .catch(e => console.warn('[Orchestrator] Drive upload (batch) failed:', e?.message));
+                }
             }
         })().catch(e => console.warn('[Orchestrator] Supabase persist (batch) failed:', e?.message));
 

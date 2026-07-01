@@ -95,7 +95,82 @@ export async function uploadToDriveFolder(
     return res.data.webViewLink ?? null;
 }
 
+/**
+ * Upload a processed Excel file into a named subfolder inside parentFolderId.
+ * Creates the subfolder if it doesn't already exist.
+ */
+export async function uploadToDriveSubfolder(
+    buffer:         Buffer,
+    filename:       string,
+    parentFolderId: string,
+    subfolderName:  string,
+): Promise<string | null> {
+    if (!parentFolderId) return null;
+
+    const auth  = buildOAuth2Client();
+    const drive = google.drive({ version: 'v3', auth });
+
+    const subfolderId = await getOrCreateDriveFolder(drive, parentFolderId, subfolderName);
+
+    const res = await drive.files.create({
+        requestBody: {
+            name:    filename,
+            parents: [subfolderId],
+        },
+        media: {
+            mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            body:     Readable.from(buffer),
+        },
+        fields: 'id,webViewLink',
+    });
+
+    console.log(`[GoogleService] Uploaded "${filename}" → "${subfolderName}/" in Drive → ${res.data.webViewLink}`);
+    return res.data.webViewLink ?? null;
+}
+
+/**
+ * Save original PDF files into a named subfolder inside parentFolderId.
+ * Creates the subfolder if it doesn't already exist.
+ */
+export async function uploadOriginalsToDrive(
+    files:          Array<{ buffer: Buffer; filename: string }>,
+    parentFolderId: string,
+    subfolderName:  string,
+): Promise<void> {
+    if (!parentFolderId || !files.length) return;
+
+    const auth  = buildOAuth2Client();
+    const drive = google.drive({ version: 'v3', auth });
+
+    const subfolderId = await getOrCreateDriveFolder(drive, parentFolderId, subfolderName);
+
+    for (const { buffer, filename } of files) {
+        await drive.files.create({
+            requestBody: { name: filename, parents: [subfolderId] },
+            media: { mimeType: 'application/pdf', body: Readable.from(buffer) },
+            fields: 'id',
+        });
+        console.log(`[GoogleService] Saved original "${filename}" → "${subfolderName}/" in Drive`);
+    }
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+async function getOrCreateDriveFolder(drive: any, parentId: string, name: string): Promise<string> {
+    const escaped = name.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    const listRes = await drive.files.list({
+        q: `'${parentId}' in parents and name = '${escaped}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
+        fields: 'files(id)',
+        pageSize: 1,
+    });
+    if (listRes.data.files?.length) return listRes.data.files[0].id as string;
+
+    const created = await drive.files.create({
+        requestBody: { name, mimeType: 'application/vnd.google-apps.folder', parents: [parentId] },
+        fields: 'id',
+    });
+    return created.data.id as string;
+}
 
 function extractDriveFileId(link: string): string | null {
     // https://drive.google.com/uc?id=FILE_ID&export=download

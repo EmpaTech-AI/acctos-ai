@@ -1,6 +1,7 @@
 import cron from 'node-cron';
 import { listUnreadMessages, getPdfAttachments, markAsRead } from '../services/google/GmailService.js';
 import { startBatchProcessingJob } from '../services/processing/ProcessingOrchestrator.js';
+import { uploadOriginalsToDrive } from '../services/google/GoogleService.js';
 
 const LABEL_MAP = [
     { label: 'Bank Statement AI', processingMode: 'bank_statement' as const },
@@ -44,11 +45,24 @@ async function pollLabel(labelName: string, processingMode: 'bank_statement' | '
 
             console.log(`[GmailPoller] Processing ${pdfs.length} PDF(s) from "${message.subject}" as ${processingMode}`);
 
+            // Save original PDFs to Drive originals folder (non-blocking)
+            const originalsId = processingMode === 'vat'
+                ? process.env.DRIVE_VAT_ORIGINALS_FOLDER_ID
+                : process.env.DRIVE_BANK_STATEMENT_ORIGINALS_FOLDER_ID;
+            if (originalsId && message.subject) {
+                uploadOriginalsToDrive(
+                    pdfs.map(p => ({ buffer: p.buffer, filename: p.filename })),
+                    originalsId,
+                    message.subject,
+                ).catch(e => console.warn('[GmailPoller] Originals Drive upload failed:', e?.message));
+            }
+
             startBatchProcessingJob(
                 pdfs.map(pdf => ({ filename: pdf.filename, mimeType: pdf.mimeType, buffer: pdf.buffer })),
                 undefined,
                 undefined,
                 processingMode,
+                message.subject,
             );
 
             await markAsRead(message.id);
