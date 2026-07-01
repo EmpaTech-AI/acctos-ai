@@ -1,4 +1,5 @@
 import { google } from 'googleapis';
+import { Readable } from 'stream';
 
 function buildOAuth2Client() {
     const client = new google.auth.OAuth2(
@@ -62,6 +63,36 @@ export async function writeRowsToSheet(spreadsheetId: string, dataRows: any[][])
     });
 
     console.log(`[GoogleService] Wrote ${dataRows.length} rows to "${sheetName}" in sheet ${spreadsheetId}`);
+}
+
+/**
+ * Upload a processed Excel file to a specific Google Drive folder.
+ * Returns the web view link of the uploaded file, or null if folderId is not configured.
+ */
+export async function uploadToDriveFolder(
+    buffer:   Buffer,
+    filename: string,
+    folderId: string,
+): Promise<string | null> {
+    if (!folderId) return null;
+
+    const auth  = buildOAuth2Client();
+    const drive = google.drive({ version: 'v3', auth });
+
+    const res = await drive.files.create({
+        requestBody: {
+            name:    filename,
+            parents: [folderId],
+        },
+        media: {
+            mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            body:     Readable.from(buffer),
+        },
+        fields: 'id,webViewLink',
+    });
+
+    console.log(`[GoogleService] Uploaded "${filename}" to Drive folder ${folderId} → ${res.data.webViewLink}`);
+    return res.data.webViewLink ?? null;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

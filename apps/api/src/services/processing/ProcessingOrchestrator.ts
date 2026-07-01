@@ -15,6 +15,17 @@ import {
     getAzureCache, saveAzureCache,
     createJobRecord, updateJobRecord, saveOutputFile,
 } from '../SupabaseService.js';
+import { uploadToDriveFolder } from '../google/GoogleService.js';
+
+function getDriveFolderId(processingMode?: 'bank_statement' | 'vat'): string {
+    return processingMode === 'vat'
+        ? (process.env.DRIVE_VAT_FOLDER_ID ?? '')
+        : (process.env.DRIVE_BANK_STATEMENT_FOLDER_ID ?? '');
+}
+
+function driveFilename(name: string): string {
+    return name.replace(/\.(pdf|xlsx?|csv)$/i, '') + '_processed.xlsx';
+}
 
 interface TrackingContext {
     prisma: PrismaClient;
@@ -488,9 +499,10 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
             : await buildPdfOutputExcel(categorized, verification, fileSummaries.length > 1 ? fileSummaries : undefined);
         jobStore.update(jobId, { status: 'completed', outputBuffer, completedAt: new Date() });
         console.log(`[Orchestrator] Batch job ${jobId} completed — ${allTransactions.length} transactions from ${files.length} file(s)`);
-        // Persist to Supabase (non-blocking)
+        // Persist to Supabase + Drive (non-blocking)
         const _bankType = jobStore.get(jobId)?.bankType;
         const _txCount  = jobStore.get(jobId)?.transactionCount;
+        const _batchName = jobStore.get(jobId)?.filename ?? 'batch';
         void (async () => {
             const outputPath = await saveOutputFile(jobId, outputBuffer);
             await updateJobRecord(jobId, {
@@ -500,6 +512,11 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
                 output_path: outputPath ?? undefined,
                 completed_at: new Date().toISOString(),
             });
+            const folderId = getDriveFolderId(processingMode);
+            if (folderId) {
+                await uploadToDriveFolder(outputBuffer, driveFilename(_batchName), folderId)
+                    .catch(e => console.warn('[Orchestrator] Drive upload (batch) failed:', e?.message));
+            }
         })().catch(e => console.warn('[Orchestrator] Supabase persist (batch) failed:', e?.message));
 
     } catch (err: any) {
@@ -742,7 +759,7 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
 
         jobStore.update(jobId, { status: 'completed', outputBuffer, completedAt: new Date() });
         console.log(`[Orchestrator] Job ${jobId} completed — ${filename}`);
-        // Persist to Supabase (non-blocking)
+        // Persist to Supabase + Drive (non-blocking)
         const _bankType = jobStore.get(jobId)?.bankType;
         const _txCount  = jobStore.get(jobId)?.transactionCount;
         void (async () => {
@@ -754,6 +771,11 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
                 output_path: outputPath ?? undefined,
                 completed_at: new Date().toISOString(),
             });
+            const folderId = getDriveFolderId(processingMode);
+            if (folderId) {
+                await uploadToDriveFolder(outputBuffer, driveFilename(filename), folderId)
+                    .catch(e => console.warn('[Orchestrator] Drive upload (single) failed:', e?.message));
+            }
         })().catch(e => console.warn('[Orchestrator] Supabase persist (single) failed:', e?.message));
 
     } catch (err: any) {
