@@ -15,7 +15,7 @@ const MONTH_MAP: Record<string, number> = {
 };
 
 const SKIP_RE          = /\b(start\s+balance|opening\s+balance|balance\s+brought\s+forward|brought\s+forward|starting\s+balance)\b/i;
-const FOOTER_RE        = /\b(if\s+you\s+have\s+a\s+problem\s+with\s+your|compensation\s+to\s+depositors|financial\s+services\s+compensation\s+scheme|fscs\s+protect|protected\s+by\s+the\s+fscs|depositor\s+protection|transferring\s+money\s+between\s+countries|most\s+depositors|financial\s+ombudsman\s+service|credit\s+interest\s+rate.*shown\s+on\s+your\s+statement|unarranged\s+borrowing\s+rate)\b/i;
+const FOOTER_RE        = /\b(if\s+you\s+have\s+a\s+problem\s+with\s+your|compensation\s+to\s+depositors|financial\s+services\s+compensation\s+scheme|fscs\s+protect|protected\s+by\s+the\s+fscs|depositor\s+protection|transferring\s+money\s+between\s+countries|most\s+depositors|financial\s+ombudsman\s+service|credit\s+interest\s+rate.*shown\s+on\s+your\s+statement|unarranged\s+borrowing\s+rate|part\s+of\s+barclays\s*[:,]|names?\s+are\s+part\s+of\s+barclays|barclays\s+business\s+banking[,\s]+barclays\s+premier|barclays\s+premier\s+banking[,\s]+barclays\s+wealth|tesco\s+bank\s+(?:are\s+all\s+trading|tel[\s:]))\b/i;
 const CARRIED_FWD_RE   = /\b(balance\s+carried\s+forward|carried\s+forward)\b/i;
 const TOTAL_RE         = /\b(total\s+payments[\/\\]receipts|total\s+payments|end\s+balance)\b/i;
 const NEW_TXN_RE       = /^(card\s+purchase|card\s+payment|internet\s+banking\s+transfer|on-line\s+banking\s+bill\s+payment|giro\s+direct\s+credit|direct\s+credit|atm\s+cash\s+machine|cash\s+machine\s+withdrawal|direct\s+debit|standing\s+order|refund\s+from|transfer\s+from|asd\s+withdrawal)\b/i;
@@ -319,7 +319,17 @@ function parsePremier(cells: Cell[]): ParseResult {
 
     const txns = stitch(physical);
     backfillBalance(txns);
-    return { transactions: toTransactions(txns), ascending: true };
+    const transactions = toTransactions(txns);
+    // Post-process: strip Barclays legal-disclaimer text that slipped into descriptions
+    for (const t of transactions) {
+        t.description = normStr(
+            t.description
+                .replace(/\s+(?:names?\s+are\s+)?part\s+of\s+barclays.*/i, '')
+                .replace(/\s+barclays\s*[,:]?\s*barclays\s+business\s+banking.*/i, '')
+                .replace(/\s+barclays\s+premier\s+banking.*tesco\s+bank.*/i, '')
+        );
+    }
+    return { transactions, ascending: true };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -579,6 +589,16 @@ function parseNormal(cells: Cell[]): ParseResult {
             balance:     t.balance !== null ? t.balance.toFixed(2) : '',
         });
     }
+    // Post-process: strip any Barclays legal-disclaimer text that slipped into descriptions
+    for (const t of transactions) {
+        t.description = normStr(
+            t.description
+                .replace(/\s+(?:names?\s+are\s+)?part\s+of\s+barclays.*/i, '')
+                .replace(/\s+barclays\s*[,:]?\s*barclays\s+business\s+banking.*/i, '')
+                .replace(/\s+barclays\s+premier\s+banking.*tesco\s+bank.*/i, '')
+        );
+    }
+
     return { transactions, ascending: true };
 }
 
