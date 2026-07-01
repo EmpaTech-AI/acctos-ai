@@ -11,6 +11,15 @@ const MONTH_MAP: Record<string, number> = {
     jul:7, aug:8, sep:9, oct:10, nov:11, dec:12,
 };
 
+// NatWest footer patterns — these appear as continuation rows at the bottom of pages
+// (interest-rate table headers, paperless-statements notice) and must not be appended
+// to the last transaction's description.
+const NATWEST_FOOTER_RE = /switching to paperless|^arranged\s*(?:overdraft)?\s*$|^unarranged\s*(?:overdraft)?\s*$/i;
+
+function isNatwestFooter(text: string): boolean {
+    return NATWEST_FOOTER_RE.test(text.trim());
+}
+
 // Strip leading card-terminal or sort-code references that Azure DI puts in D2.
 // E.g. "3442 02APR24 CD Rest of description" → "Rest of description"
 //      "602012 02APR 1314 Merchant Name"      → "Merchant Name"
@@ -338,15 +347,15 @@ export function parse(cells: Cell[]): ParseResult {
                 // Standard continuation — merge description/amounts into current.
                 // NatWest 6-col spreads amounts onto the last continuation row.
                 if (typeCol >= 0) {
-                    if (d1) current.description = normStr(`${current.description} ${d1}`);
+                    if (d1 && !isNatwestFooter(d1)) current.description = normStr(`${current.description} ${d1}`);
                 } else if (d2Col >= 0) {
-                    if (d1 && !current.type) current.type        = d1;
-                    if (d2)                  current.description = normStr(`${current.description} ${d2}`);
+                    if (d1 && !current.type && !isNatwestFooter(d1)) current.type = d1;
+                    if (d2 && !isNatwestFooter(d2))                  current.description = normStr(`${current.description} ${d2}`);
                 } else {
                     // 5-col merged or 4-col: d1 IS the description.
                     // Guard: when d1Col == dateCol (variant B "Date Description" merged
                     // header), continuation rows are footer/disclaimer text — skip them.
-                    if (d1Col !== dateCol && d1) current.description = normStr(`${current.description} ${d1}`);
+                    if (d1Col !== dateCol && d1 && !isNatwestFooter(d1)) current.description = normStr(`${current.description} ${d1}`);
                 }
                 if (balance && !current.balance)   current.balance  = balance;
                 if (moneyOut && !current.moneyOut) current.moneyOut = moneyOut;
@@ -359,6 +368,15 @@ export function parse(cells: Cell[]): ParseResult {
     }
 
     flush();
+
+    // Post-process: strip any NatWest footer text that slipped into descriptions.
+    // Covers ARRANGED/UNARRANGED overdraft markers and the paperless-statements notice.
+    for (const t of transactions) {
+        let desc = t.description;
+        desc = desc.replace(/\s+switching to paperless.*/i, '');
+        desc = desc.replace(/(?:\s+(?:ARRANGED|UNARRANGED))+\s*$/i, '');
+        t.description = normStr(desc);
+    }
 
     // Extract declared statement totals from the summary block that sits above the header.
     // NatWest places "Previous Balance / Paid In / Withdrawn / New Balance" as grid rows

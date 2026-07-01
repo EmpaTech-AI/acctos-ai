@@ -30,12 +30,9 @@ interface RecentJob {
     filename: string;
     completedAt: string;
     transactionCount?: number;
-    expired?: boolean;
 }
 
-const LS_KEY = 'acctos_recent_jobs';
 const LS_ACTIVE_KEY = 'acctos_active_job';
-const MAX_RECENT = 10;
 
 // ── Pipeline stage definitions ───────────────────────────────────────────────
 
@@ -308,18 +305,6 @@ function PreviewModal({ jobId, filename, onClose, onDownload }: PreviewModalProp
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function loadRecentJobs(): RecentJob[] {
-    try {
-        return JSON.parse(localStorage.getItem(LS_KEY) || '[]');
-    } catch {
-        return [];
-    }
-}
-
-function saveRecentJobs(jobs: RecentJob[]) {
-    localStorage.setItem(LS_KEY, JSON.stringify(jobs.slice(0, MAX_RECENT)));
-}
-
 function formatDate(iso: string) {
     return new Date(iso).toLocaleString(undefined, {
         day: '2-digit', month: 'short', year: 'numeric',
@@ -355,23 +340,21 @@ export default function ImportFile() {
     const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
     const jobRef  = useRef<Job | null>(null);
 
-    // Load and verify recent jobs on mount; also resume any in-progress job
+    // Load job history from Supabase on mount; also resume any in-progress job
     useEffect(() => {
-        const saved = loadRecentJobs();
-        if (saved.length > 0) {
-            Promise.all(saved.map(async (rj) => {
-                try {
-                    await axios.get(`/v1/processing/${rj.id}`);
-                    return rj;
-                } catch {
-                    return { ...rj, expired: true };
-                }
-            })).then(verified => {
-                const alive = verified.filter(j => !j.expired);
-                setRecentJobs(alive);
-                saveRecentJobs(alive);
-            });
-        }
+        axios.get('/v1/processing').then(res => {
+            const jobs: Array<Record<string, any>> = res.data.jobs ?? [];
+            setRecentJobs(
+                jobs
+                    .filter((j: any) => j.status === 'completed' && j.output_path)
+                    .map((j: any) => ({
+                        id: j.id,
+                        filename: j.filename,
+                        completedAt: j.completed_at ?? j.created_at,
+                        transactionCount: j.transaction_count,
+                    }))
+            );
+        }).catch(() => {});
 
         // Resume polling if a job was in-flight when the user navigated away
         const active = loadActiveJob();
@@ -431,9 +414,7 @@ export default function ImportFile() {
                 transactionCount: j.transactionCount,
             };
             const filtered = prev.filter(r => r.id !== j.id);
-            const updated = [entry, ...filtered];
-            saveRecentJobs(updated);
-            return updated;
+            return [entry, ...filtered];
         });
     }, []);
 
@@ -468,7 +449,7 @@ export default function ImportFile() {
             a.click();
             URL.revokeObjectURL(url);
         } catch {
-            alert('Download failed. The file may have expired (files are kept for 2 hours).');
+            alert('Download failed. Please try again.');
         }
     };
 
@@ -752,7 +733,7 @@ export default function ImportFile() {
                         <Clock size={16} color="var(--text-muted)" />
                         <span style={{ fontWeight: 600, fontSize: '0.88rem' }}>Recent files</span>
                         <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-                            — available for 2 hours after processing
+                            — all processed files
                         </span>
                     </div>
 

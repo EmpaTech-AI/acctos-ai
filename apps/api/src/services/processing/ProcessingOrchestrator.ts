@@ -4,13 +4,17 @@ import { PrismaClientKnownRequestError } from '@prisma/client/runtime/library';
 import { jobStore, FileSummary } from './JobStore.js';
 import { classify, detectBankFromContent, BankType } from './DocumentClassifier.js';
 import { splitPdf } from './PdfSplitter.js';
-import { analyzePages } from './AzureExtractor.js';
+import { analyzePages, PageData } from './AzureExtractor.js';
 import { categorize } from './AssistantCategorizer.js';
 import { parseExcel } from './ExcelParser.js';
 import { buildPdfOutputExcel, buildExcelOutputExcel, buildVatOutputExcel } from './ExcelOutputBuilder.js';
 import { Cell, ParsedTransaction, ParseResult } from './parsers/shared.js';
 import { computeVerification, applyCatVerification, logVerificationSummary, computeChainVerification } from './Verification.js';
 import { notifyParserError, notifyChainGap, notifyJobFailed } from './NotificationService.js';
+import {
+    getAzureCache, saveAzureCache,
+    createJobRecord, updateJobRecord, saveOutputFile,
+} from '../SupabaseService.js';
 
 interface TrackingContext {
     prisma: PrismaClient;
@@ -243,6 +247,7 @@ export function startBatchProcessingJob(files: FileInput[], tracking?: TrackingC
 
     const batchName = uniqueFiles.length === 1 ? uniqueFiles[0].filename : `${uniqueFiles.length} files`;
     jobStore.create(jobId, batchName);
+    createJobRecord({ id: jobId, filename: batchName, processingMode }).catch(() => {});
 
     if (duplicatesRemoved.length > 0) {
         jobStore.update(jobId, { duplicatesRemoved });
@@ -286,14 +291,26 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
                 throw new Error(`Excel files are not supported in multi-file batch. Upload "${filename}" separately.`);
             }
 
-            // PDF: split → Azure DI → parse
+            // PDF: split → Azure DI (or cache) → parse
             jobStore.update(jobId, { currentStage: 'extract' });
-            const pageBuffers = await splitPdf(buffer);
-            jobStore.update(jobId, { pageCount: pageBuffers.length });
-            const pageData = await analyzePages(pageBuffers);
-            console.log(`[Orchestrator] File ${fi + 1}/${files.length} Azure DI:`, pageData.map((p, i) => `page${i+1}:${p?.cells?.length ?? 'null'}cells`));
+            const fileHash = createHash('sha256').update(buffer).digest('hex');
+            const cachedPages = await getAzureCache(fileHash);
+            let pageData: Array<PageData | null>;
+            let usedAzure = false;
+            if (cachedPages) {
+                console.log(`[Orchestrator] Azure cache HIT for file ${fi + 1}: "${filename}"`);
+                pageData = cachedPages;
+                jobStore.update(jobId, { pageCount: cachedPages.filter(p => p !== null).length });
+            } else {
+                const pageBuffers = await splitPdf(buffer);
+                jobStore.update(jobId, { pageCount: pageBuffers.length });
+                pageData = await analyzePages(pageBuffers);
+                usedAzure = true;
+                console.log(`[Orchestrator] File ${fi + 1}/${files.length} Azure DI:`, pageData.map((p, i) => `page${i+1}:${p?.cells?.length ?? 'null'}cells`));
+                saveAzureCache(fileHash, filename, pageData).catch(() => {});
+            }
 
-            if (tracking) {
+            if (usedAzure && tracking) {
                 const pageCount = pageData.filter(p => p !== null).length;
                 if (pageCount > 0) {
                     const today = new Date(); today.setHours(0, 0, 0, 0);
@@ -471,6 +488,19 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
             : await buildPdfOutputExcel(categorized, verification, fileSummaries.length > 1 ? fileSummaries : undefined);
         jobStore.update(jobId, { status: 'completed', outputBuffer, completedAt: new Date() });
         console.log(`[Orchestrator] Batch job ${jobId} completed — ${allTransactions.length} transactions from ${files.length} file(s)`);
+        // Persist to Supabase (non-blocking)
+        const _bankType = jobStore.get(jobId)?.bankType;
+        const _txCount  = jobStore.get(jobId)?.transactionCount;
+        void (async () => {
+            const outputPath = await saveOutputFile(jobId, outputBuffer);
+            await updateJobRecord(jobId, {
+                status: 'completed',
+                bank_type: _bankType,
+                transaction_count: _txCount,
+                output_path: outputPath ?? undefined,
+                completed_at: new Date().toISOString(),
+            });
+        })().catch(e => console.warn('[Orchestrator] Supabase persist (batch) failed:', e?.message));
 
     } catch (err: any) {
         const stage = jobStore.get(jobId)?.currentStage;
@@ -478,6 +508,12 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
         const elapsed = stage ? timer.elapsed(stage) : 0;
         console.error(`[Orchestrator][${errorType.toUpperCase()}] Batch job ${jobId} failed at stage "${stage}" (${elapsed}s):`, err.message);
         jobStore.update(jobId, { status: 'failed', error: err.message || String(err), errorType, completedAt: new Date() });
+        updateJobRecord(jobId, {
+            status: 'failed',
+            error: (err.message || String(err)).slice(0, 2000),
+            error_type: errorType,
+            completed_at: new Date().toISOString(),
+        }).catch(() => {});
         notifyJobFailed({
             jobId,
             tenantId: tracking?.tenantId,
@@ -499,6 +535,7 @@ export function startProcessingJob(
 ): string {
     const jobId = randomUUID();
     jobStore.create(jobId, filename);
+    createJobRecord({ id: jobId, filename, processingMode }).catch(() => {});
 
     runJob(jobId, filename, mimeType, fileBuffer, tracking, processingMode).catch(err => {
         console.error(`[Orchestrator] Job ${jobId} unhandled crash:`, err);
@@ -552,15 +589,27 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
             }
 
         } else {
-            // ── Stage: extract (Azure DI page splitting + cell extraction) ───────
+            // ── Stage: extract (Azure DI or cache) ───────────────────────────────
             timer.start('extract');
-            const pageBuffers = await splitPdf(fileBuffer);
-            jobStore.update(jobId, { pageCount: pageBuffers.length });
-            const pageData = await analyzePages(pageBuffers);
-            console.log(`[Orchestrator] Azure DI results per page:`, pageData.map((p, i) => `page${i+1}:${p?.cells?.length ?? 'null'}cells`));
+            const fileHash = createHash('sha256').update(fileBuffer).digest('hex');
+            const cachedPages = await getAzureCache(fileHash);
+            let pageData: Array<PageData | null>;
+            let usedAzure = false;
+            if (cachedPages) {
+                console.log(`[Orchestrator] Azure cache HIT for "${filename}"`);
+                pageData = cachedPages;
+                jobStore.update(jobId, { pageCount: cachedPages.filter(p => p !== null).length });
+            } else {
+                const pageBuffers = await splitPdf(fileBuffer);
+                jobStore.update(jobId, { pageCount: pageBuffers.length });
+                pageData = await analyzePages(pageBuffers);
+                usedAzure = true;
+                console.log(`[Orchestrator] Azure DI results per page:`, pageData.map((p, i) => `page${i+1}:${p?.cells?.length ?? 'null'}cells`));
+                saveAzureCache(fileHash, filename, pageData).catch(() => {});
+            }
 
-            // Track Azure Document Intelligence usage
-            if (tracking) {
+            // Track Azure Document Intelligence usage (only when we actually called Azure)
+            if (usedAzure && tracking) {
                 const pageCount = pageData.filter(p => p !== null).length;
                 if (pageCount > 0) {
                     const today = new Date(); today.setHours(0, 0, 0, 0);
@@ -693,6 +742,19 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
 
         jobStore.update(jobId, { status: 'completed', outputBuffer, completedAt: new Date() });
         console.log(`[Orchestrator] Job ${jobId} completed — ${filename}`);
+        // Persist to Supabase (non-blocking)
+        const _bankType = jobStore.get(jobId)?.bankType;
+        const _txCount  = jobStore.get(jobId)?.transactionCount;
+        void (async () => {
+            const outputPath = await saveOutputFile(jobId, outputBuffer);
+            await updateJobRecord(jobId, {
+                status: 'completed',
+                bank_type: _bankType,
+                transaction_count: _txCount,
+                output_path: outputPath ?? undefined,
+                completed_at: new Date().toISOString(),
+            });
+        })().catch(e => console.warn('[Orchestrator] Supabase persist (single) failed:', e?.message));
 
     } catch (err: any) {
         const stage = jobStore.get(jobId)?.currentStage;
@@ -705,6 +767,12 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
             errorType,
             completedAt: new Date(),
         });
+        updateJobRecord(jobId, {
+            status: 'failed',
+            error: (err.message || String(err)).slice(0, 2000),
+            error_type: errorType,
+            completed_at: new Date().toISOString(),
+        }).catch(() => {});
         notifyJobFailed({
             jobId,
             tenantId: tracking?.tenantId,
