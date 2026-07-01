@@ -7,6 +7,16 @@ import {
     buildGrid, getCell, maxCol, extractYearsFromCells,
 } from './shared.js';
 
+// ── Footer text stripping ────────────────────────────────────────────────────
+// Strips Barclays legal, interest-rate, and contact-section text.
+// Uses \s* (not \s+) so it truncates even when the footer starts at position 0
+// (standalone footer cell, not just appended continuation text).
+const FOOTER_TRUNCATE_RE = /\s*(?:if\s+your\s+account\s+pays\s+interest|if\s+you\s+need\s+to\s+transfer\s+money\s+between\s+countries|barclays\.co\.uk\/|(?:our\s+)?bank\s+charges\s+explained|tailor\s+the\s+alerts\s+you\s+receive|you\s+can\s+also\s+tailor\s+the\s+alerts|non[- ]sterling\s+transaction\s+fee|if\s+you\s+don.t\s+get\s+these\s+messages|(?:in\s+the\s+uk[)\s]|we.ll\s+charge\s+you\s+a\s+\d)|0345\s+7\s+345\s+345|open\s+24\/7\s+including\s+holidays|from\s+abroad\s+\+44|write\s+to\s+us\s+barclays|(?:names?\s+are\s+)?part\s+of\s+barclays|barclays\s+business\s+banking[,\s]+barclays\s+premier|barclays\s+premier\s+banking).*/i;
+
+function stripFooterText(desc: string): string {
+    return normStr(desc.replace(FOOTER_TRUNCATE_RE, ''));
+}
+
 // ── Constants ────────────────────────────────────────────────────────────────
 
 const MONTH_MAP: Record<string, number> = {
@@ -15,7 +25,7 @@ const MONTH_MAP: Record<string, number> = {
 };
 
 const SKIP_RE          = /\b(start\s+balance|opening\s+balance|balance\s+brought\s+forward|brought\s+forward|starting\s+balance)\b/i;
-const FOOTER_RE        = /\b(if\s+you\s+have\s+a\s+problem\s+with\s+your|compensation\s+to\s+depositors|financial\s+services\s+compensation\s+scheme|fscs\s+protect|protected\s+by\s+the\s+fscs|depositor\s+protection|transferring\s+money\s+between\s+countries|most\s+depositors|financial\s+ombudsman\s+service|credit\s+interest\s+rate.*shown\s+on\s+your\s+statement|unarranged\s+borrowing\s+rate|part\s+of\s+barclays\s*[:,]|names?\s+are\s+part\s+of\s+barclays|barclays\s+business\s+banking[,\s]+barclays\s+premier|barclays\s+premier\s+banking[,\s]+barclays\s+wealth|tesco\s+bank\s+(?:are\s+all\s+trading|tel[\s:]))\b/i;
+const FOOTER_RE        = /\b(if\s+you\s+have\s+a\s+problem\s+with\s+your|compensation\s+to\s+depositors|financial\s+services\s+compensation\s+scheme|fscs\s+protect|protected\s+by\s+the\s+fscs|depositor\s+protection|transferring\s+money\s+between\s+countries|most\s+depositors|financial\s+ombudsman\s+service|credit\s+interest\s+rate.*shown\s+on\s+your\s+statement|unarranged\s+borrowing\s+rate|part\s+of\s+barclays\s*[:,]|names?\s+are\s+part\s+of\s+barclays|barclays\s+business\s+banking[,\s]+barclays\s+premier|barclays\s+premier\s+banking[,\s]+barclays\s+wealth|tesco\s+bank\s+(?:are\s+all\s+trading|tel[\s:])|if\s+your\s+account\s+pays\s+interest|if\s+you\s+need\s+to\s+transfer\s+money\s+between\s+countries|barclays\.co\.uk\/|bank\s+charges\s+explained|tailor\s+the\s+alerts\s+you\s+receive|non[- ]sterling\s+transaction\s+fee|if\s+you\s+don.t\s+get\s+these\s+messages|we.ll\s+charge\s+you\s+a\s+\d|our\s+main\s+number\s+\d|lost\s+and\s+stolen\s+cards|online\s+banking\s+help|open\s+24\/7\s+including\s+holidays|from\s+abroad\s+\+44|write\s+to\s+us\s+barclays)\b/i;
 const CARRIED_FWD_RE   = /\b(balance\s+carried\s+forward|carried\s+forward)\b/i;
 const TOTAL_RE         = /\b(total\s+payments[\/\\]receipts|total\s+payments|end\s+balance)\b/i;
 const NEW_TXN_RE       = /^(card\s+purchase|card\s+payment|internet\s+banking\s+transfer|on-line\s+banking\s+bill\s+payment|giro\s+direct\s+credit|direct\s+credit|atm\s+cash\s+machine|cash\s+machine\s+withdrawal|direct\s+debit|standing\s+order|refund\s+from|transfer\s+from|asd\s+withdrawal)\b/i;
@@ -320,15 +330,7 @@ function parsePremier(cells: Cell[]): ParseResult {
     const txns = stitch(physical);
     backfillBalance(txns);
     const transactions = toTransactions(txns);
-    // Post-process: strip Barclays legal-disclaimer text that slipped into descriptions
-    for (const t of transactions) {
-        t.description = normStr(
-            t.description
-                .replace(/\s+(?:names?\s+are\s+)?part\s+of\s+barclays.*/i, '')
-                .replace(/\s+barclays\s*[,:]?\s*barclays\s+business\s+banking.*/i, '')
-                .replace(/\s+barclays\s+premier\s+banking.*tesco\s+bank.*/i, '')
-        );
-    }
+    for (const t of transactions) t.description = stripFooterText(t.description);
     return { transactions, ascending: true };
 }
 
@@ -586,16 +588,7 @@ function parseNormal(cells: Cell[]): ParseResult {
             balance:     t.balance !== null ? t.balance.toFixed(2) : '',
         });
     }
-    // Post-process: strip any Barclays legal-disclaimer text that slipped into descriptions
-    for (const t of transactions) {
-        t.description = normStr(
-            t.description
-                .replace(/\s+(?:names?\s+are\s+)?part\s+of\s+barclays.*/i, '')
-                .replace(/\s+barclays\s*[,:]?\s*barclays\s+business\s+banking.*/i, '')
-                .replace(/\s+barclays\s+premier\s+banking.*tesco\s+bank.*/i, '')
-        );
-    }
-
+    for (const t of transactions) t.description = stripFooterText(t.description);
     return { transactions, ascending: true };
 }
 
