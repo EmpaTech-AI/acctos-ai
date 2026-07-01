@@ -527,10 +527,11 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
             : await buildPdfOutputExcel(categorized, verification, fileSummaries.length > 1 ? fileSummaries : undefined);
         jobStore.update(jobId, { status: 'completed', outputBuffer, completedAt: new Date() });
         console.log(`[Orchestrator] Batch job ${jobId} completed — ${allTransactions.length} transactions from ${files.length} file(s)`);
-        // Persist to Supabase + Drive (non-blocking)
-        const _bankType = jobStore.get(jobId)?.bankType;
-        const _txCount  = jobStore.get(jobId)?.transactionCount;
+        const _bankType  = jobStore.get(jobId)?.bankType;
+        const _txCount   = jobStore.get(jobId)?.transactionCount;
         const _batchName = jobStore.get(jobId)?.filename ?? 'batch';
+
+        // Supabase persist (non-blocking, independent of Drive)
         void (async () => {
             const outputPath = await saveOutputFile(jobId, outputBuffer);
             await updateJobRecord(jobId, {
@@ -540,19 +541,26 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
                 output_path: outputPath ?? undefined,
                 completed_at: new Date().toISOString(),
             });
-            const folderId = getDriveFolderId(processingMode);
-            if (folderId) {
-                if (emailSubject) {
-                    const clientFolder = extractClientName(emailSubject);
-                    const fn = safeDriveFilename(emailSubject);
-                    await uploadToDriveSubfolder(outputBuffer, fn, folderId, clientFolder)
-                        .catch(e => console.warn('[Orchestrator] Drive upload (batch) failed:', e?.message));
-                } else {
-                    await uploadToDriveFolder(outputBuffer, driveFilename(_batchName), folderId)
-                        .catch(e => console.warn('[Orchestrator] Drive upload (batch) failed:', e?.message));
-                }
-            }
         })().catch(e => console.warn('[Orchestrator] Supabase persist (batch) failed:', e?.message));
+
+        // Drive upload (non-blocking, independent of Supabase)
+        void (async () => {
+            const folderId = getDriveFolderId(processingMode);
+            if (!folderId) {
+                console.log('[Orchestrator] Drive upload skipped — folder ID not configured');
+                return;
+            }
+            if (emailSubject) {
+                const clientFolder = extractClientName(emailSubject);
+                const fn = safeDriveFilename(emailSubject);
+                console.log(`[Orchestrator] Uploading to Drive: "${fn}" → "${clientFolder}/"`);
+                await uploadToDriveSubfolder(outputBuffer, fn, folderId, clientFolder);
+            } else {
+                const fn = driveFilename(_batchName);
+                console.log(`[Orchestrator] Uploading to Drive: "${fn}"`);
+                await uploadToDriveFolder(outputBuffer, fn, folderId);
+            }
+        })().catch(e => console.warn('[Orchestrator] Drive upload (batch) failed:', e?.message));
 
     } catch (err: any) {
         const stage = jobStore.get(jobId)?.currentStage;
@@ -794,9 +802,10 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
 
         jobStore.update(jobId, { status: 'completed', outputBuffer, completedAt: new Date() });
         console.log(`[Orchestrator] Job ${jobId} completed — ${filename}`);
-        // Persist to Supabase + Drive (non-blocking)
         const _bankType = jobStore.get(jobId)?.bankType;
         const _txCount  = jobStore.get(jobId)?.transactionCount;
+
+        // Supabase persist (non-blocking, independent of Drive)
         void (async () => {
             const outputPath = await saveOutputFile(jobId, outputBuffer);
             await updateJobRecord(jobId, {
@@ -806,12 +815,19 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
                 output_path: outputPath ?? undefined,
                 completed_at: new Date().toISOString(),
             });
-            const folderId = getDriveFolderId(processingMode);
-            if (folderId) {
-                await uploadToDriveFolder(outputBuffer, driveFilename(filename), folderId)
-                    .catch(e => console.warn('[Orchestrator] Drive upload (single) failed:', e?.message));
-            }
         })().catch(e => console.warn('[Orchestrator] Supabase persist (single) failed:', e?.message));
+
+        // Drive upload (non-blocking, independent of Supabase)
+        void (async () => {
+            const folderId = getDriveFolderId(processingMode);
+            if (!folderId) {
+                console.log('[Orchestrator] Drive upload skipped — folder ID not configured');
+                return;
+            }
+            const fn = driveFilename(filename);
+            console.log(`[Orchestrator] Uploading to Drive: "${fn}"`);
+            await uploadToDriveFolder(outputBuffer, fn, folderId);
+        })().catch(e => console.warn('[Orchestrator] Drive upload (single) failed:', e?.message));
 
     } catch (err: any) {
         const stage = jobStore.get(jobId)?.currentStage;
