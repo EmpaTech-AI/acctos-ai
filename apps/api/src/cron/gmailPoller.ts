@@ -74,6 +74,7 @@ async function pollLabel(labelName: string, processingMode: 'bank_statement' | '
                 undefined,
                 processingMode,
                 message.subject,
+                message.from,
             );
 
             await markAsRead(message.id);

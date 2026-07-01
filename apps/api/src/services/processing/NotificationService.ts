@@ -257,6 +257,53 @@ export function notifyInsufficientFiles(alert: InsufficientFilesAlert): void {
     sendEmail(CLIENT_EMAIL, clientSubject, clientText);
 }
 
+// ── Accountant: processed result with Excel attachment ────────────────────────
+
+export interface ProcessingCompleteAlert {
+    to:           string;
+    emailSubject: string;
+    xlsxBuffer:   Buffer;
+    filename:     string;
+}
+
+export function notifyProcessingComplete(alert: ProcessingCompleteAlert): void {
+    const resend = getResend();
+    if (!resend) {
+        console.warn(`[Notifications] RESEND_API_KEY not set — reply email not sent to ${alert.to}`);
+        return;
+    }
+
+    const replySubject = /^re:/i.test(alert.emailSubject)
+        ? alert.emailSubject
+        : `Re: ${alert.emailSubject}`;
+
+    const text = [
+        'Your bank statements have been processed and categorised.',
+        'Please find the Excel report attached.',
+        '',
+        'If you have any questions, please reply to this email.',
+    ].join('\n');
+
+    resend.emails.send({
+        from:    FROM_EMAIL,
+        to:      alert.to,
+        subject: replySubject,
+        text,
+        attachments: [{
+            filename: alert.filename,
+            content:  alert.xlsxBuffer,
+        }],
+    }).then(result => {
+        if (result.error) {
+            console.error(`[Notifications] Resend error sending reply to ${alert.to}:`, result.error);
+        } else {
+            console.log(`[Notifications] Reply with Excel sent to ${alert.to}: "${replySubject}" (id: ${result.data?.id})`);
+        }
+    }).catch(err => {
+        console.error(`[Notifications] Failed to send reply email to ${alert.to}:`, err.message);
+    });
+}
+
 // ── Shared email sender ───────────────────────────────────────────────────────
 
 function sendEmail(to: string, subject: string, text: string): void {

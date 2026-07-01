@@ -10,7 +10,7 @@ import { parseExcel } from './ExcelParser.js';
 import { buildPdfOutputExcel, buildExcelOutputExcel, buildVatOutputExcel } from './ExcelOutputBuilder.js';
 import { Cell, ParsedTransaction, ParseResult } from './parsers/shared.js';
 import { computeVerification, applyCatVerification, logVerificationSummary, computeChainVerification } from './Verification.js';
-import { notifyParserError, notifyChainGap, notifyJobFailed, notifyInsufficientFiles } from './NotificationService.js';
+import { notifyParserError, notifyChainGap, notifyJobFailed, notifyInsufficientFiles, notifyProcessingComplete } from './NotificationService.js';
 import {
     getAzureCache, saveAzureCache,
     createJobRecord, updateJobRecord, saveOutputFile,
@@ -253,7 +253,7 @@ export interface FileInput {
  * @param bankHint  Optional bank type override — use when files are named-page splits of a known
  *                  bank's statement and filename/content detection would be unreliable.
  */
-export function startBatchProcessingJob(files: FileInput[], tracking?: TrackingContext, bankHint?: BankType, processingMode?: 'bank_statement' | 'vat', emailSubject?: string): string {
+export function startBatchProcessingJob(files: FileInput[], tracking?: TrackingContext, bankHint?: BankType, processingMode?: 'bank_statement' | 'vat', emailSubject?: string, senderEmail?: string): string {
     const jobId = randomUUID();
 
     // Deduplicate by content hash — identical bytes across differently-named files get dropped
@@ -285,7 +285,7 @@ export function startBatchProcessingJob(files: FileInput[], tracking?: TrackingC
         return jobId;
     }
 
-    runBatchJob(jobId, uniqueFiles, tracking, bankHint, processingMode, emailSubject).catch(err => {
+    runBatchJob(jobId, uniqueFiles, tracking, bankHint, processingMode, emailSubject, senderEmail).catch(err => {
         console.error(`[Orchestrator] Batch job ${jobId} unhandled crash:`, err);
         jobStore.update(jobId, { status: 'failed', error: String(err?.message ?? err) });
     });
@@ -293,7 +293,7 @@ export function startBatchProcessingJob(files: FileInput[], tracking?: TrackingC
     return jobId;
 }
 
-async function runBatchJob(jobId: string, files: FileInput[], tracking?: TrackingContext, bankHint?: BankType, processingMode?: 'bank_statement' | 'vat', emailSubject?: string): Promise<void> {
+async function runBatchJob(jobId: string, files: FileInput[], tracking?: TrackingContext, bankHint?: BankType, processingMode?: 'bank_statement' | 'vat', emailSubject?: string, senderEmail?: string): Promise<void> {
     const timer = makeStageTimer();
     try {
         jobStore.update(jobId, { status: 'processing', totalFiles: files.length });
@@ -532,6 +532,12 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
         const _bankType  = jobStore.get(jobId)?.bankType;
         const _txCount   = jobStore.get(jobId)?.transactionCount;
         const _batchName = jobStore.get(jobId)?.filename ?? 'batch';
+
+        // Reply email with Excel to accountant (non-blocking)
+        if (senderEmail && emailSubject) {
+            const replyFilename = safeDriveFilename(emailSubject);
+            notifyProcessingComplete({ to: senderEmail, emailSubject, xlsxBuffer: outputBuffer, filename: replyFilename });
+        }
 
         // Supabase persist (non-blocking, independent of Drive)
         void (async () => {
