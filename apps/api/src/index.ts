@@ -30,7 +30,7 @@ app.locals.prisma = prisma;
 
 // Health check — includes git commit so you can verify which code is running
 import { execSync } from 'child_process';
-const GIT_COMMIT = (() => { try { return execSync('git rev-parse --short HEAD', { encoding: 'utf8' }).trim(); } catch { return 'unknown'; } })();
+const GIT_COMMIT = process.env.GIT_COMMIT ?? (() => { try { return execSync('git rev-parse --short HEAD', { encoding: 'utf8' }).trim(); } catch { return 'unknown'; } })();
 const STARTED_AT = new Date().toISOString();
 
 const healthHandler = (req: any, res: any) => {
