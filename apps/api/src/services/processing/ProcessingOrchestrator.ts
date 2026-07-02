@@ -525,7 +525,7 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
         jobStore.update(jobId, { transactionCount: categorized.length, currentStage: 'output' });
 
         const outputBuffer = processingMode === 'vat'
-            ? await buildVatOutputExcel(categorized)
+            ? await buildVatOutputExcel(categorized, emailSubject ? extractClientName(emailSubject) : undefined)
             : await buildPdfOutputExcel(categorized, verification, fileSummaries.length > 1 ? fileSummaries : undefined);
         jobStore.update(jobId, { status: 'completed', outputBuffer, completedAt: new Date() });
         console.log(`[Orchestrator] Batch job ${jobId} completed — ${allTransactions.length} transactions from ${files.length} file(s)`);
@@ -659,7 +659,7 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
             jobStore.update(jobId, { transactionCount: categorized.length, currentStage: 'output' });
 
             if (processingMode === 'vat') {
-                outputBuffer = await buildVatOutputExcel(categorized);
+                outputBuffer = await buildVatOutputExcel(categorized, filename);
             } else {
                 outputBuffer = await buildPdfOutputExcel(categorized);
             }
@@ -812,7 +812,7 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
 
             // ── Stage: output (build Excel) ───────────────────────────────────────
             outputBuffer = processingMode === 'vat'
-                ? await buildVatOutputExcel(categorized)
+                ? await buildVatOutputExcel(categorized, filename)
                 : await buildPdfOutputExcel(categorized, verification);
         }
 

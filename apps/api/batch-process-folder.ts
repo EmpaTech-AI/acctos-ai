@@ -252,7 +252,7 @@ if (verification) applyCatVerification(verification, categorized);
 // Step 6: Build one Excel file
 console.log('\nBuilding Excel...');
 const buffer = MODE === 'vat'
-    ? await buildVatOutputExcel(categorized)
+    ? await buildVatOutputExcel(categorized, basename(FOLDER))
     : await buildPdfOutputExcel(categorized, verification, fileSummaries);
 
 const outName = `${fileResults.length}_files_processed_${MODE}.xlsx`;

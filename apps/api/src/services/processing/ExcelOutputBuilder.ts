@@ -420,10 +420,18 @@ function addVatVerificationSide(ws: ExcelJS.Worksheet, stats: VatStats): void {
  * Columns: C = date, D = description, E = amount.
  * A verification summary is placed to the right of the Sales table (cols K-L).
  */
-export async function buildVatOutputExcel(transactions: CategorizedTransaction[]): Promise<Buffer> {
+export async function buildVatOutputExcel(transactions: CategorizedTransaction[], clientName?: string): Promise<Buffer> {
     const templateBuf = readFileSync(VAT_TEMPLATE_PATH);
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.load(templateBuf as unknown as ArrayBuffer);
+
+    if (clientName) {
+        const vatReturnWs = workbook.getWorksheet('VAT Return');
+        if (vatReturnWs) {
+            vatReturnWs.getCell('C1').value = clientName;
+            try { vatReturnWs.getCell('D1').value = clientName; } catch {}
+        }
+    }
 
     const salesWs    = workbook.getWorksheet('Sales');
     const expensesWs = workbook.getWorksheet('Expenses');
