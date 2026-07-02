@@ -257,7 +257,6 @@ export function notifyInsufficientFiles(alert: InsufficientFilesAlert): void {
 
     console.warn(`[ALERT:insufficient_files] ${teamSubject}`);
     sendEmail(TEAM_EMAIL, teamSubject, teamText);
-    sendEmail(CLIENT_EMAIL, clientSubject, clientText);
 }
 
 // ── Accountant: processed result with Excel attachment ────────────────────────
