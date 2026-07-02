@@ -13,8 +13,63 @@ import {
 } from './shared.js';
 
 // Transaction codes that always indicate incoming money (Revolut Business legend)
-const IN_CODES  = new Set(['MOA', 'MOR', 'EXI']);
-const OUT_CODES = new Set(['CAR', 'MOS', 'ATM', 'EXO', 'FEE']);
+const IN_CODES  = new Set(['MOA', 'МОА', 'MOR', 'EXI']);
+const OUT_CODES = new Set(['CAR', 'MOS', 'ATM', 'EXO', 'FEE', 'MBP']);
+
+// Bulgarian month names (full and abbreviated, lowercased)
+const BG_MONTHS: Record<string, number> = {
+    'януари':1,'февруари':2,'март':3,'април':4,'май':5,'юни':6,
+    'юли':7,'август':8,'септември':9,'октомври':10,'ноември':11,'декември':12,
+    'яну':1,'фев':2,'мар':3,'апр':4,'юн':6,
+    'юл':7,'авг':8,'сеп':9,'окт':10,'ное':11,'дек':12,
+};
+
+// OCR confusable fixes for Bulgarian month abbreviations.
+// Azure DI misreads Cyrillic chars as Latin lookalikes (О→o, К→k, Т→t, п→n, С→c, е→e, р→p, А→a).
+// Keys are all-lowercase OCR output; values are the correct Cyrillic abbreviated month.
+const OCR_MONTH_FIXES: Record<string, string> = {
+    okt: 'окт',  // октомври  (О→o, К→k, Т→t)
+    cen: 'сеп',  // септември (С→c, е→e, п→n)
+    anp: 'апр',  // април     (А→a, п→n, р→p)
+};
+
+function parseBgDate(s: string): string {
+    // Allow any non-whitespace chars in the month position (handles Latin/Cyrillic mix)
+    const m = s.match(/^(\d{1,2})\s+(\S+)\s+(\d{4})$/);
+    if (!m) return '';
+    const raw = m[2].toLowerCase();
+    const monthStr = OCR_MONTH_FIXES[raw] ?? raw;
+    const mon = BG_MONTHS[monthStr];
+    if (!mon) return '';
+    return `${m[1].padStart(2, '0')}/${String(mon).padStart(2, '0')}/${m[3]}`;
+}
+
+function parseAnyDate(s: string): string {
+    return parseDateToDDMMYYYY(s) || parseBgDate(s);
+}
+
+// Extract GBP statement totals from Bulgarian balance summary section
+// Rows look like: col0="Начален баланс" col1="£114.70"
+function extractBgStatementTotals(grid: Map<number, Map<number, string>>): ParseResult['statementTotals'] | undefined {
+    let openingBalance: number | undefined;
+    let closingBalance: number | undefined;
+    let moneyIn:        number | undefined;
+    let moneyOut:       number | undefined;
+    const rowIdxs = [...grid.keys()].filter(r => r >= 0).sort((a, b) => a - b);
+    for (const r of rowIdxs) {
+        const label = normStr(getCell(grid, r, 0)).toLowerCase();
+        const val   = normStr(getCell(grid, r, 1));
+        // Extract first £ amount, ignoring leading "- "
+        const poundM = val.replace(/^-\s*/, '').match(/£\s*([\d\s,]+\.\d{2})/);
+        const n = poundM ? parseFloat(poundM[1].replace(/[\s,]/g, '')) : null;
+        if (label === 'начален баланс' && n !== null) openingBalance = n;
+        if (label === 'входяща сума'   && n !== null) moneyIn        = n;
+        if (label === 'изходяща сума'  && n !== null) moneyOut       = n;
+        if (label === 'краен баланс'   && n !== null) closingBalance = n;
+    }
+    if (moneyIn === undefined && moneyOut === undefined) return undefined;
+    return { moneyIn: moneyIn ?? 0, moneyOut: moneyOut ?? 0, openingBalance, closingBalance };
+}
 
 function directionByCode(code: string): 'IN' | 'OUT' | '' {
     const c = normStr(code).toUpperCase();
@@ -26,12 +81,12 @@ function directionByCode(code: string): 'IN' | 'OUT' | '' {
 function isHeaderRow(cols: string[]): boolean {
     const joined = cols.join(' ').toLowerCase();
     let hits = 0;
-    if (/\bdate\b/.test(joined))               hits++;
-    if (/description|transaction/.test(joined)) hits++;
-    if (/\bout\b|debit|outgoing/.test(joined)) hits++;
-    if (/\bin\b|credit|incoming/.test(joined)) hits++;
-    if (/balance/.test(joined))                hits++;
-    if (/\btype\b/.test(joined))               hits++;
+    if (/\bdate\b|дата/.test(joined))                   hits++;
+    if (/description|transaction|описание/.test(joined)) hits++;
+    if (/\bout\b|debit|outgoing|изходяща/.test(joined)) hits++;
+    if (/\bin\b|credit|incoming|входяща/.test(joined))  hits++;
+    if (/balance|баланс/.test(joined))                  hits++;
+    if (/\btype\b/.test(joined))                        hits++;
     return hits >= 3;
 }
 
@@ -52,9 +107,10 @@ function isTransactionStatement(header: string[]): boolean {
     return /\bstatus\b/.test(joined) && /\baccount\b/.test(joined) && !/\bbalance\b/.test(joined);
 }
 
-// Extract two £-prefixed amounts from a smashed cell, e.g. "£48.70 £436.68"
+// Extract two £-prefixed amounts from a smashed cell, e.g. "£48.70 £436.68" or "£6 000.00 £6 027.18"
+// Handles space as thousands separator (Revolut Bulgarian format: £6 000.00)
 function extractTwoAmounts(s: string): [number, number] | null {
-    const matches = s.match(/£\s*[\d,]+(?:\.\d{1,2})?/g);
+    const matches = s.match(/£\s*\d+(?:[\s,]\d{3})*(?:\.\d{2})?/g);
     if (!matches || matches.length < 2) return null;
     const a = parseMoney(matches[0]);
     const b = parseMoney(matches[1]);
@@ -75,6 +131,7 @@ export function parse(cells: Cell[]): ParseResult {
     const grid = buildGrid(cells);
     const rows = maxRow(cells);
     const cols = maxCol(cells);
+    const statementTotals = extractBgStatementTotals(grid);
 
     // Build flat ordered table (skips row-offset gaps from multi-page merging)
     const table: { rowIndex: number; cols: string[] }[] = [];
@@ -110,7 +167,7 @@ export function parse(cells: Cell[]): ParseResult {
     if (isFiveCols && hasHeader && isInOut5Header(headerRow)) {
         for (let i = startAt; i < table.length; i++) {
             const c = table[i].cols;
-            const date = parseDateToDDMMYYYY(c[0]);
+            const date = parseAnyDate(c[0]);
             if (!date) continue;
 
             const desc   = normStr(c[1]);
@@ -134,7 +191,7 @@ export function parse(cells: Cell[]): ParseResult {
 
             transactions.push({ date, type: '', description: desc, moneyIn, moneyOut, balance: bal });
         }
-        return { transactions };
+        return { transactions, statementTotals };
     }
 
     // ── Transaction-statement: [date, "TYPE desc", status, account, out, in] ──
@@ -144,7 +201,7 @@ export function parse(cells: Cell[]): ParseResult {
     if (hasHeader && isTransactionStatement(headerRow)) {
         for (let i = startAt; i < table.length; i++) {
             const c = table[i].cols;
-            const date = parseDateToDDMMYYYY(c[0]);
+            const date = parseAnyDate(c[0]);
             if (!date) continue;
 
             // Split c[1]: "TYPE rest" → type + desc; if c[1] is bare code → desc from c[2]
@@ -180,7 +237,7 @@ export function parse(cells: Cell[]): ParseResult {
 
             transactions.push({ date, type, description: desc, moneyIn, moneyOut, balance: '' });
         }
-        return { transactions };
+        return { transactions, statementTotals };
     }
 
     // ── 6-col and legacy 5-col ────────────────────────────────────────────────
@@ -189,7 +246,7 @@ export function parse(cells: Cell[]): ParseResult {
     //  produce 5 cols).  If c[5] parses as a balance → 6-col; otherwise → legacy 5-col.
     for (let i = startAt; i < table.length; i++) {
         const c = table[i].cols;
-        const date = parseDateToDDMMYYYY(c[0]);
+        const date = parseAnyDate(c[0]);
         if (!date) continue;
 
         const type = normStr(c[1]);
@@ -240,6 +297,13 @@ export function parse(cells: Cell[]): ParseResult {
             if (balNum === null) {
                 const pair = extractTwoAmounts(normStr(c[3]));
                 if (pair) { amountNum = pair[0]; balNum = pair[1]; }
+            }
+
+            // Handle smashed "amount balance" in col 4 when col 3 is empty
+            // (Azure DI merges the money-in amount and balance into one col-4 cell)
+            if (amountNum === null) {
+                const pair4 = extractTwoAmounts(normStr(c[4]));
+                if (pair4) { amountNum = pair4[0]; balNum = pair4[1]; }
             }
 
             if (amountNum === null || amountNum === 0 || balNum === null) continue;
@@ -295,5 +359,5 @@ export function parse(cells: Cell[]): ParseResult {
         }
     }
 
-    return { transactions };
+    return { transactions, statementTotals };
 }
