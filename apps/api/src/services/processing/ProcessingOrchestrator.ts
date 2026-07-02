@@ -590,9 +590,19 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
                 const replyFilename = safeDriveFilename(emailSubject);
                 const clientName = extractClientName(emailSubject);
                 const bankSummary: BankSummary | undefined = processingMode !== 'vat' ? {
-                    total:    categorized.length,
-                    moneyIn:  verification?.totalIn  ?? 0,
-                    moneyOut: verification?.totalOut ?? 0,
+                    total:           categorized.length,
+                    moneyIn:         verification?.totalIn  ?? 0,
+                    moneyOut:        verification?.totalOut ?? 0,
+                    openingBalance:  verification?.openingBalance,
+                    closingBalance:  verification?.closingBalance,
+                    balanceDiff:     verification?.balanceDiff,
+                    balanceOk:       verification?.balanceOk,
+                    declaredIn:      verification?.declaredIn,
+                    declaredOut:     verification?.declaredOut,
+                    declaredOk:      verification?.declaredOk,
+                    catTotalIn:      verification?.catTotalIn,
+                    catTotalOut:     verification?.catTotalOut,
+                    catOk:           verification?.catOk,
                 } : undefined;
                 notifyProcessingComplete({ to: senderEmail, emailSubject, clientName, xlsxBuffer: outputBuffer, filename: replyFilename, driveFileUrl, vatSummary: vatStats, bankSummary });
             }

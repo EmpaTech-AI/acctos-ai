@@ -335,11 +335,6 @@ export async function buildPdfOutputExcel(transactions: CategorizedTransaction[]
         row.commit();
     }
 
-    // Verification summary: placed to the right of the table (cols 19-20), no background colours
-    if (verification) {
-        addVerificationSide(ws, verification, fileSummaries);
-    }
-
     // Per-file summary sheet (only when multiple files were processed)
     if (fileSummaries && fileSummaries.length > 0) {
         addFileSummarySheet(workbook, fileSummaries);

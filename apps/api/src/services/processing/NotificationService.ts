@@ -275,9 +275,19 @@ export interface VatSummary {
 }
 
 export interface BankSummary {
-    total:    number;
-    moneyIn:  number;
-    moneyOut: number;
+    total:            number;
+    moneyIn:          number;
+    moneyOut:         number;
+    openingBalance?:  number | null;
+    closingBalance?:  number | null;
+    balanceDiff?:     number | null;
+    balanceOk?:       boolean;
+    declaredIn?:      number;
+    declaredOut?:     number;
+    declaredOk?:      boolean;
+    catTotalIn?:      number;
+    catTotalOut?:     number;
+    catOk?:           boolean;
 }
 
 export interface ProcessingCompleteAlert {
@@ -313,25 +323,44 @@ export function notifyProcessingComplete(alert: ProcessingCompleteAlert): void {
 
     const fmt = (n: number) => n.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 
-    const vatSummaryText = isVat ? [
-        '',
-        'VAT Summary',
-        '-----------',
-        `Total transactions: ${alert.vatSummary!.total}`,
-        `Sales:    ${alert.vatSummary!.salesCount} entries / £${fmt(alert.vatSummary!.salesTotal)}`,
-        `Expenses: ${alert.vatSummary!.expensesCount} entries / £${fmt(alert.vatSummary!.expensesTotal)}`,
-        '',
-    ].join('\n') : '';
+    const vatSummaryText = isVat ? (() => {
+        const v = alert.vatSummary!;
+        const written = v.salesCount + v.expensesCount;
+        const writtenLine = written === v.total
+            ? `✓ ${written} of ${v.total} transactions written`
+            : `⚠ ${written} of ${v.total} written (${v.total - written} skipped — zero amount)`;
+        return [
+            '', 'VAT Summary', '-----------',
+            `Total transactions: ${v.total}`,
+            `Sales:    ${v.salesCount} entries / £${fmt(v.salesTotal)}`,
+            `Expenses: ${v.expensesCount} entries / £${fmt(v.expensesTotal)}`,
+            writtenLine, '',
+        ].join('\n');
+    })() : '';
 
-    const bankSummaryText = alert.bankSummary ? [
-        '',
-        'Summary',
-        '-------',
-        `Total transactions: ${alert.bankSummary.total}`,
-        `Money in:  £${fmt(alert.bankSummary.moneyIn)}`,
-        `Money out: £${fmt(alert.bankSummary.moneyOut)}`,
-        '',
-    ].join('\n') : '';
+    const bankSummaryText = alert.bankSummary ? (() => {
+        const b = alert.bankSummary!;
+        const lines: string[] = ['', 'Summary', '-------', `Total transactions: ${b.total}`];
+        if (b.openingBalance != null) lines.push(`Opening balance:  £${fmt(b.openingBalance)}`);
+        lines.push(`Money in:         £${fmt(b.moneyIn)}`);
+        lines.push(`Money out:        £${fmt(b.moneyOut)}`);
+        if (b.closingBalance != null) lines.push(`Closing balance:  £${fmt(b.closingBalance)}`);
+        if (b.balanceDiff != null) lines.push(b.balanceOk ? '✓ Balance check OK' : `⚠ Balance mismatch: ${(b.balanceDiff >= 0 ? '+' : '') + b.balanceDiff.toFixed(2)}`);
+        if (b.declaredIn != null) {
+            lines.push('');
+            lines.push(`Declared in:      £${fmt(b.declaredIn)}`);
+            lines.push(`Declared out:     £${fmt(b.declaredOut ?? 0)}`);
+            lines.push(b.declaredOk ? '✓ Declared totals match' : '⚠ Declared totals mismatch');
+        }
+        if (b.catTotalIn != null) {
+            lines.push('');
+            lines.push(`Categorized in:   £${fmt(b.catTotalIn)}`);
+            lines.push(`Categorized out:  £${fmt(b.catTotalOut ?? 0)}`);
+            lines.push(b.catOk ? '✓ Category totals match' : '⚠ Category totals mismatch');
+        }
+        lines.push('');
+        return lines.join('\n');
+    })() : '';
 
     const summaryText = vatSummaryText || bankSummaryText;
 
@@ -376,27 +405,59 @@ export function notifyProcessingComplete(alert: ProcessingCompleteAlert): void {
     const tdL = 'padding:4px 0;color:#374151';
     const tdR = 'padding:4px 0;text-align:right;font-variant-numeric:tabular-nums';
 
-    const vatSummaryHtml = isVat ? `
-      <div style="${summaryBoxStyle}">
+    const ok  = `;color:#16a34a;font-weight:600`;
+    const err = `;color:#dc2626;font-weight:600`;
+    const sep = `<tr><td colspan="2" style="padding:6px 0 2px;border-top:1px solid #e2e8f0;font-size:0"> </td></tr>`;
+    const row = (label: string, val: string, extra = '') =>
+        `<tr><td style="${tdL}">${label}</td><td style="${tdR}${extra}">${val}</td></tr>`;
+
+    const vatSummaryHtml = isVat ? (() => {
+        const v = alert.vatSummary!;
+        const written = v.salesCount + v.expensesCount;
+        const writtenOk = written === v.total;
+        const writtenVal = writtenOk ? `✓ ${written} of ${v.total}` : `⚠ ${written} of ${v.total}`;
+        return `<div style="${summaryBoxStyle}">
         <p style="${summaryHeadStyle}">VAT Summary</p>
         <table style="border-collapse:collapse;width:100%;font-size:14px">
-          <tr><td style="${tdL}">Total transactions</td><td style="${tdR};font-weight:600">${alert.vatSummary!.total}</td></tr>
-          <tr><td style="${tdL}">Sales entries</td><td style="${tdR}">${alert.vatSummary!.salesCount}</td></tr>
-          <tr><td style="${tdL}">Sales total</td><td style="${tdR};color:#16a34a;font-weight:600">£${fmt(alert.vatSummary!.salesTotal)}</td></tr>
-          <tr><td style="${tdL}">Expenses entries</td><td style="${tdR}">${alert.vatSummary!.expensesCount}</td></tr>
-          <tr><td style="${tdL}">Expenses total</td><td style="${tdR};color:#dc2626;font-weight:600">£${fmt(alert.vatSummary!.expensesTotal)}</td></tr>
+          ${row('Total transactions', String(v.total), ';font-weight:600')}
+          ${row('Sales entries',  String(v.salesCount))}
+          ${row('Sales total',    `£${fmt(v.salesTotal)}`, ok)}
+          ${row('Expenses entries', String(v.expensesCount))}
+          ${row('Expenses total',   `£${fmt(v.expensesTotal)}`, err)}
+          ${sep}
+          ${row('Written', writtenVal, writtenOk ? ok : err)}
         </table>
-      </div>` : '';
+      </div>`;
+    })() : '';
 
-    const bankSummaryHtml = alert.bankSummary ? `
-      <div style="${summaryBoxStyle}">
+    const bankSummaryHtml = alert.bankSummary ? (() => {
+        const b = alert.bankSummary!;
+        let rows = row('Total transactions', String(b.total), ';font-weight:600');
+        if (b.openingBalance != null) rows += row('Opening balance', `£${fmt(b.openingBalance)}`);
+        rows += row('Money in',  `£${fmt(b.moneyIn)}`,  ok);
+        rows += row('Money out', `£${fmt(b.moneyOut)}`, err);
+        if (b.closingBalance != null) rows += row('Closing balance', `£${fmt(b.closingBalance)}`);
+        if (b.balanceDiff != null) {
+            const balVal = b.balanceOk ? '✓ OK' : `⚠ ${(b.balanceDiff >= 0 ? '+' : '') + b.balanceDiff.toFixed(2)}`;
+            rows += row('Balance check', balVal, b.balanceOk ? ok : err);
+        }
+        if (b.declaredIn != null) {
+            rows += sep;
+            rows += row('Declared in (by bank)',  `£${fmt(b.declaredIn)}`);
+            rows += row('Declared out (by bank)', `£${fmt(b.declaredOut ?? 0)}`);
+            rows += row('Declared totals', b.declaredOk ? '✓ Match' : '⚠ Mismatch', b.declaredOk ? ok : err);
+        }
+        if (b.catTotalIn != null) {
+            rows += sep;
+            rows += row('Categorized in',  `£${fmt(b.catTotalIn)}`);
+            rows += row('Categorized out', `£${fmt(b.catTotalOut ?? 0)}`);
+            rows += row('Category totals', b.catOk ? '✓ Match' : '⚠ Mismatch', b.catOk ? ok : err);
+        }
+        return `<div style="${summaryBoxStyle}">
         <p style="${summaryHeadStyle}">Summary</p>
-        <table style="border-collapse:collapse;width:100%;font-size:14px">
-          <tr><td style="${tdL}">Total transactions</td><td style="${tdR};font-weight:600">${alert.bankSummary.total}</td></tr>
-          <tr><td style="${tdL}">Money in</td><td style="${tdR};color:#16a34a;font-weight:600">£${fmt(alert.bankSummary.moneyIn)}</td></tr>
-          <tr><td style="${tdL}">Money out</td><td style="${tdR};color:#dc2626;font-weight:600">£${fmt(alert.bankSummary.moneyOut)}</td></tr>
-        </table>
-      </div>` : '';
+        <table style="border-collapse:collapse;width:100%;font-size:14px">${rows}</table>
+      </div>`;
+    })() : '';
 
     const summaryHtml = vatSummaryHtml || bankSummaryHtml;
 
