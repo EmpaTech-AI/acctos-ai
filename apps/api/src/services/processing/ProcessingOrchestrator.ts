@@ -10,7 +10,7 @@ import { parseExcel } from './ExcelParser.js';
 import { buildPdfOutputExcel, buildExcelOutputExcel, buildVatOutputExcel, VatStats } from './ExcelOutputBuilder.js';
 import { Cell, ParsedTransaction, ParseResult } from './parsers/shared.js';
 import { computeVerification, applyCatVerification, logVerificationSummary, computeChainVerification } from './Verification.js';
-import { notifyParserError, notifyChainGap, notifyJobFailed, notifyInsufficientFiles, notifyProcessingComplete } from './NotificationService.js';
+import { notifyParserError, notifyChainGap, notifyJobFailed, notifyInsufficientFiles, notifyProcessingComplete, BankSummary } from './NotificationService.js';
 import {
     getAzureCache, saveAzureCache,
     createJobRecord, updateJobRecord, saveOutputFile,
@@ -589,7 +589,12 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
             if (senderEmail && emailSubject) {
                 const replyFilename = safeDriveFilename(emailSubject);
                 const clientName = extractClientName(emailSubject);
-                notifyProcessingComplete({ to: senderEmail, emailSubject, clientName, xlsxBuffer: outputBuffer, filename: replyFilename, driveFileUrl, vatSummary: vatStats });
+                const bankSummary: BankSummary | undefined = processingMode !== 'vat' ? {
+                    total:    categorized.length,
+                    moneyIn:  verification?.totalIn  ?? 0,
+                    moneyOut: verification?.totalOut ?? 0,
+                } : undefined;
+                notifyProcessingComplete({ to: senderEmail, emailSubject, clientName, xlsxBuffer: outputBuffer, filename: replyFilename, driveFileUrl, vatSummary: vatStats, bankSummary });
             }
         })().catch(e => console.warn('[Orchestrator] Drive+email (batch) failed:', e?.message));
 

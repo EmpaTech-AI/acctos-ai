@@ -274,6 +274,12 @@ export interface VatSummary {
     expensesTotal: number;
 }
 
+export interface BankSummary {
+    total:    number;
+    moneyIn:  number;
+    moneyOut: number;
+}
+
 export interface ProcessingCompleteAlert {
     to:            string;
     emailSubject:  string;
@@ -282,6 +288,7 @@ export interface ProcessingCompleteAlert {
     filename:      string;
     driveFileUrl?: string;
     vatSummary?:   VatSummary;
+    bankSummary?:  BankSummary;
 }
 
 export function notifyProcessingComplete(alert: ProcessingCompleteAlert): void {
@@ -305,6 +312,7 @@ export function notifyProcessingComplete(alert: ProcessingCompleteAlert): void {
         : '';
 
     const fmt = (n: number) => n.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+
     const vatSummaryText = isVat ? [
         '',
         'VAT Summary',
@@ -314,6 +322,18 @@ export function notifyProcessingComplete(alert: ProcessingCompleteAlert): void {
         `Expenses: ${alert.vatSummary!.expensesCount} entries / £${fmt(alert.vatSummary!.expensesTotal)}`,
         '',
     ].join('\n') : '';
+
+    const bankSummaryText = alert.bankSummary ? [
+        '',
+        'Summary',
+        '-------',
+        `Total transactions: ${alert.bankSummary.total}`,
+        `Money in:  £${fmt(alert.bankSummary.moneyIn)}`,
+        `Money out: £${fmt(alert.bankSummary.moneyOut)}`,
+        '',
+    ].join('\n') : '';
+
+    const summaryText = vatSummaryText || bankSummaryText;
 
     const title   = isVat ? 'VAT Return Information'         : 'Bank Statement Information';
     const titleBg = isVat ? 'Информация от VAT обработката'  : 'Информация от банковото извлечение';
@@ -326,7 +346,7 @@ export function notifyProcessingComplete(alert: ProcessingCompleteAlert): void {
         'Hi,',
         '',
         `Attached you can find the extracted ${descEn} information for ${name}.`,
-        vatSummaryText,
+        summaryText,
         linkSection,
         'If you have any questions, please reply to this email.',
         '',
@@ -337,7 +357,7 @@ export function notifyProcessingComplete(alert: ProcessingCompleteAlert): void {
         'Здравейте,',
         '',
         `В прикачения файл можете да намерите свалената информация от ${descBg} за ${name}.`,
-        vatSummaryText,
+        summaryText,
         linkSectionBg,
         'Ако имате въпроси, моля отговорете на този имейл.',
     ].join('\n');
@@ -351,45 +371,47 @@ export function notifyProcessingComplete(alert: ProcessingCompleteAlert): void {
           ${labelFallback}: <a href="${alert.driveFileUrl}" style="color:#2563eb">${alert.driveFileUrl}</a>
         </p>` : '';
 
+    const summaryBoxStyle = 'background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:16px;margin:20px 0';
+    const summaryHeadStyle = 'font-weight:700;margin:0 0 10px;color:#0369a1;font-size:15px';
+    const tdL = 'padding:4px 0;color:#374151';
+    const tdR = 'padding:4px 0;text-align:right;font-variant-numeric:tabular-nums';
+
     const vatSummaryHtml = isVat ? `
-      <div style="background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:16px;margin:20px 0">
-        <p style="font-weight:700;margin:0 0 10px;color:#0369a1;font-size:15px">VAT Summary</p>
+      <div style="${summaryBoxStyle}">
+        <p style="${summaryHeadStyle}">VAT Summary</p>
         <table style="border-collapse:collapse;width:100%;font-size:14px">
-          <tr>
-            <td style="padding:4px 0;color:#374151">Total transactions</td>
-            <td style="padding:4px 0;text-align:right;font-variant-numeric:tabular-nums;font-weight:600">${alert.vatSummary!.total}</td>
-          </tr>
-          <tr>
-            <td style="padding:4px 0;color:#374151">Sales entries</td>
-            <td style="padding:4px 0;text-align:right;font-variant-numeric:tabular-nums">${alert.vatSummary!.salesCount}</td>
-          </tr>
-          <tr>
-            <td style="padding:4px 0;color:#374151">Sales total</td>
-            <td style="padding:4px 0;text-align:right;font-variant-numeric:tabular-nums;color:#16a34a;font-weight:600">£${fmt(alert.vatSummary!.salesTotal)}</td>
-          </tr>
-          <tr>
-            <td style="padding:4px 0;color:#374151">Expenses entries</td>
-            <td style="padding:4px 0;text-align:right;font-variant-numeric:tabular-nums">${alert.vatSummary!.expensesCount}</td>
-          </tr>
-          <tr>
-            <td style="padding:4px 0;color:#374151">Expenses total</td>
-            <td style="padding:4px 0;text-align:right;font-variant-numeric:tabular-nums;color:#dc2626;font-weight:600">£${fmt(alert.vatSummary!.expensesTotal)}</td>
-          </tr>
+          <tr><td style="${tdL}">Total transactions</td><td style="${tdR};font-weight:600">${alert.vatSummary!.total}</td></tr>
+          <tr><td style="${tdL}">Sales entries</td><td style="${tdR}">${alert.vatSummary!.salesCount}</td></tr>
+          <tr><td style="${tdL}">Sales total</td><td style="${tdR};color:#16a34a;font-weight:600">£${fmt(alert.vatSummary!.salesTotal)}</td></tr>
+          <tr><td style="${tdL}">Expenses entries</td><td style="${tdR}">${alert.vatSummary!.expensesCount}</td></tr>
+          <tr><td style="${tdL}">Expenses total</td><td style="${tdR};color:#dc2626;font-weight:600">£${fmt(alert.vatSummary!.expensesTotal)}</td></tr>
         </table>
       </div>` : '';
+
+    const bankSummaryHtml = alert.bankSummary ? `
+      <div style="${summaryBoxStyle}">
+        <p style="${summaryHeadStyle}">Summary</p>
+        <table style="border-collapse:collapse;width:100%;font-size:14px">
+          <tr><td style="${tdL}">Total transactions</td><td style="${tdR};font-weight:600">${alert.bankSummary.total}</td></tr>
+          <tr><td style="${tdL}">Money in</td><td style="${tdR};color:#16a34a;font-weight:600">£${fmt(alert.bankSummary.moneyIn)}</td></tr>
+          <tr><td style="${tdL}">Money out</td><td style="${tdR};color:#dc2626;font-weight:600">£${fmt(alert.bankSummary.moneyOut)}</td></tr>
+        </table>
+      </div>` : '';
+
+    const summaryHtml = vatSummaryHtml || bankSummaryHtml;
 
     const html = `<!DOCTYPE html><html><body style="font-family:Arial,sans-serif;font-size:15px;color:#111827;max-width:600px;margin:0 auto;padding:24px">
       <h2 style="font-size:20px;font-weight:700;margin:0 0 16px">${title}</h2>
       <p>Hi,</p>
       <p>Attached you can find the extracted ${descEn} information for <strong>${name}</strong>.</p>
-      ${vatSummaryHtml}
+      ${summaryHtml}
       ${driveButton('Open File', 'Plain link (in case the button doesn\'t work)')}
       <p style="margin-top:24px;color:#6b7280;font-size:13px">If you have any questions, please reply to this email.</p>
       <hr style="border:none;border-top:1px solid #e5e7eb;margin:32px 0">
       <h2 style="font-size:20px;font-weight:700;margin:0 0 16px">${titleBg}</h2>
       <p>Здравейте,</p>
       <p>В прикачения файл можете да намерите свалената информация от ${descBg} за <strong>${name}</strong>.</p>
-      ${vatSummaryHtml}
+      ${summaryHtml}
       ${driveButton('Отвори файла', 'Директен линк (ако бутонът не работи)')}
       <p style="margin-top:24px;color:#6b7280;font-size:13px">Ако имате въпроси, моля отговорете на този имейл.</p>
     </body></html>`;
