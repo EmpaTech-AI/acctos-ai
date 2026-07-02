@@ -219,41 +219,88 @@ async function categorizeBatchWithClaude(batch: object[]): Promise<CategorizedTr
 
 const MAX_RETRIES = 4;
 
-async function fetchCompletion(batch: object[], apiKey: string, attempt = 0): Promise<Response> {
-    const res = await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
+// ── OpenAI Responses API (required for GPT-5 models) ─────────────────────────
+
+const CATEGORY_SCHEMA = {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+        results: {
+            type: 'array',
+            items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                    id:       { type: 'integer' },
+                    category: { type: 'string', enum: ['INCOME','SALARY','OTHER','INSURANCE','LOAN','CASH','TRAVEL','PHONE','CHARGES','Bank_Transfer','HMRC','RENT','BILLS'] },
+                },
+                required: ['id', 'category'],
+            },
+        },
+    },
+    required: ['results'],
+};
+
+function buildCatRow(formatted: any, category: string): CategorizedTransaction {
+    const row: any = {
+        DATE:                   formatted.Date        || '',
+        'Type and Description': formatted.Description || '',
+        INCOME: '', SALARY: '', OTHER: '', INSURANCE: '', LOAN: '',
+        CASH: '', TRAVEL: '', PHONE: '', CHARGES: '', Bank_Transfer: '',
+        HMRC: '', RENT: '', BILLS: '',
+        Balance: formatted.Balance || '',
+    };
+    const moneyIn = parseMoney(formatted['Money in']);
+    // Direction gate: inflows are always INCOME regardless of AI category
+    if (moneyIn !== null && moneyIn > 0) {
+        row.INCOME = '1';     // placeholder — enforcement sets correct amount
+    } else {
+        row[category] = '-1'; // placeholder — enforcement sets correct amount
+    }
+    return row as CategorizedTransaction;
+}
+
+async function callResponses(indexed: object[], apiKey: string, attempt = 0): Promise<Response> {
+    const res = await fetch('https://api.openai.com/v1/responses', {
+        method:  'POST',
         headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
-            model: MODEL, temperature: 0, max_tokens: 16384,
-            messages: [
+            model:     MODEL,
+            reasoning: { effort: 'low' },
+            input: [
                 { role: 'system', content: SYSTEM_PROMPT },
-                { role: 'user',   content: JSON.stringify(batch) },
+                { role: 'user',   content: JSON.stringify(indexed) },
             ],
+            text: {
+                format: {
+                    type:   'json_schema',
+                    name:   'transaction_categories',
+                    schema: CATEGORY_SCHEMA,
+                    strict: true,
+                },
+            },
         }),
     });
 
     if (!res.ok && attempt < MAX_RETRIES) {
         if (res.status === 429) {
-            // Read body to distinguish quota exhaustion from rate limiting
             const body = await res.clone().json().catch(() => ({})) as any;
             const code = body?.error?.code as string | undefined;
             if (code === 'insufficient_quota') {
                 openAIQuotaExhausted = true;
                 throw new QuotaExhaustedError();
             }
-            // Rate limited — respect Retry-After header or use exponential backoff
             const retryAfter = Number(res.headers.get('retry-after') || '0');
             const waitMs = retryAfter > 0 ? retryAfter * 1000 : Math.min(60000 * (attempt + 1), 120000);
-            console.warn(`[Categorizer] OpenAI 429 rate limit — waiting ${Math.round(waitMs / 1000)}s before retry (attempt ${attempt + 1}/${MAX_RETRIES})...`);
+            console.warn(`[Categorizer] OpenAI 429 — waiting ${Math.round(waitMs / 1000)}s (attempt ${attempt + 1}/${MAX_RETRIES})...`);
             await new Promise(r => setTimeout(r, waitMs));
-            return fetchCompletion(batch, apiKey, attempt + 1);
+            return callResponses(indexed, apiKey, attempt + 1);
         }
         if (res.status >= 500) {
-            // Transient server error — short backoff
             const waitMs = 3000 * (attempt + 1);
             console.warn(`[Categorizer] OpenAI ${res.status} — retrying after ${waitMs / 1000}s (attempt ${attempt + 1}/${MAX_RETRIES})...`);
             await new Promise(r => setTimeout(r, waitMs));
-            return fetchCompletion(batch, apiKey, attempt + 1);
+            return callResponses(indexed, apiKey, attempt + 1);
         }
     }
 
@@ -263,102 +310,56 @@ async function fetchCompletion(batch: object[], apiKey: string, attempt = 0): Pr
 async function categorizeBatch(batch: object[], apiKey: string): Promise<CategorizedTransaction[]> {
     if (openAIQuotaExhausted) return categorizeBatchWithClaude(batch);
 
+    const indexed = batch.map((t, i) => ({ id: i, ...(t as any) }));
+
     let res: Response;
     try {
-        res = await fetchCompletion(batch, apiKey);
+        res = await callResponses(indexed, apiKey);
     } catch (err) {
         if (err instanceof QuotaExhaustedError) return categorizeBatchWithClaude(batch);
         throw err;
     }
 
     if (!res.ok) {
-        throw new Error(`OpenAI API error ${res.status}`);
+        const errBody = await res.json().catch(() => ({})) as any;
+        throw new Error(`OpenAI API error ${res.status}: ${errBody?.error?.message ?? ''}`);
     }
 
-    const data         = await res.json() as any;
-    const finishReason = data.choices?.[0]?.finish_reason;
-    const usage        = data.usage;
-    if (finishReason === 'length') {
-        throw new Error('OpenAI response truncated (finish_reason=length) — batch too large for max_tokens');
+    const data = await res.json() as any;
+
+    if (data.error) {
+        if (data.error?.code === 'insufficient_quota') {
+            openAIQuotaExhausted = true;
+            return categorizeBatchWithClaude(batch);
+        }
+        throw new Error(`OpenAI Responses API error: ${data.error?.message ?? JSON.stringify(data.error)}`);
     }
-    const content = data.choices?.[0]?.message?.content || '';
-    const cleaned = content.replace(/```json\s*/gi, '').replace(/```\s*/gi, '').trim();
+
+    // Responses API: output_text is the primary field; fall back to nested content
+    const outputText: string =
+        data.output_text ??
+        data.output?.find((o: any) => o.type === 'message')
+            ?.content?.find((c: any) => c.type === 'output_text')?.text ??
+        '';
+
+    if (!outputText) {
+        console.warn(`[Categorizer] Empty Responses API output — defaulting batch to OTHER`);
+        return batch.map((t: any) => buildCatRow(t, 'OTHER'));
+    }
 
     let parsed: any;
-    try {
-        parsed = JSON.parse(cleaned);
-    } catch {
-        // Truncated/malformed JSON — retry once before giving up.
-        console.warn(`[Categorizer] Invalid JSON from OpenAI — retrying batch...`);
-        try {
-            const retryRes = await fetch('https://api.openai.com/v1/chat/completions', {
-                method: 'POST',
-                headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    model: MODEL, temperature: 0, max_tokens: 16384,
-                    messages: [
-                        { role: 'system', content: SYSTEM_PROMPT },
-                        { role: 'user',   content: JSON.stringify(batch) },
-                    ],
-                }),
-            });
-            if (retryRes.ok) {
-                const retryData = await retryRes.json() as any;
-                const retryContent = (retryData.choices?.[0]?.message?.content || '')
-                    .replace(/```json\s*/gi, '').replace(/```\s*/gi, '').trim();
-                parsed = JSON.parse(retryContent);
-                console.log(`[Categorizer] JSON retry succeeded.`);
-            } else {
-                throw new Error(`retry HTTP ${retryRes.status}`);
-            }
-        } catch (retryErr) {
-            throw new Error('OpenAI returned invalid JSON (retry also failed): ' + cleaned.slice(0, 300));
-        }
+    try { parsed = JSON.parse(outputText); }
+    catch {
+        console.warn(`[Categorizer] Responses API returned invalid JSON — defaulting batch to OTHER`);
+        return batch.map((t: any) => buildCatRow(t, 'OTHER'));
     }
 
-    let items: CategorizedTransaction[] = Array.isArray(parsed) ? parsed : (parsed.items || []);
-    if (items.length === 0 && batch.length > 0) {
-        console.warn(`[Categorizer] Empty response — finish_reason=${finishReason} tokens=${JSON.stringify(usage)} content_len=${cleaned.length} first_tx=${JSON.stringify(batch[0]).slice(0, 100)}`);
-    }
+    // Map id → category; missing ids fall back to OTHER
+    const catMap = new Map<number, string>(
+        (parsed.results ?? []).map((r: any) => [Number(r.id), String(r.category)])
+    );
 
-    // If GPT dropped items, retry the whole batch once before falling to realignment.
-    // Realignment uses a Date|Balance key — many transactions share the same key when
-    // Balance is empty, leading to object aliasing and double-counted catIn/catOut.
-    if (items.length !== batch.length) {
-        console.warn(`[Categorizer] Count mismatch (got ${items.length}, expected ${batch.length}) — retrying batch...`);
-        try {
-            const retryRes = await fetch('https://api.openai.com/v1/chat/completions', {
-                method: 'POST',
-                headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    model: MODEL, temperature: 0, max_tokens: 16384,
-                    messages: [
-                        { role: 'system', content: SYSTEM_PROMPT },
-                        { role: 'user',   content: JSON.stringify(batch) },
-                    ],
-                }),
-            });
-            if (retryRes.ok) {
-                const retryData = await retryRes.json() as any;
-                if (retryData.choices?.[0]?.finish_reason !== 'length') {
-                    const retryContent = (retryData.choices?.[0]?.message?.content || '')
-                        .replace(/```json\s*/gi, '').replace(/```\s*/gi, '').trim();
-                    try {
-                        const retryParsed = JSON.parse(retryContent);
-                        const retryItems: CategorizedTransaction[] = Array.isArray(retryParsed) ? retryParsed : (retryParsed.items || []);
-                        if (retryItems.length === batch.length) {
-                            console.log(`[Categorizer] Batch retry succeeded — correct count.`);
-                            items = retryItems;
-                        } else {
-                            console.warn(`[Categorizer] Retry still wrong count (${retryItems.length}), falling back to realignment.`);
-                        }
-                    } catch { /* keep original items */ }
-                }
-            }
-        } catch { /* keep original items */ }
-    }
-
-    return applyFallback(items, batch);
+    return batch.map((t: any, i) => buildCatRow(t, catMap.get(i) ?? 'OTHER'));
 }
 
 export async function categorize(transactions: ParsedTransaction[]): Promise<CategorizedTransaction[]> {
