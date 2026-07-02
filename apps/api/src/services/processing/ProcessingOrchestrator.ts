@@ -28,13 +28,22 @@ function driveFilename(name: string): string {
 }
 
 /**
- * Extract the client name from an email subject that follows the convention
- * "Client Name - Period" (e.g. "Universal Trade BG - Oct 2024").
- * If no " - " separator is found the whole subject is used as-is.
+ * Extract the client name from an email subject by stripping service keywords
+ * ("Bank Statement AI", "VAT AI") wherever they appear, then cleaning up
+ * leftover separators and whitespace.
+ * Examples:
+ *   "dan brown Bank Statement AI"  → "dan brown"
+ *   "Bank Statement AI dan brown"  → "dan brown"
+ *   "ELVIS CURRAJ - Bank Statement AI" → "ELVIS CURRAJ"
+ *   "vat ai GANEV&CO"              → "GANEV&CO"
  */
 export function extractClientName(subject: string): string {
-    const idx = subject.indexOf(' - ');
-    return (idx > 0 ? subject.slice(0, idx) : subject).trim();
+    return subject
+        .replace(/bank\s+statement\s+ai/gi, '')
+        .replace(/vat\s+ai/gi, '')
+        .replace(/^\s*[-–—]\s*|\s*[-–—]\s*$/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
 }
 
 /** Sanitise a string so it's safe to use as a Drive filename. */
