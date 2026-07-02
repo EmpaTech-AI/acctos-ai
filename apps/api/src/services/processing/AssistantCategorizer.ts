@@ -133,6 +133,55 @@ const BATCH_SIZE     = 25;
 const PARALLEL_LIMIT = 10;
 const MODEL          = 'gpt-5-nano';
 
+// ── Description normalization (strip UK bank noise before sending to AI) ──────
+const BANK_PREFIX_RE = /^(?:(?:DEBIT CARD|CARD)\s+(?:PURCHASE\s*)?|DIRECT DEBIT\s+TO\s+|STANDING ORDER\s+TO\s+|FASTER PAYMENT\s+(?:TO\s+)?|BILL PAYMENT\s+TO\s+|ONLINE\s+(?:PURCHASE|PAYMENT)\s*(?:TO\s+)?)/i;
+const REF_NOISE_RE   = /\s+(?:REF|REFERENCE)\s*[\w\d\-]+|\s+\d{8,}/g;
+
+function normalizeDescription(desc: string): string {
+    const s = desc.replace(BANK_PREFIX_RE, '').replace(REF_NOISE_RE, '').replace(/\s+/g, ' ').trim();
+    return s || desc;
+}
+
+// ── Rule-based pre-categorization (runs before AI, first match wins) ──────────
+const PRE_RULES: Array<{ pattern: RegExp; category: string }> = [
+    // CASH — ATM and cash withdrawals
+    { pattern: /\b(ATM|CASH MACHINE|CASH WITHDRAWAL|CASHPOINT|CASH DISPENSED|CASH ADVANCE)\b/i,   category: 'CASH'   },
+    // HMRC — always exact
+    { pattern: /\bHMRC\b/,                                                                          category: 'HMRC'   },
+    // PHONE — UK mobile operators (exact brand names)
+    { pattern: /\b(EE LIMITED|EE LTD|EE MOBILE|VODAFONE|O2 UK|O2 MOBILE|THREE UK|THREE MOBILE|LYCAMOBILE|LEBARA MOBILE|GIFFGAFF|TALKMOBILE|SKY MOBILE|BT MOBILE|VIRGIN MOBILE|SMARTY)\b/i, category: 'PHONE' },
+    // TRAVEL — transport brands
+    { pattern: /\b(UBER|BOLT(?:\.EU| RIDESHARING)?|TFL |TRANSPORT FOR LONDON|TRAINLINE|NATIONAL RAIL|EASYJET|RYANAIR|WIZZ ?AIR|WIZZAIR|KIWI\.COM|EUROSTAR|NATIONAL EXPRESS|STAGECOACH|MEGABUS|HEATHROW EXPRESS|GATWICK EXPRESS)\b/i, category: 'TRAVEL' },
+    // CHARGES — bank-originated fees only (never shopping)
+    { pattern: /\b(OVERDRAFT (?:USAGE |ARRANGEMENT )?FEE|ARRANGED OVERDRAFT|UNARRANGED OVERDRAFT|MONTHLY (?:ACCOUNT )?FEE|ACCOUNT (?:SERVICE )?CHARGE|INTEREST CHARGED|RETURNED (?:ITEM|DD) FEE|UNPAID (?:ITEM|DD) FEE|FOREIGN (?:TRANSACTION|EXCHANGE) FEE|FX (?:FEE|CHARGE)|NON-STERLING|CHAPS FEE|REFERRAL FEE)\b/i, category: 'CHARGES' },
+];
+
+function applyPreRule(description: string): string | null {
+    for (const rule of PRE_RULES) {
+        if (rule.pattern.test(description)) return rule.category;
+    }
+    return null;
+}
+
+function buildRuleRow(tx: ParsedTransaction, formatted: any, category: string): CategorizedTransaction {
+    const row: any = {
+        DATE:                    formatted.Date    || '',
+        'Type and Description':  `${tx.type || ''} ${tx.description || ''}`.trim(),
+        INCOME: '', SALARY: '', OTHER: '', INSURANCE: '', LOAN: '',
+        CASH: '', TRAVEL: '', PHONE: '', CHARGES: '', Bank_Transfer: '',
+        HMRC: '', RENT: '', BILLS: '',
+        Balance: formatted.Balance || '',
+    };
+    const moneyIn = parseMoney(formatted['Money in']);
+    // Direction gate: inflows always INCOME regardless of rule match
+    if (moneyIn !== null && moneyIn > 0) {
+        row['INCOME'] = '1'; // placeholder — enforcement step sets correct amount
+    } else {
+        row[category] = '-1'; // placeholder — enforcement step sets correct amount
+    }
+    return row as CategorizedTransaction;
+}
+
 class QuotaExhaustedError extends Error {
     constructor() { super('openai_quota_exhausted'); }
 }
@@ -316,31 +365,66 @@ export async function categorize(transactions: ParsedTransaction[]): Promise<Cat
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) throw new Error('OPENAI_API_KEY not set');
 
-    const inputArray   = formatTransactionsForAssistant(transactions);
-    const totalBatches = Math.ceil(inputArray.length / BATCH_SIZE);
+    const inputArray = formatTransactionsForAssistant(transactions);
 
-    const batches: object[][] = [];
-    for (let i = 0; i < inputArray.length; i += BATCH_SIZE) {
-        batches.push(inputArray.slice(i, i + BATCH_SIZE));
+    // ── Step 1: Pre-categorize high-confidence transactions via rules ──────────
+    const preCat: (CategorizedTransaction | null)[] = new Array(inputArray.length).fill(null);
+    const aiIndices: number[] = [];
+
+    for (let i = 0; i < inputArray.length; i++) {
+        const formatted = inputArray[i] as any;
+        const rawDesc   = formatted['Description'] || '';
+        const normDesc  = normalizeDescription(rawDesc);
+        const category  = applyPreRule(rawDesc) ?? applyPreRule(normDesc);
+        if (category) {
+            preCat[i] = buildRuleRow(transactions[i], formatted, category);
+        } else {
+            formatted['Description'] = normDesc; // send cleaned description to AI
+            aiIndices.push(i);
+        }
     }
 
-    console.log(`[Categorizer] Running ${totalBatches} batch(es) in parallel (limit ${PARALLEL_LIMIT}) — ${inputArray.length} transactions total`);
+    const preCount = inputArray.length - aiIndices.length;
+    if (preCount > 0) {
+        console.log(`[Categorizer] Pre-categorized ${preCount}/${inputArray.length} via rules — ${aiIndices.length} sent to AI`);
+    }
 
-    const batchResults: CategorizedTransaction[][] = new Array(batches.length);
-    let nextIdx = 0;
-    const worker = async () => {
-        while (true) {
-            const idx = nextIdx++;
-            if (idx >= batches.length) break;
-            const batch = batches[idx];
-            console.log(`[Categorizer] Batch ${idx + 1}/${totalBatches} started — ${batch.length} transactions`);
-            batchResults[idx] = await categorizeBatch(batch, apiKey);
-            console.log(`[Categorizer] Batch ${idx + 1}/${totalBatches} done`);
+    // ── Step 2: Batch and process remaining transactions with AI ──────────────
+    const results: CategorizedTransaction[] = new Array(inputArray.length);
+    for (let i = 0; i < inputArray.length; i++) {
+        if (preCat[i]) results[i] = preCat[i]!;
+    }
+
+    if (aiIndices.length > 0) {
+        const aiFormatted  = aiIndices.map(i => inputArray[i]);
+        const totalBatches = Math.ceil(aiFormatted.length / BATCH_SIZE);
+
+        const batches: object[][] = [];
+        for (let i = 0; i < aiFormatted.length; i += BATCH_SIZE) {
+            batches.push(aiFormatted.slice(i, i + BATCH_SIZE));
         }
-    };
-    await Promise.all(Array.from({ length: Math.min(PARALLEL_LIMIT, batches.length) }, worker));
 
-    const results = batchResults.flat();
+        console.log(`[Categorizer] Running ${totalBatches} batch(es) in parallel (limit ${PARALLEL_LIMIT}) — ${aiFormatted.length} transactions total`);
+
+        const batchResults: CategorizedTransaction[][] = new Array(batches.length);
+        let nextIdx = 0;
+        const worker = async () => {
+            while (true) {
+                const idx = nextIdx++;
+                if (idx >= batches.length) break;
+                const batch = batches[idx];
+                console.log(`[Categorizer] Batch ${idx + 1}/${totalBatches} started — ${batch.length} transactions`);
+                batchResults[idx] = await categorizeBatch(batch, apiKey);
+                console.log(`[Categorizer] Batch ${idx + 1}/${totalBatches} done`);
+            }
+        };
+        await Promise.all(Array.from({ length: Math.min(PARALLEL_LIMIT, batches.length) }, worker));
+
+        const aiResults = batchResults.flat();
+        for (let j = 0; j < aiIndices.length; j++) {
+            results[aiIndices[j]] = aiResults[j] ?? buildFallbackRow(inputArray[aiIndices[j]] as any);
+        }
+    }
 
     // ── Post-categorization direction reconciliation ──────────────────────────
     // Compare AI results against parser-confirmed direction and fix mismatches.

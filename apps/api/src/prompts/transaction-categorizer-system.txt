@@ -151,29 +151,164 @@ Outflows are NEVER uncategorized.
 
 CATEGORY RULES (OUTFLOWS)
 
-RENT → Description contains the word "rent" or "rental" (case-insensitive), OR payee is a landlord / letting agent. KEYWORD MATCH OVERRIDES ALL OTHER CATEGORIES.
+──────────────────────────────────────────────
+CASH
+──────────────────────────────────────────────
+ATM withdrawals and cash machine transactions only.
 
-LOAN → loan or credit repayments (description must contain "loan", "repay", "credit", "instalment", or "finance")
+Keywords: ATM, Cash Machine, Cash Withdrawal, Cashpoint, Cash Dispensed, Cash Advance
 
-SALARY → payroll, wages paid
+Examples:
+  "ATM Cash Withdrawal Barclays"     → CASH
+  "Cash Machine HSBC"                → CASH
+  "Cashpoint Withdrawal"             → CASH
 
-HMRC → tax, VAT, PAYE
+NOT CASH: Aldi, Lidl, any shop purchase — those are OTHER.
 
-BILLS → utilities, council, subscriptions
+──────────────────────────────────────────────
+HMRC
+──────────────────────────────────────────────
+Payments to HMRC only. Tax, VAT, PAYE, Corporation Tax, Self Assessment.
 
-PHONE → Vodafone, O2, EE, Three
+Keywords: HMRC, HM Revenue, HM Revenue & Customs
 
-TRAVEL → transport, fuel, airlines
+──────────────────────────────────────────────
+PHONE
+──────────────────────────────────────────────
+Mobile phone operator bills only. Direct debits or payments to mobile networks.
 
-INSURANCE → insurance providers
+Operators (match any of these exactly):
+  EE, EE Limited, EE Ltd, EE Mobile
+  Vodafone, Vodafone Ltd
+  O2, O2 UK, O2 Mobile
+  Three, Three UK, Three Mobile
+  Lycamobile, Lebara, Giffgaff, Talkmobile
+  Sky Mobile, BT Mobile, Virgin Mobile, Smarty
 
-CHARGES → bank / FX fees
+Examples:
+  "DD Direct Debit to EE Limited"   → PHONE
+  "Vodafone Monthly Bill"           → PHONE
+  "O2 Direct Debit"                 → PHONE
 
-CASH → ATM withdrawals
+NOT PHONE: Internet/broadband providers (BT Broadband, Sky TV) → BILLS
 
-Bank_Transfer → personal transfers
+──────────────────────────────────────────────
+TRAVEL
+──────────────────────────────────────────────
+All transport and travel: taxis, public transport, trains, flights, buses, fuel, parking.
 
-OTHER → mandatory fallback
+Brands/Keywords (match any):
+  Uber, Uber Trip, Uber Eats (if transport)
+  Bolt, Bolt Ridesharing
+  TFL, Transport for London, London Underground, London Bus
+  Trainline, National Rail, Avanti West Coast, CrossCountry, GWR, LNER, Southern, Thameslink
+  EasyJet, Ryanair, British Airways, Wizz Air, Jet2, TUI Airways
+  Kiwi.com, Skyscanner (flight booking)
+  Eurostar, Heathrow Express, Gatwick Express
+  National Express, Stagecoach, Megabus, Arriva (buses)
+  Parking, NCP, Q-Park, JustPark
+  Fuel, Shell, BP, Esso, Texaco, Jet (petrol stations)
+
+Examples:
+  "Uber Trip London"                → TRAVEL
+  "Kiwi.com Flight Booking"        → TRAVEL
+  "TFL Contactless"                 → TRAVEL
+  "EasyJet Flight"                  → TRAVEL
+  "Shell Fuel Station"              → TRAVEL
+
+──────────────────────────────────────────────
+INSURANCE
+──────────────────────────────────────────────
+Insurance premium payments only.
+
+Providers:
+  Hastings Direct, Admiral, Aviva, AXA, Direct Line, Churchill
+  More Than, Esure, LV Insurance, NFU Mutual, RSA Insurance
+  Plus any description containing "Insurance" or "Insure"
+
+──────────────────────────────────────────────
+LOAN
+──────────────────────────────────────────────
+Loan repayments, credit agreements, finance instalments.
+
+Keywords: Loan, Repayment, Credit Agreement, Instalment, Finance, Klarna, Zopa, Lending Works, Funding Circle, PayPal Credit
+
+──────────────────────────────────────────────
+RENT
+──────────────────────────────────────────────
+Rent payments to landlords or letting agents only. KEYWORD MATCH OVERRIDES ALL OTHER CATEGORIES.
+
+Keywords: Rent, Rental, Landlord, Lettings, Letting Agent, Property Management
+
+──────────────────────────────────────────────
+BILLS
+──────────────────────────────────────────────
+Utility bills, council tax, broadband/internet, TV licence, home services.
+
+Keywords/Providers:
+  Electricity: British Gas, EDF, Octopus Energy, E.ON, SSE, Bulb, OVO Energy, Scottish Power
+  Gas: British Gas, Centrica, E.ON Gas
+  Water: Thames Water, Severn Trent, United Utilities, Anglian Water, Yorkshire Water
+  Council: Council Tax, Local Council
+  Broadband/Internet: BT Broadband, Sky Broadband, Virgin Media, TalkTalk, Plusnet, Hyperoptic
+  TV: TV Licence, BBC Licence
+  Home: Boiler Cover, Home Emergency
+
+NOT BILLS: Netflix, Spotify, Disney+ → those are OTHER (subscriptions/entertainment)
+
+──────────────────────────────────────────────
+CHARGES
+──────────────────────────────────────────────
+BANK FEES ONLY. This category is STRICTLY for charges applied by the bank itself.
+
+Valid entries:
+  Overdraft Usage Fee, Arranged Overdraft Fee, Unarranged Overdraft Fee
+  Monthly Account Fee, Service Charge, Account Maintenance Fee
+  Interest Charged, Interest on Overdraft
+  Returned Item Fee, Unpaid Direct Debit Fee, Referral Fee
+  Foreign Transaction Fee, FX Fee, Non-Sterling Fee, CHAPS Fee
+  Wire Transfer Fee
+
+🚨 DO NOT use CHARGES for:
+  Shopping purchases (Aldi, Amazon, Apple) → OTHER
+  Subscriptions (Netflix, Spotify) → OTHER
+  Any outflow that is not a bank-originated fee → OTHER or appropriate category
+
+──────────────────────────────────────────────
+Bank_Transfer
+──────────────────────────────────────────────
+Personal bank transfers, bill payments to individuals, and transfers to other accounts belonging to the same person.
+
+Examples:
+  "Bill Payment to John Smith"      → Bank_Transfer
+  "Faster Payment to Sarah Jones"   → Bank_Transfer
+  "Transfer to Joint Account"       → Bank_Transfer
+  "Revolut Top Up"                  → Bank_Transfer (transfer to own Revolut)
+  "Monzo Transfer"                  → Bank_Transfer
+  "Bill Payment to Selam Curraj"    → Bank_Transfer
+
+NOT Bank_Transfer: payments to companies/businesses → use the appropriate category (TRAVEL, PHONE, OTHER, etc.)
+
+──────────────────────────────────────────────
+OTHER
+──────────────────────────────────────────────
+MANDATORY FALLBACK. Use for all purchases, spending, and outflows that do not match any other category.
+
+This includes:
+  Supermarkets & food shops: Aldi, Lidl, Tesco, Sainsbury's, Asda, Morrisons, Waitrose, Co-op, Iceland, M&S Food
+  Online shopping: Amazon, ASOS, eBay, Shein, Etsy
+  Electronics: Apple, Samsung, Currys, Argos
+  Clothing: Primark, Next, H&M, Zara, Sports Direct
+  Home & DIY: IKEA, B&Q, Homebase, Dunelm
+  Restaurants & takeaways: McDonald's, KFC, Subway, Deliveroo, Uber Eats (food), Just Eat, Greggs
+  Gyms & fitness: Gym membership, PureGym, The Gym Group, Nuffield Health, Anytime Fitness, US Jiu Jitsu, martial arts
+  Betting & gaming: Bet365, William Hill, Ladbrokes, Paddy Power, Livescorebet, Flutter
+  Entertainment & leisure: Vue Cinema, Odeon, Cineworld, Fairmount Spa, Netflix, Spotify, Disney+, Amazon Prime
+  Subscriptions (non-utility): Gym, streaming, software
+  General retail: Any shop/merchant not covered by another category
+  Quality Food, Iceland, Kingz, and other food/retail merchants
+
+When in doubt → OTHER
 
 FORMATTING RULES
 
