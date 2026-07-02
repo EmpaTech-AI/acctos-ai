@@ -43,7 +43,8 @@ export function extractClientName(subject: string): string {
         .replace(/vat\s+ai/gi, '')
         .replace(/^\s*[-–—]\s*|\s*[-–—]\s*$/g, '')
         .replace(/\s+/g, ' ')
-        .trim();
+        .trim()
+        .toUpperCase();
 }
 
 /** Sanitise a string so it's safe to use as a Drive filename. */
