@@ -90,7 +90,7 @@ async function pollLabel(labelName: string, processingMode: 'bank_statement' | '
             } else if (excels.length === 1) {
                 // Single Excel, no PDFs → single-file processing
                 console.log(`[GmailPoller] Processing Excel "${excels[0].filename}" from "${message.subject}" as ${processingMode}`);
-                startProcessingJob(excels[0].filename, excels[0].mimeType, excels[0].buffer, undefined, processingMode);
+                startProcessingJob(excels[0].filename, excels[0].mimeType, excels[0].buffer, undefined, processingMode, message.subject, extractEmail(message.from));
             } else {
                 // Multiple Excel files with no PDFs → not supported via email
                 console.log(`[GmailPoller] Message ${message.id} has ${excels.length} Excel files but no PDFs — sending error reply`);

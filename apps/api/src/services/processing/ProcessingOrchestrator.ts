@@ -639,12 +639,14 @@ export function startProcessingJob(
     fileBuffer: Buffer,
     tracking?: TrackingContext,
     processingMode?: 'bank_statement' | 'vat',
+    emailSubject?: string,
+    senderEmail?: string,
 ): string {
     const jobId = randomUUID();
     jobStore.create(jobId, filename);
     createJobRecord({ id: jobId, filename, processingMode }).catch(() => {});
 
-    runJob(jobId, filename, mimeType, fileBuffer, tracking, processingMode).catch(err => {
+    runJob(jobId, filename, mimeType, fileBuffer, tracking, processingMode, emailSubject, senderEmail).catch(err => {
         console.error(`[Orchestrator] Job ${jobId} unhandled crash:`, err);
         jobStore.update(jobId, { status: 'failed', error: String(err?.message ?? err) });
     });
@@ -652,7 +654,7 @@ export function startProcessingJob(
     return jobId;
 }
 
-async function runJob(jobId: string, filename: string, mimeType: string, fileBuffer: Buffer, tracking?: TrackingContext, processingMode?: 'bank_statement' | 'vat'): Promise<void> {
+async function runJob(jobId: string, filename: string, mimeType: string, fileBuffer: Buffer, tracking?: TrackingContext, processingMode?: 'bank_statement' | 'vat', emailSubject?: string, senderEmail?: string): Promise<void> {
     const timer = makeStageTimer();
     try {
         // ── Stage: classify ──────────────────────────────────────────────────────
@@ -667,6 +669,8 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
         });
 
         let outputBuffer: Buffer;
+        let vatStats: VatStats | undefined;
+        let emailBankSummary: BankSummary | undefined;
 
         if (classification.fileFormat === 'excel') {
             // ── Stage: extract (OpenAI two-pass for Excel) ───────────────────────
@@ -690,9 +694,12 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
             jobStore.update(jobId, { transactionCount: categorized.length, currentStage: 'output' });
 
             if (processingMode === 'vat') {
-                ({ buffer: outputBuffer } = await buildVatOutputExcel(categorized, filename));
+                const result = await buildVatOutputExcel(categorized, emailSubject ? extractClientName(emailSubject) : filename);
+                outputBuffer = result.buffer;
+                vatStats = result.vatStats;
             } else {
                 outputBuffer = await buildPdfOutputExcel(categorized);
+                // Excel inputs have no statement totals — emailBankSummary stays undefined
             }
 
         } else {
@@ -843,10 +850,28 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
 
             // ── Stage: output (build Excel) ───────────────────────────────────────
             if (processingMode === 'vat') {
-                ({ buffer: outputBuffer } = await buildVatOutputExcel(categorized, filename));
+                const result = await buildVatOutputExcel(categorized, emailSubject ? extractClientName(emailSubject) : filename);
+                outputBuffer = result.buffer;
+                vatStats = result.vatStats;
             } else {
                 outputBuffer = await buildPdfOutputExcel(categorized, verification);
             }
+
+            emailBankSummary = verification ? {
+                total:          categorized.length,
+                moneyIn:        verification.totalIn,
+                moneyOut:       verification.totalOut,
+                openingBalance: verification.openingBalance,
+                closingBalance: verification.closingBalance,
+                balanceDiff:    verification.balanceDiff,
+                balanceOk:      verification.balanceOk,
+                declaredIn:     verification.declaredIn,
+                declaredOut:    verification.declaredOut,
+                declaredOk:     verification.declaredOk,
+                catTotalIn:     processingMode !== 'vat' ? verification.catTotalIn  : undefined,
+                catTotalOut:    processingMode !== 'vat' ? verification.catTotalOut : undefined,
+                catOk:          processingMode !== 'vat' ? verification.catOk       : undefined,
+            } : undefined;
         }
 
         jobStore.update(jobId, { status: 'completed', outputBuffer, completedAt: new Date() });
@@ -866,17 +891,35 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
             });
         })().catch(e => console.warn('[Orchestrator] Supabase persist (single) failed:', e?.message));
 
-        // Drive upload (non-blocking, independent of Supabase)
+        // Drive upload + reply email (non-blocking, independent of Supabase)
         void (async () => {
+            let driveFileUrl: string | undefined;
             const folderId = getDriveFolderId(processingMode);
-            if (!folderId) {
+            if (folderId) {
+                try {
+                    if (emailSubject) {
+                        const clientFolder = extractClientName(emailSubject);
+                        const fn = safeDriveFilename(emailSubject);
+                        console.log(`[Orchestrator] Uploading to Drive: "${fn}" → "${clientFolder}/"`);
+                        driveFileUrl = await uploadToDriveSubfolder(outputBuffer, fn, folderId, clientFolder) ?? undefined;
+                    } else {
+                        const fn = driveFilename(filename);
+                        console.log(`[Orchestrator] Uploading to Drive: "${fn}"`);
+                        driveFileUrl = await uploadToDriveFolder(outputBuffer, fn, folderId) ?? undefined;
+                    }
+                } catch (e: any) {
+                    console.warn('[Orchestrator] Drive upload (single) failed:', e?.message);
+                }
+            } else {
                 console.log('[Orchestrator] Drive upload skipped — folder ID not configured');
-                return;
             }
-            const fn = driveFilename(filename);
-            console.log(`[Orchestrator] Uploading to Drive: "${fn}"`);
-            await uploadToDriveFolder(outputBuffer, fn, folderId);
-        })().catch(e => console.warn('[Orchestrator] Drive upload (single) failed:', e?.message));
+
+            if (senderEmail && emailSubject) {
+                const replyFilename = safeDriveFilename(emailSubject);
+                const clientName = extractClientName(emailSubject);
+                notifyProcessingComplete({ to: senderEmail, emailSubject, clientName, xlsxBuffer: outputBuffer, filename: replyFilename, driveFileUrl, vatSummary: vatStats, bankSummary: emailBankSummary });
+            }
+        })().catch(e => console.warn('[Orchestrator] Drive+email (single) failed:', e?.message));
 
     } catch (err: any) {
         const stage = jobStore.get(jobId)?.currentStage;
