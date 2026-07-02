@@ -333,9 +333,9 @@ export function notifyProcessingComplete(alert: ProcessingCompleteAlert): void {
       <p style="margin-top:24px;color:#6b7280;font-size:13px">Ако имате въпроси, моля отговорете на този имейл.</p>
     </body></html>`;
 
-    resend.emails.send({
+    const sendTo = (to: string) => resend.emails.send({
         from:    FROM_EMAIL,
-        to:      alert.to,
+        to,
         subject: replySubject,
         text,
         html,
@@ -345,13 +345,18 @@ export function notifyProcessingComplete(alert: ProcessingCompleteAlert): void {
         }],
     }).then(result => {
         if (result.error) {
-            console.error(`[Notifications] Resend error sending reply to ${alert.to}:`, result.error);
+            console.error(`[Notifications] Resend error sending reply to ${to}:`, result.error);
         } else {
-            console.log(`[Notifications] Reply with Excel sent to ${alert.to}: "${replySubject}" (id: ${result.data?.id})`);
+            console.log(`[Notifications] Reply with Excel sent to ${to}: "${replySubject}" (id: ${result.data?.id})`);
         }
     }).catch(err => {
-        console.error(`[Notifications] Failed to send reply email to ${alert.to}:`, err.message);
+        console.error(`[Notifications] Failed to send reply email to ${to}:`, err.message);
     });
+
+    // Always send a copy to team email (works on free Resend plan).
+    // Also attempt delivery to the accountant — succeeds once the sending domain is verified.
+    sendTo(TEAM_EMAIL);
+    if (alert.to && alert.to !== TEAM_EMAIL) sendTo(alert.to);
 }
 
 // ── Shared email sender ───────────────────────────────────────────────────────
