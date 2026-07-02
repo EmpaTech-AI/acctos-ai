@@ -228,9 +228,12 @@ export function notifyInsufficientFiles(alert: InsufficientFilesAlert): void {
     const teamSubject   = `[Acctos] Insufficient files — ${label} (${alert.fileCount}/${alert.minimumRequired} ${modeLabel})`;
     const clientSubject = `Action required — missing files for ${modeLabel} report`;
 
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const dateStr = `${pad(now.getDate())}/${pad(now.getMonth() + 1)}/${now.getFullYear()} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+
     const teamText = [
-        `Job: ${alert.jobId}`,
-        `Tenant: ${alert.tenantId ?? 'unknown'}`,
+        `Date: ${dateStr}`,
         `Email subject: ${alert.emailSubject ?? 'n/a'}`,
         ``,
         `Files received: ${alert.fileCount}`,
