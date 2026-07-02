@@ -229,8 +229,13 @@ export function notifyInsufficientFiles(alert: InsufficientFilesAlert): void {
     const clientSubject = `Action required — missing files for ${modeLabel} report`;
 
     const now = new Date();
-    const pad = (n: number) => String(n).padStart(2, '0');
-    const dateStr = `${pad(now.getDate())}/${pad(now.getMonth() + 1)}/${now.getFullYear()} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+    const parts = new Intl.DateTimeFormat('en-GB', {
+        timeZone: 'Europe/London',
+        day: '2-digit', month: '2-digit', year: 'numeric',
+        hour: '2-digit', minute: '2-digit', hour12: false,
+    }).formatToParts(now);
+    const get = (type: string) => parts.find(p => p.type === type)?.value ?? '00';
+    const dateStr = `${get('day')}/${get('month')}/${get('year')} ${get('hour')}:${get('minute')}`;
 
     const teamText = [
         `Date: ${dateStr}`,
