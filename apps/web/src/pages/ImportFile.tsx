@@ -174,19 +174,25 @@ interface PreviewModalProps {
 }
 
 function PreviewModal({ jobId, filename, onClose, onDownload }: PreviewModalProps) {
-    const [rows, setRows] = useState<unknown[][]>([]);
+    const [sheets, setSheets] = useState<{ name: string; rows: unknown[][] }[]>([]);
+    const [activeSheet, setActiveSheet] = useState(0);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
 
     useEffect(() => {
+        setActiveSheet(0);
+        setSheets([]);
+        setLoading(true);
+        setError(null);
         axios.get(`/v1/processing/${jobId}/preview`)
-            .then(res => setRows(res.data.rows as unknown[][]))
+            .then(res => setSheets(res.data.sheets as { name: string; rows: unknown[][] }[]))
             .catch(() => setError('Could not load preview.'))
             .finally(() => setLoading(false));
     }, [jobId]);
 
-    const headers = rows[0] as string[] | undefined;
-    const dataRows = rows.slice(1);
+    const currentSheet = sheets[activeSheet];
+    const headers = currentSheet?.rows[0] as string[] | undefined;
+    const dataRows = currentSheet?.rows.slice(1) ?? [];
 
     return (
         <div style={{
@@ -208,7 +214,7 @@ function PreviewModal({ jobId, filename, onClose, onDownload }: PreviewModalProp
                 <div style={{
                     display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                     padding: '1.1rem 1.4rem',
-                    borderBottom: '1px solid rgba(255,255,255,0.07)',
+                    borderBottom: sheets.length > 1 ? 'none' : '1px solid rgba(255,255,255,0.07)',
                     flexShrink: 0,
                 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
@@ -216,7 +222,7 @@ function PreviewModal({ jobId, filename, onClose, onDownload }: PreviewModalProp
                         <span style={{ fontWeight: 600, fontSize: '0.92rem' }}>
                             {filename.replace(/\.[^.]+$/, '')}_processed.xlsx
                         </span>
-                        {rows.length > 1 && (
+                        {dataRows.length > 0 && (
                             <span style={{
                                 fontSize: '0.72rem', color: 'var(--text-muted)',
                                 background: 'rgba(255,255,255,0.06)',
@@ -239,6 +245,33 @@ function PreviewModal({ jobId, filename, onClose, onDownload }: PreviewModalProp
                         </button>
                     </div>
                 </div>
+
+                {/* Sheet tabs — only shown for multi-sheet files (VAT) */}
+                {sheets.length > 1 && (
+                    <div style={{
+                        display: 'flex', gap: '0.25rem',
+                        padding: '0 1.4rem',
+                        borderBottom: '1px solid rgba(255,255,255,0.07)',
+                        flexShrink: 0,
+                    }}>
+                        {sheets.map((s, i) => (
+                            <button key={i} onClick={() => setActiveSheet(i)} style={{
+                                background: i === activeSheet ? 'rgba(34,197,94,0.12)' : 'none',
+                                border: 'none',
+                                borderBottom: i === activeSheet ? '2px solid #22c55e' : '2px solid transparent',
+                                color: i === activeSheet ? '#22c55e' : 'var(--text-muted)',
+                                fontSize: '0.78rem',
+                                fontWeight: i === activeSheet ? 600 : 400,
+                                padding: '0.5rem 0.85rem',
+                                cursor: 'pointer',
+                                borderRadius: '0',
+                                transition: 'color 0.15s, border-color 0.15s',
+                            }}>
+                                {s.name}
+                            </button>
+                        ))}
+                    </div>
+                )}
 
                 {/* Modal body */}
                 <div style={{ overflowY: 'auto', overflowX: 'auto', flex: 1, padding: '0' }}>

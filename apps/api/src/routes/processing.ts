@@ -94,9 +94,11 @@ router.get('/:jobId/preview', async (req: AuthenticatedRequest, res: Response, n
         if (!buf) return next(createError('Output file unavailable', 500, 'NO_OUTPUT'));
     }
     const workbook = XLSX.read(buf, { type: 'buffer' });
-    const sheet = workbook.Sheets[workbook.SheetNames[0]];
-    const rows: unknown[][] = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' }) as unknown[][];
-    res.json({ rows });
+    const sheets = workbook.SheetNames.map(name => ({
+        name,
+        rows: XLSX.utils.sheet_to_json(workbook.Sheets[name], { header: 1, defval: '' }) as unknown[][],
+    }));
+    res.json({ sheets });
 });
 
 export { router as processingRouter };
