@@ -260,10 +260,12 @@ export function notifyInsufficientFiles(alert: InsufficientFilesAlert): void {
 // ── Accountant: processed result with Excel attachment ────────────────────────
 
 export interface ProcessingCompleteAlert {
-    to:           string;
-    emailSubject: string;
-    xlsxBuffer:   Buffer;
-    filename:     string;
+    to:            string;
+    emailSubject:  string;
+    clientName:    string;
+    xlsxBuffer:    Buffer;
+    filename:      string;
+    driveFileUrl?: string;
 }
 
 export function notifyProcessingComplete(alert: ProcessingCompleteAlert): void {
@@ -277,18 +279,63 @@ export function notifyProcessingComplete(alert: ProcessingCompleteAlert): void {
         ? alert.emailSubject
         : `Re: ${alert.emailSubject}`;
 
+    const name = alert.clientName || alert.emailSubject;
+    const linkSection = alert.driveFileUrl
+        ? `\nYou can also access the file via the link below:\n${alert.driveFileUrl}\n`
+        : '';
+    const linkSectionBg = alert.driveFileUrl
+        ? `\nМожете да отворите файла и чрез следния линк:\n${alert.driveFileUrl}\n`
+        : '';
+
     const text = [
-        'Your bank statements have been processed and categorised.',
-        'Please find the Excel report attached.',
+        'Bank Statement Information',
         '',
+        'Hi,',
+        '',
+        `Attached you can find the extracted bank statement information for ${name}.`,
+        linkSection,
         'If you have any questions, please reply to this email.',
+        '',
+        '---',
+        '',
+        'Информация от банковото извлечение',
+        '',
+        'Здравейте,',
+        '',
+        `В прикачения файл можете да намерите свалената информация от банковото извлечение за ${name}.`,
+        linkSectionBg,
+        'Ако имате въпроси, моля отговорете на този имейл.',
     ].join('\n');
+
+    const btnStyle = 'display:inline-block;padding:12px 24px;background:#2563eb;color:#ffffff;font-family:Arial,sans-serif;font-size:15px;font-weight:600;text-decoration:none;border-radius:6px';
+    const driveButton = (label: string, labelFallback: string) => alert.driveFileUrl ? `
+        <p style="margin:16px 0 4px">
+          <a href="${alert.driveFileUrl}" style="${btnStyle}">${label}</a>
+        </p>
+        <p style="margin:4px 0 0;font-size:13px;color:#6b7280">
+          ${labelFallback}: <a href="${alert.driveFileUrl}" style="color:#2563eb">${alert.driveFileUrl}</a>
+        </p>` : '';
+
+    const html = `<!DOCTYPE html><html><body style="font-family:Arial,sans-serif;font-size:15px;color:#111827;max-width:600px;margin:0 auto;padding:24px">
+      <h2 style="font-size:20px;font-weight:700;margin:0 0 16px">Bank Statement Information</h2>
+      <p>Hi,</p>
+      <p>Attached you can find the extracted bank statement information for <strong>${name}</strong>.</p>
+      ${driveButton('Open File', 'Plain link (in case the button doesn\'t work)')}
+      <p style="margin-top:24px;color:#6b7280;font-size:13px">If you have any questions, please reply to this email.</p>
+      <hr style="border:none;border-top:1px solid #e5e7eb;margin:32px 0">
+      <h2 style="font-size:20px;font-weight:700;margin:0 0 16px">Информация от банковото извлечение</h2>
+      <p>Здравейте,</p>
+      <p>В прикачения файл можете да намерите свалената информация от банковото извлечение за <strong>${name}</strong>.</p>
+      ${driveButton('Отвори файла', 'Директен линк (ако бутонът не работи)')}
+      <p style="margin-top:24px;color:#6b7280;font-size:13px">Ако имате въпроси, моля отговорете на този имейл.</p>
+    </body></html>`;
 
     resend.emails.send({
         from:    FROM_EMAIL,
         to:      alert.to,
         subject: replySubject,
         text,
+        html,
         attachments: [{
             filename: alert.filename,
             content:  alert.xlsxBuffer,

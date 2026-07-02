@@ -533,12 +533,6 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
         const _txCount   = jobStore.get(jobId)?.transactionCount;
         const _batchName = jobStore.get(jobId)?.filename ?? 'batch';
 
-        // Reply email with Excel to accountant (non-blocking)
-        if (senderEmail && emailSubject) {
-            const replyFilename = safeDriveFilename(emailSubject);
-            notifyProcessingComplete({ to: senderEmail, emailSubject, xlsxBuffer: outputBuffer, filename: replyFilename });
-        }
-
         // Supabase persist (non-blocking, independent of Drive)
         void (async () => {
             const outputPath = await saveOutputFile(jobId, outputBuffer);
@@ -551,24 +545,37 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
             });
         })().catch(e => console.warn('[Orchestrator] Supabase persist (batch) failed:', e?.message));
 
-        // Drive upload (non-blocking, independent of Supabase)
+        // Drive upload + reply email (non-blocking, independent of Supabase)
+        // Reply fires after upload so we can include the Drive link; falls back
+        // to attachment-only if Drive is unavailable.
         void (async () => {
+            let driveFileUrl: string | undefined;
             const folderId = getDriveFolderId(processingMode);
-            if (!folderId) {
-                console.log('[Orchestrator] Drive upload skipped — folder ID not configured');
-                return;
-            }
-            if (emailSubject) {
-                const clientFolder = extractClientName(emailSubject);
-                const fn = safeDriveFilename(emailSubject);
-                console.log(`[Orchestrator] Uploading to Drive: "${fn}" → "${clientFolder}/"`);
-                await uploadToDriveSubfolder(outputBuffer, fn, folderId, clientFolder);
+            if (folderId) {
+                try {
+                    if (emailSubject) {
+                        const clientFolder = extractClientName(emailSubject);
+                        const fn = safeDriveFilename(emailSubject);
+                        console.log(`[Orchestrator] Uploading to Drive: "${fn}" → "${clientFolder}/"`);
+                        driveFileUrl = await uploadToDriveSubfolder(outputBuffer, fn, folderId, clientFolder) ?? undefined;
+                    } else {
+                        const fn = driveFilename(_batchName);
+                        console.log(`[Orchestrator] Uploading to Drive: "${fn}"`);
+                        driveFileUrl = await uploadToDriveFolder(outputBuffer, fn, folderId) ?? undefined;
+                    }
+                } catch (e: any) {
+                    console.warn('[Orchestrator] Drive upload (batch) failed:', e?.message);
+                }
             } else {
-                const fn = driveFilename(_batchName);
-                console.log(`[Orchestrator] Uploading to Drive: "${fn}"`);
-                await uploadToDriveFolder(outputBuffer, fn, folderId);
+                console.log('[Orchestrator] Drive upload skipped — folder ID not configured');
             }
-        })().catch(e => console.warn('[Orchestrator] Drive upload (batch) failed:', e?.message));
+
+            if (senderEmail && emailSubject) {
+                const replyFilename = safeDriveFilename(emailSubject);
+                const clientName = extractClientName(emailSubject);
+                notifyProcessingComplete({ to: senderEmail, emailSubject, clientName, xlsxBuffer: outputBuffer, filename: replyFilename, driveFileUrl });
+            }
+        })().catch(e => console.warn('[Orchestrator] Drive+email (batch) failed:', e?.message));
 
     } catch (err: any) {
         const stage = jobStore.get(jobId)?.currentStage;
