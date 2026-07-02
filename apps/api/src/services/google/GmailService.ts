@@ -49,7 +49,13 @@ export async function listUnreadMessages(labelName: string): Promise<GmailMessag
     return messages;
 }
 
-export async function getPdfAttachments(messageId: string): Promise<GmailAttachment[]> {
+const EXCEL_MIMES = new Set([
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/vnd.ms-excel',
+]);
+
+/** Returns PDF and Excel attachments. All other file types are ignored. */
+export async function getSupportedAttachments(messageId: string): Promise<GmailAttachment[]> {
     const gmail  = buildGmailClient();
     const msg    = await gmail.users.messages.get({ userId: 'me', id: messageId, format: 'full' });
     const parts  = flattenParts(msg.data.payload?.parts ?? []);
@@ -58,7 +64,9 @@ export async function getPdfAttachments(messageId: string): Promise<GmailAttachm
     for (const part of parts) {
         if (!part.filename) continue;
         const mt = part.mimeType ?? '';
-        if (mt !== 'application/pdf' && !part.filename.toLowerCase().endsWith('.pdf')) continue;
+        const isPdf   = mt === 'application/pdf' || part.filename.toLowerCase().endsWith('.pdf');
+        const isExcel = EXCEL_MIMES.has(mt) || /\.xlsx?$/i.test(part.filename);
+        if (!isPdf && !isExcel) continue;
 
         let dataB64: string;
         if (part.body?.data) {
@@ -76,13 +84,16 @@ export async function getPdfAttachments(messageId: string): Promise<GmailAttachm
 
         result.push({
             filename: part.filename,
-            mimeType: mt || 'application/pdf',
+            mimeType: mt || (isPdf ? 'application/pdf' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'),
             buffer:   Buffer.from(dataB64, 'base64url'),
         });
     }
 
     return result;
 }
+
+/** @deprecated Use getSupportedAttachments which also accepts Excel files. */
+export const getPdfAttachments = getSupportedAttachments;
 
 export async function markAsRead(messageId: string): Promise<void> {
     const gmail = buildGmailClient();

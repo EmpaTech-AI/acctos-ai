@@ -420,6 +420,72 @@ export function notifyProcessingComplete(alert: ProcessingCompleteAlert): void {
     if (alert.to && alert.to !== TEAM_EMAIL) sendTo(alert.to);
 }
 
+// ── Unsupported attachment reply ──────────────────────────────────────────────
+
+export interface UnsupportedAttachmentAlert {
+    to:           string;
+    emailSubject: string;
+}
+
+export function notifyUnsupportedAttachment(alert: UnsupportedAttachmentAlert): void {
+    const resend = getResend();
+    if (!resend) {
+        console.warn(`[Notifications] RESEND_API_KEY not set — unsupported-attachment reply not sent to ${alert.to}`);
+        return;
+    }
+
+    const replySubject = /^re:/i.test(alert.emailSubject)
+        ? alert.emailSubject
+        : `Re: ${alert.emailSubject}`;
+
+    const text = [
+        'Unsupported file type',
+        '',
+        'Hi,',
+        '',
+        'Your email was received, but no supported files were found as attachments.',
+        'Please attach PDF or Excel (.xlsx) files and try again.',
+        '',
+        'If you have any questions, please reply to this email.',
+        '',
+        '---',
+        '',
+        'Неподдържан тип файл',
+        '',
+        'Здравейте,',
+        '',
+        'Вашият имейл беше получен, но не открихме поддържани прикачени файлове.',
+        'Моля прикачете PDF или Excel (.xlsx) файлове и опитайте отново.',
+        '',
+        'Ако имате въпроси, моля отговорете на този имейл.',
+    ].join('\n');
+
+    const errStyle = 'font-size:20px;font-weight:700;margin:0 0 16px;color:#dc2626';
+    const html = `<!DOCTYPE html><html><body style="font-family:Arial,sans-serif;font-size:15px;color:#111827;max-width:600px;margin:0 auto;padding:24px">
+      <h2 style="${errStyle}">Unsupported file type</h2>
+      <p>Hi,</p>
+      <p>Your email was received, but no supported files were found as attachments.</p>
+      <p>Please attach <strong>PDF</strong> or <strong>Excel (.xlsx)</strong> files and try again.</p>
+      <p style="margin-top:24px;color:#6b7280;font-size:13px">If you have any questions, please reply to this email.</p>
+      <hr style="border:none;border-top:1px solid #e5e7eb;margin:32px 0">
+      <h2 style="${errStyle}">Неподдържан тип файл</h2>
+      <p>Здравейте,</p>
+      <p>Вашият имейл беше получен, но не открихме поддържани прикачени файлове.</p>
+      <p>Моля прикачете <strong>PDF</strong> или <strong>Excel (.xlsx)</strong> файлове и опитайте отново.</p>
+      <p style="margin-top:24px;color:#6b7280;font-size:13px">Ако имате въпроси, моля отговорете на този имейл.</p>
+    </body></html>`;
+
+    const sendTo = (to: string) => resend.emails.send({ from: FROM_EMAIL, to, subject: replySubject, text, html })
+        .then(r => {
+            if (r.error) console.error(`[Notifications] Resend error (unsupported) to ${to}:`, r.error);
+            else console.log(`[Notifications] Unsupported-attachment reply sent to ${to}`);
+        })
+        .catch(err => console.error(`[Notifications] Failed to send unsupported-attachment reply to ${to}:`, err.message));
+
+    sendTo(TEAM_EMAIL);
+    if (alert.to && alert.to !== TEAM_EMAIL) sendTo(alert.to);
+}
+
 // ── Shared email sender ───────────────────────────────────────────────────────
 
 function sendEmail(to: string, subject: string, text: string): void {
