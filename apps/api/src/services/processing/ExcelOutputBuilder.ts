@@ -369,7 +369,7 @@ function parseCatMoney(s: unknown): number {
 const VAT_VER_LABEL_COL = 11;
 const VAT_VER_VALUE_COL = 12;
 
-interface VatStats {
+export interface VatStats {
     total:         number;
     salesCount:    number;
     salesTotal:    number;
@@ -420,7 +420,7 @@ function addVatVerificationSide(ws: ExcelJS.Worksheet, stats: VatStats): void {
  * Columns: C = date, D = description, E = amount.
  * A verification summary is placed to the right of the Sales table (cols K-L).
  */
-export async function buildVatOutputExcel(transactions: CategorizedTransaction[], clientName?: string): Promise<Buffer> {
+export async function buildVatOutputExcel(transactions: CategorizedTransaction[], clientName?: string): Promise<{ buffer: Buffer; vatStats: VatStats }> {
     const templateBuf = readFileSync(VAT_TEMPLATE_PATH);
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.load(templateBuf as unknown as ArrayBuffer);
@@ -477,7 +477,7 @@ export async function buildVatOutputExcel(transactions: CategorizedTransaction[]
     addVatVerificationSide(salesWs, stats);
 
     const arrayBuffer = await workbook.xlsx.writeBuffer();
-    return Buffer.from(arrayBuffer);
+    return { buffer: Buffer.from(arrayBuffer), vatStats: stats };
 }
 
 export function buildExcelOutputExcel(transactions: ExcelTransaction[]): Buffer {
