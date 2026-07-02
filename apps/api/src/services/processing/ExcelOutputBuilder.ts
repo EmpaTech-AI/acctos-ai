@@ -474,8 +474,6 @@ export async function buildVatOutputExcel(transactions: CategorizedTransaction[]
         // Zero-amount rows (e.g. pure balance entries) are skipped — not written to either sheet
     }
 
-    addVatVerificationSide(salesWs, stats);
-
     const arrayBuffer = await workbook.xlsx.writeBuffer();
     return { buffer: Buffer.from(arrayBuffer), vatStats: stats };
 }
