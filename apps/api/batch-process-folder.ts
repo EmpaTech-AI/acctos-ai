@@ -251,9 +251,18 @@ if (verification) applyCatVerification(verification, categorized);
 
 // Step 6: Build one Excel file
 console.log('\nBuilding Excel...');
-const buffer = MODE === 'vat'
-    ? await buildVatOutputExcel(categorized, basename(FOLDER))
-    : await buildPdfOutputExcel(categorized, verification, fileSummaries);
+let buffer: Buffer;
+if (MODE === 'vat') {
+    const result = await buildVatOutputExcel(categorized, basename(FOLDER));
+    buffer = result.buffer;
+    const s = result.vatStats;
+    console.log(`\n  VAT Summary:`);
+    console.log(`    Total:    ${s.total} transactions`);
+    console.log(`    Sales:    ${s.salesCount} entries / £${s.salesTotal.toFixed(2)}`);
+    console.log(`    Expenses: ${s.expensesCount} entries / £${s.expensesTotal.toFixed(2)}`);
+} else {
+    buffer = await buildPdfOutputExcel(categorized, verification, fileSummaries);
+}
 
 const outName = `${fileResults.length}_files_processed_${MODE}.xlsx`;
 const outPath = join(FOLDER, outName);

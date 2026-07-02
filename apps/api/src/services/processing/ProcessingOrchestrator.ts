@@ -7,7 +7,7 @@ import { splitPdf } from './PdfSplitter.js';
 import { analyzePages, PageData } from './AzureExtractor.js';
 import { categorize } from './AssistantCategorizer.js';
 import { parseExcel } from './ExcelParser.js';
-import { buildPdfOutputExcel, buildExcelOutputExcel, buildVatOutputExcel } from './ExcelOutputBuilder.js';
+import { buildPdfOutputExcel, buildExcelOutputExcel, buildVatOutputExcel, VatStats } from './ExcelOutputBuilder.js';
 import { Cell, ParsedTransaction, ParseResult } from './parsers/shared.js';
 import { computeVerification, applyCatVerification, logVerificationSummary, computeChainVerification } from './Verification.js';
 import { notifyParserError, notifyChainGap, notifyJobFailed, notifyInsufficientFiles, notifyProcessingComplete } from './NotificationService.js';
@@ -534,9 +534,15 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
         if (verification) logVerificationSummary(verification);
         jobStore.update(jobId, { transactionCount: categorized.length, currentStage: 'output' });
 
-        const outputBuffer = processingMode === 'vat'
-            ? await buildVatOutputExcel(categorized, emailSubject ? extractClientName(emailSubject) : undefined)
-            : await buildPdfOutputExcel(categorized, verification, fileSummaries.length > 1 ? fileSummaries : undefined);
+        let outputBuffer: Buffer;
+        let vatStats: VatStats | undefined;
+        if (processingMode === 'vat') {
+            const result = await buildVatOutputExcel(categorized, emailSubject ? extractClientName(emailSubject) : undefined);
+            outputBuffer = result.buffer;
+            vatStats = result.vatStats;
+        } else {
+            outputBuffer = await buildPdfOutputExcel(categorized, verification, fileSummaries.length > 1 ? fileSummaries : undefined);
+        }
         jobStore.update(jobId, { status: 'completed', outputBuffer, completedAt: new Date() });
         console.log(`[Orchestrator] Batch job ${jobId} completed — ${allTransactions.length} transactions from ${files.length} file(s)`);
         const _bankType  = jobStore.get(jobId)?.bankType;
@@ -583,7 +589,7 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
             if (senderEmail && emailSubject) {
                 const replyFilename = safeDriveFilename(emailSubject);
                 const clientName = extractClientName(emailSubject);
-                notifyProcessingComplete({ to: senderEmail, emailSubject, clientName, xlsxBuffer: outputBuffer, filename: replyFilename, driveFileUrl });
+                notifyProcessingComplete({ to: senderEmail, emailSubject, clientName, xlsxBuffer: outputBuffer, filename: replyFilename, driveFileUrl, vatSummary: vatStats });
             }
         })().catch(e => console.warn('[Orchestrator] Drive+email (batch) failed:', e?.message));
 
@@ -669,7 +675,7 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
             jobStore.update(jobId, { transactionCount: categorized.length, currentStage: 'output' });
 
             if (processingMode === 'vat') {
-                outputBuffer = await buildVatOutputExcel(categorized, filename);
+                ({ buffer: outputBuffer } = await buildVatOutputExcel(categorized, filename));
             } else {
                 outputBuffer = await buildPdfOutputExcel(categorized);
             }
@@ -821,9 +827,11 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
             jobStore.update(jobId, { transactionCount: categorized.length, currentStage: 'output' });
 
             // ── Stage: output (build Excel) ───────────────────────────────────────
-            outputBuffer = processingMode === 'vat'
-                ? await buildVatOutputExcel(categorized, filename)
-                : await buildPdfOutputExcel(categorized, verification);
+            if (processingMode === 'vat') {
+                ({ buffer: outputBuffer } = await buildVatOutputExcel(categorized, filename));
+            } else {
+                outputBuffer = await buildPdfOutputExcel(categorized, verification);
+            }
         }
 
         jobStore.update(jobId, { status: 'completed', outputBuffer, completedAt: new Date() });

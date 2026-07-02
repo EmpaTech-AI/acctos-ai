@@ -266,6 +266,14 @@ export function notifyInsufficientFiles(alert: InsufficientFilesAlert): void {
 
 // ── Accountant: processed result with Excel attachment ────────────────────────
 
+export interface VatSummary {
+    total:         number;
+    salesCount:    number;
+    salesTotal:    number;
+    expensesCount: number;
+    expensesTotal: number;
+}
+
 export interface ProcessingCompleteAlert {
     to:            string;
     emailSubject:  string;
@@ -273,6 +281,7 @@ export interface ProcessingCompleteAlert {
     xlsxBuffer:    Buffer;
     filename:      string;
     driveFileUrl?: string;
+    vatSummary?:   VatSummary;
 }
 
 export function notifyProcessingComplete(alert: ProcessingCompleteAlert): void {
@@ -287,6 +296,7 @@ export function notifyProcessingComplete(alert: ProcessingCompleteAlert): void {
         : `Re: ${alert.emailSubject}`;
 
     const name = alert.clientName || alert.emailSubject;
+    const isVat = !!alert.vatSummary;
     const linkSection = alert.driveFileUrl
         ? `\nYou can also access the file via the link below:\n${alert.driveFileUrl}\n`
         : '';
@@ -294,22 +304,40 @@ export function notifyProcessingComplete(alert: ProcessingCompleteAlert): void {
         ? `\nМожете да отворите файла и чрез следния линк:\n${alert.driveFileUrl}\n`
         : '';
 
+    const fmt = (n: number) => n.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    const vatSummaryText = isVat ? [
+        '',
+        'VAT Summary',
+        '-----------',
+        `Total transactions: ${alert.vatSummary!.total}`,
+        `Sales:    ${alert.vatSummary!.salesCount} entries / £${fmt(alert.vatSummary!.salesTotal)}`,
+        `Expenses: ${alert.vatSummary!.expensesCount} entries / £${fmt(alert.vatSummary!.expensesTotal)}`,
+        '',
+    ].join('\n') : '';
+
+    const title   = isVat ? 'VAT Return Information'         : 'Bank Statement Information';
+    const titleBg = isVat ? 'Информация от VAT обработката'  : 'Информация от банковото извлечение';
+    const descEn  = isVat ? 'VAT return'                     : 'bank statement';
+    const descBg  = isVat ? 'VAT обработката'                : 'банковото извлечение';
+
     const text = [
-        'Bank Statement Information',
+        title,
         '',
         'Hi,',
         '',
-        `Attached you can find the extracted bank statement information for ${name}.`,
+        `Attached you can find the extracted ${descEn} information for ${name}.`,
+        vatSummaryText,
         linkSection,
         'If you have any questions, please reply to this email.',
         '',
         '---',
         '',
-        'Информация от банковото извлечение',
+        titleBg,
         '',
         'Здравейте,',
         '',
-        `В прикачения файл можете да намерите свалената информация от банковото извлечение за ${name}.`,
+        `В прикачения файл можете да намерите свалената информация от ${descBg} за ${name}.`,
+        vatSummaryText,
         linkSectionBg,
         'Ако имате въпроси, моля отговорете на този имейл.',
     ].join('\n');
@@ -323,16 +351,45 @@ export function notifyProcessingComplete(alert: ProcessingCompleteAlert): void {
           ${labelFallback}: <a href="${alert.driveFileUrl}" style="color:#2563eb">${alert.driveFileUrl}</a>
         </p>` : '';
 
+    const vatSummaryHtml = isVat ? `
+      <div style="background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:16px;margin:20px 0">
+        <p style="font-weight:700;margin:0 0 10px;color:#0369a1;font-size:15px">VAT Summary</p>
+        <table style="border-collapse:collapse;width:100%;font-size:14px">
+          <tr>
+            <td style="padding:4px 0;color:#374151">Total transactions</td>
+            <td style="padding:4px 0;text-align:right;font-variant-numeric:tabular-nums;font-weight:600">${alert.vatSummary!.total}</td>
+          </tr>
+          <tr>
+            <td style="padding:4px 0;color:#374151">Sales entries</td>
+            <td style="padding:4px 0;text-align:right;font-variant-numeric:tabular-nums">${alert.vatSummary!.salesCount}</td>
+          </tr>
+          <tr>
+            <td style="padding:4px 0;color:#374151">Sales total</td>
+            <td style="padding:4px 0;text-align:right;font-variant-numeric:tabular-nums;color:#16a34a;font-weight:600">£${fmt(alert.vatSummary!.salesTotal)}</td>
+          </tr>
+          <tr>
+            <td style="padding:4px 0;color:#374151">Expenses entries</td>
+            <td style="padding:4px 0;text-align:right;font-variant-numeric:tabular-nums">${alert.vatSummary!.expensesCount}</td>
+          </tr>
+          <tr>
+            <td style="padding:4px 0;color:#374151">Expenses total</td>
+            <td style="padding:4px 0;text-align:right;font-variant-numeric:tabular-nums;color:#dc2626;font-weight:600">£${fmt(alert.vatSummary!.expensesTotal)}</td>
+          </tr>
+        </table>
+      </div>` : '';
+
     const html = `<!DOCTYPE html><html><body style="font-family:Arial,sans-serif;font-size:15px;color:#111827;max-width:600px;margin:0 auto;padding:24px">
-      <h2 style="font-size:20px;font-weight:700;margin:0 0 16px">Bank Statement Information</h2>
+      <h2 style="font-size:20px;font-weight:700;margin:0 0 16px">${title}</h2>
       <p>Hi,</p>
-      <p>Attached you can find the extracted bank statement information for <strong>${name}</strong>.</p>
+      <p>Attached you can find the extracted ${descEn} information for <strong>${name}</strong>.</p>
+      ${vatSummaryHtml}
       ${driveButton('Open File', 'Plain link (in case the button doesn\'t work)')}
       <p style="margin-top:24px;color:#6b7280;font-size:13px">If you have any questions, please reply to this email.</p>
       <hr style="border:none;border-top:1px solid #e5e7eb;margin:32px 0">
-      <h2 style="font-size:20px;font-weight:700;margin:0 0 16px">Информация от банковото извлечение</h2>
+      <h2 style="font-size:20px;font-weight:700;margin:0 0 16px">${titleBg}</h2>
       <p>Здравейте,</p>
-      <p>В прикачения файл можете да намерите свалената информация от банковото извлечение за <strong>${name}</strong>.</p>
+      <p>В прикачения файл можете да намерите свалената информация от ${descBg} за <strong>${name}</strong>.</p>
+      ${vatSummaryHtml}
       ${driveButton('Отвори файла', 'Директен линк (ако бутонът не работи)')}
       <p style="margin-top:24px;color:#6b7280;font-size:13px">Ако имате въпроси, моля отговорете на този имейл.</p>
     </body></html>`;
