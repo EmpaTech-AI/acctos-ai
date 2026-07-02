@@ -131,7 +131,7 @@ function applyFallback(items: CategorizedTransaction[], rawTransactions: object[
 
 const BATCH_SIZE     = 25;
 const PARALLEL_LIMIT = 10;
-const MODEL          = 'gpt-4o-mini';
+const MODEL          = 'gpt-5-nano';
 
 class QuotaExhaustedError extends Error {
     constructor() { super('openai_quota_exhausted'); }
