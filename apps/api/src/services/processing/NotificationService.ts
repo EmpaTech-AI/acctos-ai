@@ -362,7 +362,7 @@ export function notifyProcessingComplete(alert: ProcessingCompleteAlert): void {
         return lines.join('\n');
     })() : '';
 
-    const summaryText = vatSummaryText || bankSummaryText;
+    const summaryText = vatSummaryText + bankSummaryText;
 
     const title   = isVat ? 'VAT Return Information'         : 'Bank Statement Information';
     const titleBg = isVat ? 'Информация от VAT обработката'  : 'Информация от банковото извлечение';
@@ -459,7 +459,7 @@ export function notifyProcessingComplete(alert: ProcessingCompleteAlert): void {
       </div>`;
     })() : '';
 
-    const summaryHtml = vatSummaryHtml || bankSummaryHtml;
+    const summaryHtml = vatSummaryHtml + bankSummaryHtml;
 
     const html = `<!DOCTYPE html><html><body style="font-family:Arial,sans-serif;font-size:15px;color:#111827;max-width:600px;margin:0 auto;padding:24px">
       <h2 style="font-size:20px;font-weight:700;margin:0 0 16px">${title}</h2>

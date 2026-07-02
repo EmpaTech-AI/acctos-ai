@@ -589,20 +589,20 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
             if (senderEmail && emailSubject) {
                 const replyFilename = safeDriveFilename(emailSubject);
                 const clientName = extractClientName(emailSubject);
-                const bankSummary: BankSummary | undefined = processingMode !== 'vat' ? {
+                const bankSummary: BankSummary | undefined = verification ? {
                     total:           categorized.length,
-                    moneyIn:         verification?.totalIn  ?? 0,
-                    moneyOut:        verification?.totalOut ?? 0,
-                    openingBalance:  verification?.openingBalance,
-                    closingBalance:  verification?.closingBalance,
-                    balanceDiff:     verification?.balanceDiff,
-                    balanceOk:       verification?.balanceOk,
-                    declaredIn:      verification?.declaredIn,
-                    declaredOut:     verification?.declaredOut,
-                    declaredOk:      verification?.declaredOk,
-                    catTotalIn:      verification?.catTotalIn,
-                    catTotalOut:     verification?.catTotalOut,
-                    catOk:           verification?.catOk,
+                    moneyIn:         verification.totalIn,
+                    moneyOut:        verification.totalOut,
+                    openingBalance:  verification.openingBalance,
+                    closingBalance:  verification.closingBalance,
+                    balanceDiff:     verification.balanceDiff,
+                    balanceOk:       verification.balanceOk,
+                    declaredIn:      verification.declaredIn,
+                    declaredOut:     verification.declaredOut,
+                    declaredOk:      verification.declaredOk,
+                    catTotalIn:      processingMode !== 'vat' ? verification.catTotalIn  : undefined,
+                    catTotalOut:     processingMode !== 'vat' ? verification.catTotalOut : undefined,
+                    catOk:           processingMode !== 'vat' ? verification.catOk       : undefined,
                 } : undefined;
                 notifyProcessingComplete({ to: senderEmail, emailSubject, clientName, xlsxBuffer: outputBuffer, filename: replyFilename, driveFileUrl, vatSummary: vatStats, bankSummary });
             }
