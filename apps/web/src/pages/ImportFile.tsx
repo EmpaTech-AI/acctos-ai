@@ -547,16 +547,27 @@ export default function ImportFile() {
                 const jobs: Array<Record<string, any>> = res.data.jobs ?? [];
                 const inProgress = jobs.find((j: any) => j.status === 'queued' || j.status === 'processing');
                 if (inProgress) {
-                    const picked: Job = {
-                        id:               inProgress.id,
-                        filename:         inProgress.filename,
-                        status:           inProgress.status,
-                        currentStage:     inProgress.current_stage,
-                        bankType:         inProgress.bank_type,
-                        transactionCount: inProgress.transaction_count,
-                    };
-                    setJob(picked);
-                    startPolling(picked.id);
+                    // Verify the job is actually being tracked in memory (not a stuck
+                    // Supabase record from a previous container) by checking for currentStage.
+                    // Supabase fallback responses never have currentStage; in-memory ones do.
+                    try {
+                        const liveRes = await axios.get(`/v1/processing/${inProgress.id}`);
+                        const live = liveRes.data.job;
+                        if (live?.currentStage) {
+                            const picked: Job = {
+                                id:               inProgress.id,
+                                filename:         inProgress.filename,
+                                status:           live.status,
+                                currentStage:     live.currentStage,
+                                bankType:         live.bankType ?? inProgress.bank_type,
+                                transactionCount: live.transactionCount ?? inProgress.transaction_count,
+                            };
+                            saveActiveJob(picked.id, picked.filename);
+                            setJob(picked);
+                            startPolling(picked.id);
+                        }
+                        // No currentStage = stuck Supabase record from a dead container — ignore
+                    } catch { /* ignore */ }
                 } else {
                     setRecentJobs(
                         jobs
