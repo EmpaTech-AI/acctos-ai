@@ -131,23 +131,6 @@ function applyFallback(items: CategorizedTransaction[], rawTransactions: object[
     });
 }
 
-// ── Clean a description before saving it as a vendor rule ────────────────────
-// Strips leading row-number prefixes ("1) ") and trailing date fragments
-// ("On 12 Mar", "On 12 March", "03/07") so patterns stay reusable across months.
-const LEARN_DATE_SUFFIX_RE  = /\s+[Oo]n\s+\d{1,2}\s+\w{3,9}(\s+\d{4})?.*$/;
-const LEARN_DATE2_SUFFIX_RE = /\s+\d{1,2}[\/\-]\d{1,2}([\/\-]\d{2,4})?.*$/;
-const LEARN_ROW_PREFIX_RE   = /^\d+[).\s]+/;
-const LEARN_REF_NOISE_RE    = /\s+[Rr]ef:\s+.*$/;
-
-function cleanPatternForLearning(desc: string): string {
-    return desc
-        .replace(LEARN_ROW_PREFIX_RE, '')
-        .replace(LEARN_DATE_SUFFIX_RE, '')
-        .replace(LEARN_DATE2_SUFFIX_RE, '')
-        .replace(LEARN_REF_NOISE_RE, '')
-        .trim();
-}
-
 // ── Vendor category cache (refreshed every 5 min from Supabase) ───────────────
 let vendorRulesCache: VendorRule[] = [];
 let vendorRulesCacheAt = 0;
@@ -295,8 +278,9 @@ const CATEGORY_SCHEMA = {
                 properties: {
                     id:       { type: 'integer' },
                     category: { type: 'string', enum: ['INCOME','SALARY','OTHER','INSURANCE','LOAN','CASH','TRAVEL','PHONE','CHARGES','Bank_Transfer','HMRC','RENT','BILLS'] },
+                    signal:   { anyOf: [{ type: 'string' }, { type: 'null' }] },
                 },
-                required: ['id', 'category'],
+                required: ['id', 'category', 'signal'],
             },
         },
     },
@@ -416,12 +400,16 @@ async function categorizeBatch(batch: object[], apiKey: string): Promise<Categor
         return batch.map((t: any) => buildCatRow(t, 'OTHER'));
     }
 
-    // Map id → category; missing ids fall back to OTHER
-    const catMap = new Map<number, string>(
-        (parsed.results ?? []).map((r: any) => [Number(r.id), String(r.category)])
-    );
+    // Map id → category and signal; missing ids fall back to OTHER
+    const catMap    = new Map<number, string>((parsed.results ?? []).map((r: any) => [Number(r.id), String(r.category)]));
+    const signalMap = new Map<number, string>((parsed.results ?? []).filter((r: any) => r.signal).map((r: any) => [Number(r.id), String(r.signal)]));
 
-    return batch.map((t: any, i) => buildCatRow(t, catMap.get(i) ?? 'OTHER'));
+    return batch.map((t: any, i) => {
+        const row = buildCatRow(t, catMap.get(i) ?? 'OTHER');
+        const signal = signalMap.get(i);
+        if (signal) (row as any).__signal = signal;
+        return row;
+    });
 }
 
 export async function categorize(transactions: ParsedTransaction[], context?: { jobId?: string; filename?: string; emailSubject?: string }): Promise<CategorizedTransaction[]> {
@@ -501,19 +489,20 @@ export async function categorize(transactions: ParsedTransaction[], context?: { 
         // Only save when AI assigned a specific category (not OTHER fallback from
         // buildFallbackRow). Normalised description is used as the pattern so
         // future identical descriptions skip AI entirely.
+        // ── Learn: save AI-provided signals as vendor rules for future runs ────
+        // AI returns signal = the keyword that drove the category (outflows only).
+        // null signal means no specific trigger → nothing to learn.
         const learnPromises: Promise<void>[] = [];
         for (let j = 0; j < aiIndices.length; j++) {
-            const formatted = inputArray[aiIndices[j]] as any;
-            const rawPattern = (formatted['Description'] || '').trim();
-            const pattern    = cleanPatternForLearning(rawPattern);
-            const result     = aiResults[j];
-            if (!pattern || pattern.length < 5) continue;
-            // Find the category that was actually placed (non-empty)
-            const placedCat = EXPENSE_CATS.find(k => (result as any)[k] && (result as any)[k] !== '');
-            if (!placedCat || placedCat === 'OTHER') continue; // don't learn generic fallbacks
-            // Skip if this pattern is already covered by a vendor rule (avoid re-inserting)
-            if (applyVendorRule(pattern, vendorRules) !== null) continue;
-            learnPromises.push(saveAiVendorRule(pattern, placedCat));
+            const result  = aiResults[j];
+            const signal  = ((result as any).__signal as string | undefined)?.trim();
+            if (!signal || signal.length < 3) continue;
+            // Find the category placed by enforcement (non-empty expense column)
+            const placedCat = EXPENSE_CATS.filter(k => k !== 'INCOME')
+                .find(k => (result as any)[k] && (result as any)[k] !== '');
+            if (!placedCat || placedCat === 'OTHER') continue;
+            if (applyVendorRule(signal, vendorRules) !== null) continue;
+            learnPromises.push(saveAiVendorRule(signal, placedCat));
         }
         if (learnPromises.length > 0) {
             console.log(`[Categorizer] Learning ${learnPromises.length} new vendor rule(s) from AI results`);

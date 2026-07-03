@@ -13,8 +13,23 @@ You receive a JSON array where each item has:
 
 OUTPUT FORMAT
 
-Return a JSON object with a "results" array. Each item: { "id": <integer>, "category": <string> }
-One result per input transaction. The json_schema enforces this — do not add extra fields.
+Return a JSON object with a "results" array. Each item:
+  { "id": <integer>, "category": <string>, "signal": <string or null> }
+
+One result per input transaction.
+
+signal — only for OUTFLOW transactions (Money out). The shortest word or phrase in the Description that ALONE triggered this category (1–3 words, must appear verbatim). Return null when:
+  - Transaction is INCOME (Money in) — direction alone determines INCOME, no signal needed
+  - Category is OTHER (no specific trigger — it is the fallback)
+  - Unsure which word triggered the decision
+
+Examples:
+  "Commission Charges For The Period" → CHARGES,       signal: "Commission Charges"
+  "Shell Petrol Station"              → TRAVEL,        signal: "Shell"
+  "EE Mobile Direct Debit"            → PHONE,         signal: "EE"
+  "Transfer to John Smith"            → Bank_Transfer, signal: null (person name, not a keyword)
+  "Amazon Purchase"                   → OTHER,         signal: null
+  "Salary Payment From Employer"      → INCOME,        signal: null (INCOME — always null)
 
 DIRECTION RULE (ABSOLUTE)
 
