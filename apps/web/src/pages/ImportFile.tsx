@@ -84,12 +84,17 @@ function computeStates(isUploading: boolean, job: Job | null): Record<StageKey, 
         return s;
     }
 
+    // currentStage is only present in in-memory job responses (from active container).
+    // Supabase fallback responses have no currentStage — in that case don't highlight
+    // any specific stage so CLASSIFY doesn't falsely appear stuck/spinning.
     const currentIdx = job.currentStage
         ? Math.max(0, SERVER_STAGES.indexOf(job.currentStage as StageKey))
-        : 0;
+        : -1;
 
     SERVER_STAGES.forEach((k, i) => {
-        if (job.status === 'failed') {
+        if (currentIdx < 0) {
+            s[k] = 'idle'; // no stage info — show upload done, all server stages idle
+        } else if (job.status === 'failed') {
             s[k] = i < currentIdx ? 'completed' : i === currentIdx ? 'failed' : 'idle';
         } else {
             s[k] = i < currentIdx ? 'completed' : i === currentIdx ? 'active' : 'idle';

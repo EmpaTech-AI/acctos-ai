@@ -212,11 +212,25 @@ async function callOpenAI(systemPrompt: string, userContent: string, jsonMode: b
     };
     if (jsonMode) body.response_format = { type: 'json_object' };
 
-    const res = await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-        body: JSON.stringify(body),
-    });
+    const controller = new AbortController();
+    const timeoutId  = setTimeout(() => controller.abort(), 15_000); // 15s max for schema detection
+    let res: Response;
+    try {
+        res = await fetch('https://api.openai.com/v1/chat/completions', {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+            body:    JSON.stringify(body),
+            signal:  controller.signal,
+        });
+    } catch (fetchErr: any) {
+        clearTimeout(timeoutId);
+        if (fetchErr.name === 'AbortError') {
+            console.warn('[ExcelParser] OpenAI request timed out (15s) — falling back to Claude');
+            return callClaude(systemPrompt, userContent);
+        }
+        throw fetchErr;
+    }
+    clearTimeout(timeoutId);
 
     if (!res.ok) {
         if (res.status === 429) {
