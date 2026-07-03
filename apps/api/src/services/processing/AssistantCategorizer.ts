@@ -418,7 +418,11 @@ export async function categorize(transactions: ParsedTransaction[], context?: { 
             batches.push(aiFormatted.slice(i, i + BATCH_SIZE));
         }
 
-        console.log(`[Categorizer] Running ${totalBatches} batch(es) in parallel (limit ${PARALLEL_LIMIT}) — ${aiFormatted.length} transactions total`);
+        // When OpenAI quota is exhausted we fall back to Claude Haiku (5 RPM).
+        // Running more than 1-2 workers simultaneously saturates that limit immediately,
+        // causing cascading 429 retries. Serialise to 1 worker when using Claude.
+        const parallelLimit = openAIQuotaExhausted ? 1 : Math.min(PARALLEL_LIMIT, batches.length);
+        console.log(`[Categorizer] Running ${totalBatches} batch(es) in parallel (limit ${parallelLimit}) — ${aiFormatted.length} transactions total`);
 
         const batchResults: CategorizedTransaction[][] = new Array(batches.length);
         let nextIdx = 0;
@@ -432,7 +436,7 @@ export async function categorize(transactions: ParsedTransaction[], context?: { 
                 console.log(`[Categorizer] Batch ${idx + 1}/${totalBatches} done`);
             }
         };
-        await Promise.all(Array.from({ length: Math.min(PARALLEL_LIMIT, batches.length) }, worker));
+        await Promise.all(Array.from({ length: parallelLimit }, worker));
 
         const aiResults = batchResults.flat();
         for (let j = 0; j < aiIndices.length; j++) {
