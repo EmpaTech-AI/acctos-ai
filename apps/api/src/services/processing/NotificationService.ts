@@ -393,7 +393,6 @@ export function notifyProcessingComplete(alert: ProcessingCompleteAlert): void {
         'Здравейте,',
         '',
         `В прикачения файл можете да намерите свалената информация от ${descBg} за ${name}.`,
-        summaryText,
         processedAt,
         linkSectionBg,
         'Ако имате въпроси, моля отговорете на този имейл.',
@@ -481,8 +480,6 @@ export function notifyProcessingComplete(alert: ProcessingCompleteAlert): void {
       <h2 style="font-size:20px;font-weight:700;margin:0 0 16px">${titleBg}</h2>
       <p>Здравейте,</p>
       <p>В прикачения файл можете да намерите свалената информация от ${descBg} за <strong>${name}</strong>.</p>
-      ${summaryHtml}
-      <p style="font-size:13px;color:#6b7280;margin:8px 0">${processedAt}</p>
       ${driveButton('Отвори файла', 'Директен линк (ако бутонът не работи)')}
       <p style="margin-top:24px;color:#6b7280;font-size:13px">Ако имате въпроси, моля отговорете на този имейл.</p>
     </body></html>`;

@@ -552,6 +552,7 @@ export default function ImportFile() {
                                 filename:         j.filename,
                                 completedAt:      j.completed_at ?? j.created_at,
                                 transactionCount: j.transaction_count,
+                                summary:          j.summary ?? null,
                             }))
                     );
                 }
