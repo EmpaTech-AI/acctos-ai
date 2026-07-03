@@ -180,7 +180,7 @@ Output format:
 
 
 let openAIQuotaExhausted = false;
-const CLAUDE_FALLBACK_MODEL = 'claude-haiku-4-5-20251001';
+const CLAUDE_FALLBACK_MODEL = 'claude-sonnet-5';
 const MAX_RETRIES = 4;
 
 async function callClaude(systemPrompt: string, userContent: string): Promise<string> {
