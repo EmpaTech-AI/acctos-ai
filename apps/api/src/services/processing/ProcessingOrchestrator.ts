@@ -529,7 +529,7 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
         // ─────────────────────────────────────────────────────────────────────────
 
         jobStore.update(jobId, { currentStage: 'categorize', currentFile: undefined });
-        const categorized = await categorize(sorted);
+        const categorized = await categorize(sorted, { jobId, filename: files.map(f => f.filename).join(', '), emailSubject });
         if (verification) applyCatVerification(verification, categorized);
         if (verification) logVerificationSummary(verification);
         jobStore.update(jobId, { transactionCount: categorized.length, currentStage: 'output' });
@@ -694,7 +694,7 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
 
             timer.start('categorize');
             jobStore.update(jobId, { transactionCount: parsed.length, currentStage: 'categorize' });
-            const categorized = await categorize(parsed);
+            const categorized = await categorize(parsed, { jobId, filename, emailSubject });
             timer.start('output');
             jobStore.update(jobId, { transactionCount: categorized.length, currentStage: 'output' });
 
@@ -862,7 +862,7 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
             // ── Stage: categorize (OpenAI Assistant, 50 transactions per batch) ──
             timer.start('categorize');
             jobStore.update(jobId, { currentStage: 'categorize' });
-            const categorized = await categorize(transactions);
+            const categorized = await categorize(transactions, { jobId, filename, emailSubject });
             if (verification) applyCatVerification(verification, categorized);
             if (verification) logVerificationSummary(verification);
             timer.start('output');

@@ -1,4 +1,5 @@
 import * as XLSX from 'xlsx';
+import { Anthropic } from '@anthropic-ai/sdk';
 import { excelSerialToDate, parseDateToDDMMYYYY } from './parsers/shared.js';
 
 export interface ExcelTransaction {
@@ -178,9 +179,29 @@ Output format:
 }`;
 
 
-async function callOpenAI(systemPrompt: string, userContent: string, jsonMode: boolean): Promise<string> {
+let openAIQuotaExhausted = false;
+const CLAUDE_FALLBACK_MODEL = 'claude-haiku-4-5-20251001';
+const MAX_RETRIES = 4;
+
+async function callClaude(systemPrompt: string, userContent: string): Promise<string> {
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) throw new Error('OpenAI quota exhausted and ANTHROPIC_API_KEY is not set — cannot fall back to Claude');
+    console.warn(`[ExcelParser] Falling back to Claude (${CLAUDE_FALLBACK_MODEL}) for schema detection`);
+    const client = new Anthropic({ apiKey });
+    const message = await client.messages.create({
+        model: CLAUDE_FALLBACK_MODEL,
+        max_tokens: 1024,
+        system: systemPrompt + '\n\nReturn ONLY valid JSON with no markdown or code fences.',
+        messages: [{ role: 'user', content: userContent }],
+    });
+    const text = message.content[0].type === 'text' ? message.content[0].text : '';
+    return text.replace(/```json\s*/gi, '').replace(/```\s*/gi, '').trim();
+}
+
+async function callOpenAI(systemPrompt: string, userContent: string, jsonMode: boolean, attempt = 0): Promise<string> {
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) throw new Error('OPENAI_API_KEY not set');
+    if (openAIQuotaExhausted) return callClaude(systemPrompt, userContent);
 
     const model = process.env.OPENAI_MODEL_EXTRACT || 'gpt-4o';
     const body: any = {
@@ -197,10 +218,32 @@ async function callOpenAI(systemPrompt: string, userContent: string, jsonMode: b
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
         body: JSON.stringify(body),
     });
+
     if (!res.ok) {
+        if (res.status === 429) {
+            const errBody = await res.clone().json().catch(() => ({})) as any;
+            if (errBody?.error?.code === 'insufficient_quota') {
+                openAIQuotaExhausted = true;
+                return callClaude(systemPrompt, userContent);
+            }
+            if (attempt < MAX_RETRIES) {
+                const retryAfter = Number(res.headers.get('retry-after') || '0');
+                const waitMs = retryAfter > 0 ? retryAfter * 1000 : Math.min(30000 * (attempt + 1), 120000);
+                console.warn(`[ExcelParser] OpenAI 429 — waiting ${Math.round(waitMs / 1000)}s (attempt ${attempt + 1}/${MAX_RETRIES})...`);
+                await new Promise(r => setTimeout(r, waitMs));
+                return callOpenAI(systemPrompt, userContent, jsonMode, attempt + 1);
+            }
+        }
+        if (res.status >= 500 && attempt < MAX_RETRIES) {
+            const waitMs = 3000 * (attempt + 1);
+            console.warn(`[ExcelParser] OpenAI ${res.status} — retrying after ${waitMs / 1000}s (attempt ${attempt + 1}/${MAX_RETRIES})...`);
+            await new Promise(r => setTimeout(r, waitMs));
+            return callOpenAI(systemPrompt, userContent, jsonMode, attempt + 1);
+        }
         const err = await res.text();
         throw new Error(`OpenAI error ${res.status}: ${err}`);
     }
+
     const data = await res.json() as any;
     return data.choices?.[0]?.message?.content?.trim() || '';
 }

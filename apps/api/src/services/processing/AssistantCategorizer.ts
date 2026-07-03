@@ -3,6 +3,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { Anthropic } from '@anthropic-ai/sdk';
 import { ParsedTransaction, formatTransactionsForAssistant } from './parsers/shared.js';
+import { notifyParserError } from './NotificationService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = dirname(__filename);
@@ -362,7 +363,7 @@ async function categorizeBatch(batch: object[], apiKey: string): Promise<Categor
     return batch.map((t: any, i) => buildCatRow(t, catMap.get(i) ?? 'OTHER'));
 }
 
-export async function categorize(transactions: ParsedTransaction[]): Promise<CategorizedTransaction[]> {
+export async function categorize(transactions: ParsedTransaction[], context?: { jobId?: string; filename?: string; emailSubject?: string }): Promise<CategorizedTransaction[]> {
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) throw new Error('OPENAI_API_KEY not set');
 
@@ -536,6 +537,18 @@ export async function categorize(transactions: ParsedTransaction[]): Promise<Cat
             `catIn=${postIn.toFixed(2)} (expected ${expIn.toFixed(2)}, diff ${(postIn - expIn).toFixed(2)}), ` +
             `catOut=${postOut.toFixed(2)} (expected ${expOut.toFixed(2)}, diff ${(postOut - expOut).toFixed(2)})`
         );
+        notifyParserError({
+            jobId:        context?.jobId ?? 'unknown',
+            label:        context?.filename ?? context?.emailSubject ?? 'AI categorization mismatch',
+            emailSubject: context?.emailSubject,
+            failedFiles: [{
+                filename:  context?.filename ?? 'categorized output',
+                parsedIn:  expIn,
+                parsedOut: expOut,
+                inDiff:    postIn - expIn,
+                outDiff:   postOut - expOut,
+            }],
+        });
     } else {
         console.log(`[Categorizer] Enforcement verified — catIn=${postIn.toFixed(2)} catOut=${postOut.toFixed(2)} ✓`);
     }
