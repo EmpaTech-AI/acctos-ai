@@ -4,6 +4,8 @@ export type ProcessingStage = 'classify' | 'extract' | 'parse' | 'categorize' | 
 export interface JobSummary {
     moneyIn?:          number;
     moneyOut?:         number;
+    openingBalance?:   number | null;
+    closingBalance?:   number | null;
     balanceOk?:        boolean;
     declaredIn?:       number;
     declaredOut?:      number;

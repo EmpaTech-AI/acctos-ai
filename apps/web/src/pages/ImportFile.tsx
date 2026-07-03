@@ -15,6 +15,8 @@ type StageState = 'idle' | 'active' | 'completed' | 'failed';
 interface JobSummary {
     moneyIn?:          number;
     moneyOut?:         number;
+    openingBalance?:   number | null;
+    closingBalance?:   number | null;
     balanceOk?:        boolean;
     declaredIn?:       number;
     declaredOut?:      number;
@@ -382,11 +384,21 @@ const err = { color: '#f87171' } as const;
 
 function SummaryPanel({ summary: s }: { summary: JobSummary }) {
     const rows: Array<[string, React.ReactNode]> = [];
+    if (s.openingBalance != null) rows.push(['Opening balance', <span style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(s.openingBalance)}</span>]);
     if (s.moneyIn  != null) rows.push(['Money in',  <span style={ok}>{fmt(s.moneyIn)}</span>]);
     if (s.moneyOut != null) rows.push(['Money out', <span style={{ color: '#f97316' }}>{fmt(s.moneyOut)}</span>]);
-    if (s.balanceOk  != null) rows.push(['Balance check',    <span style={s.balanceOk  ? ok : err}>{s.balanceOk  ? '✓ OK' : '⚠ Mismatch'}</span>]);
-    if (s.declaredOk != null) rows.push(['Declared totals',  <span style={s.declaredOk ? ok : err}>{s.declaredOk ? '✓ Match' : '⚠ Mismatch'}</span>]);
-    if (s.catOk      != null) rows.push(['Category totals',  <span style={s.catOk      ? ok : err}>{s.catOk      ? '✓ Match' : '⚠ Mismatch'}</span>]);
+    if (s.closingBalance != null) rows.push(['Closing balance', <span style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(s.closingBalance)}</span>]);
+    if (s.balanceOk != null) rows.push(['Balance check', <span style={s.balanceOk ? ok : err}>{s.balanceOk ? '✓ OK' : '⚠ Mismatch'}</span>]);
+    if (s.declaredIn != null) {
+        rows.push(['Declared in',  <span style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(s.declaredIn)}</span>]);
+        rows.push(['Declared out', <span style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(s.declaredOut ?? 0)}</span>]);
+        rows.push(['Declared totals', <span style={s.declaredOk ? ok : err}>{s.declaredOk ? '✓ Match' : '⚠ Mismatch'}</span>]);
+    }
+    if (s.catTotalIn != null) {
+        rows.push(['Categorized in',  <span style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(s.catTotalIn)}</span>]);
+        rows.push(['Categorized out', <span style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(s.catTotalOut ?? 0)}</span>]);
+        rows.push(['Category totals', <span style={s.catOk ? ok : err}>{s.catOk ? '✓ Match' : '⚠ Mismatch'}</span>]);
+    }
     if (s.vatSalesCount    != null) rows.push(['Sales',    <span>{s.vatSalesCount} entries · {fmt(s.vatSalesTotal ?? 0)}</span>]);
     if (s.vatExpensesCount != null) rows.push(['Expenses', <span>{s.vatExpensesCount} entries · {fmt(s.vatExpensesTotal ?? 0)}</span>]);
     if (!rows.length) return null;

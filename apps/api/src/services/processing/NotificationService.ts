@@ -35,6 +35,16 @@ function getResend(): Resend | null {
     return new Resend(key);
 }
 
+function ukTimeStr(): string {
+    const parts = new Intl.DateTimeFormat('en-GB', {
+        timeZone: 'Europe/London',
+        day: '2-digit', month: '2-digit', year: 'numeric',
+        hour: '2-digit', minute: '2-digit', hour12: false,
+    }).formatToParts(new Date());
+    const g = (t: string) => parts.find(p => p.type === t)?.value ?? '00';
+    return `${g('day')}/${g('month')}/${g('year')} ${g('hour')}:${g('minute')} (UK time)`;
+}
+
 // ── Payload types ─────────────────────────────────────────────────────────────
 
 export interface ParserErrorAlert {
@@ -100,6 +110,7 @@ export function notifyParserError(alert: ParserErrorAlert): void {
     const subject = `[Acctos] Parser verification failed — ${clientName}`;
     const text = [
         `Client: ${clientName}`,
+        `Date: ${ukTimeStr()}`,
         `Job: ${alert.jobId}`,
         `Tenant: ${alert.tenantId ?? 'unknown'}`,
         ``,
@@ -157,6 +168,7 @@ export function notifyJobFailed(alert: JobFailedAlert): void {
     const text = [
         `Client: ${clientName}`,
         `Type: ${errorTypeLabel}`,
+        `Date: ${ukTimeStr()}`,
         ``,
         `File: ${alert.filename}`,
         `Stage: ${stageLabel}`,
@@ -189,6 +201,7 @@ export function notifyChainGap(alert: ChainGapAlert): void {
 
     const teamText = [
         `Client: ${clientName}`,
+        `Date: ${ukTimeStr()}`,
         `Job: ${alert.jobId}`,
         `Tenant: ${alert.tenantId ?? 'unknown'}`,
         `Files in batch: ${alert.fileCount}`,
@@ -228,17 +241,8 @@ export function notifyInsufficientFiles(alert: InsufficientFilesAlert): void {
     const teamSubject   = `[Acctos] Insufficient files — ${label} (${alert.fileCount}/${alert.minimumRequired} ${modeLabel})`;
     const clientSubject = `Action required — missing files for ${modeLabel} report`;
 
-    const now = new Date();
-    const parts = new Intl.DateTimeFormat('en-GB', {
-        timeZone: 'Europe/London',
-        day: '2-digit', month: '2-digit', year: 'numeric',
-        hour: '2-digit', minute: '2-digit', hour12: false,
-    }).formatToParts(now);
-    const get = (type: string) => parts.find(p => p.type === type)?.value ?? '00';
-    const dateStr = `${get('day')}/${get('month')}/${get('year')} ${get('hour')}:${get('minute')}`;
-
     const teamText = [
-        `Date: ${dateStr}`,
+        `Date: ${ukTimeStr()}`,
         `Email subject: ${alert.emailSubject ?? 'n/a'}`,
         ``,
         `Files received: ${alert.fileCount}`,
@@ -369,6 +373,8 @@ export function notifyProcessingComplete(alert: ProcessingCompleteAlert): void {
     const descEn  = isVat ? 'VAT return'                     : 'bank statement';
     const descBg  = isVat ? 'VAT обработката'                : 'банковото извлечение';
 
+    const processedAt = `Processed at: ${ukTimeStr()}`;
+
     const text = [
         title,
         '',
@@ -376,6 +382,7 @@ export function notifyProcessingComplete(alert: ProcessingCompleteAlert): void {
         '',
         `Attached you can find the extracted ${descEn} information for ${name}.`,
         summaryText,
+        processedAt,
         linkSection,
         'If you have any questions, please reply to this email.',
         '',
@@ -387,6 +394,7 @@ export function notifyProcessingComplete(alert: ProcessingCompleteAlert): void {
         '',
         `В прикачения файл можете да намерите свалената информация от ${descBg} за ${name}.`,
         summaryText,
+        processedAt,
         linkSectionBg,
         'Ако имате въпроси, моля отговорете на този имейл.',
     ].join('\n');
@@ -466,6 +474,7 @@ export function notifyProcessingComplete(alert: ProcessingCompleteAlert): void {
       <p>Hi,</p>
       <p>Attached you can find the extracted ${descEn} information for <strong>${name}</strong>.</p>
       ${summaryHtml}
+      <p style="font-size:13px;color:#6b7280;margin:8px 0">${processedAt}</p>
       ${driveButton('Open File', 'Plain link (in case the button doesn\'t work)')}
       <p style="margin-top:24px;color:#6b7280;font-size:13px">If you have any questions, please reply to this email.</p>
       <hr style="border:none;border-top:1px solid #e5e7eb;margin:32px 0">
@@ -473,6 +482,7 @@ export function notifyProcessingComplete(alert: ProcessingCompleteAlert): void {
       <p>Здравейте,</p>
       <p>В прикачения файл можете да намерите свалената информация от ${descBg} за <strong>${name}</strong>.</p>
       ${summaryHtml}
+      <p style="font-size:13px;color:#6b7280;margin:8px 0">${processedAt}</p>
       ${driveButton('Отвори файла', 'Директен линк (ако бутонът не работи)')}
       <p style="margin-top:24px;color:#6b7280;font-size:13px">Ако имате въпроси, моля отговорете на този имейл.</p>
     </body></html>`;

@@ -106,8 +106,10 @@ function buildJobSummary(bankSummary?: BankSummary, vatStats?: VatStats): JobSum
     if (!bankSummary && !vatStats) return undefined;
     const s: JobSummary = {};
     if (bankSummary) {
-        s.moneyIn      = bankSummary.moneyIn;
-        s.moneyOut     = bankSummary.moneyOut;
+        s.moneyIn        = bankSummary.moneyIn;
+        s.moneyOut       = bankSummary.moneyOut;
+        if (bankSummary.openingBalance != null) s.openingBalance = bankSummary.openingBalance;
+        if (bankSummary.closingBalance != null) s.closingBalance = bankSummary.closingBalance;
         if (bankSummary.balanceOk   != null) { s.balanceOk   = bankSummary.balanceOk; }
         if (bankSummary.declaredIn  != null) { s.declaredIn  = bankSummary.declaredIn;  s.declaredOut = bankSummary.declaredOut; s.declaredOk = bankSummary.declaredOk; }
         if (bankSummary.catTotalIn  != null) { s.catTotalIn  = bankSummary.catTotalIn;  s.catTotalOut = bankSummary.catTotalOut; s.catOk = bankSummary.catOk; }
