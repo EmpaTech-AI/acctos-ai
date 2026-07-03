@@ -200,8 +200,7 @@ async function callClaude(systemPrompt: string, userContent: string): Promise<st
 
 async function callOpenAI(systemPrompt: string, userContent: string, jsonMode: boolean, attempt = 0): Promise<string> {
     const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) throw new Error('OPENAI_API_KEY not set');
-    if (openAIQuotaExhausted) return callClaude(systemPrompt, userContent);
+    if (!apiKey || openAIQuotaExhausted) return callClaude(systemPrompt, userContent);
 
     const model = process.env.OPENAI_MODEL_EXTRACT || 'gpt-4o';
     const body: any = {
@@ -224,24 +223,26 @@ async function callOpenAI(systemPrompt: string, userContent: string, jsonMode: b
             const errBody = await res.clone().json().catch(() => ({})) as any;
             if (errBody?.error?.code === 'insufficient_quota') {
                 openAIQuotaExhausted = true;
-                return callClaude(systemPrompt, userContent);
-            }
-            if (attempt < MAX_RETRIES) {
+            } else if (attempt < 1) {
+                // One short retry for transient rate limits, then fall back to Claude
                 const retryAfter = Number(res.headers.get('retry-after') || '0');
-                const waitMs = retryAfter > 0 ? retryAfter * 1000 : Math.min(30000 * (attempt + 1), 120000);
-                console.warn(`[ExcelParser] OpenAI 429 — waiting ${Math.round(waitMs / 1000)}s (attempt ${attempt + 1}/${MAX_RETRIES})...`);
+                const waitMs = retryAfter > 0 ? retryAfter * 1000 : 5000;
+                console.warn(`[ExcelParser] OpenAI 429 — retrying in ${Math.round(waitMs / 1000)}s...`);
                 await new Promise(r => setTimeout(r, waitMs));
-                return callOpenAI(systemPrompt, userContent, jsonMode, attempt + 1);
+                return callOpenAI(systemPrompt, userContent, jsonMode, 1);
             }
+            // Quota exhausted or retries used up → fall back to Claude immediately
+            return callClaude(systemPrompt, userContent);
         }
-        if (res.status >= 500 && attempt < MAX_RETRIES) {
+        if (res.status >= 500 && attempt < 2) {
             const waitMs = 3000 * (attempt + 1);
-            console.warn(`[ExcelParser] OpenAI ${res.status} — retrying after ${waitMs / 1000}s (attempt ${attempt + 1}/${MAX_RETRIES})...`);
+            console.warn(`[ExcelParser] OpenAI ${res.status} — retrying after ${waitMs / 1000}s...`);
             await new Promise(r => setTimeout(r, waitMs));
             return callOpenAI(systemPrompt, userContent, jsonMode, attempt + 1);
         }
-        const err = await res.text();
-        throw new Error(`OpenAI error ${res.status}: ${err}`);
+        // For other errors fall back to Claude rather than crash
+        console.warn(`[ExcelParser] OpenAI error ${res.status} — falling back to Claude`);
+        return callClaude(systemPrompt, userContent);
     }
 
     const data = await res.json() as any;
