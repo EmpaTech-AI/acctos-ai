@@ -11,6 +11,7 @@ import { buildPdfOutputExcel, buildExcelOutputExcel, buildVatOutputExcel, VatSta
 import { Cell, ParsedTransaction, ParseResult } from './parsers/shared.js';
 import { computeVerification, applyCatVerification, logVerificationSummary, computeChainVerification } from './Verification.js';
 import { notifyParserError, notifyChainGap, notifyJobFailed, notifyInsufficientFiles, notifyProcessingComplete, BankSummary } from './NotificationService.js';
+import { JobSummary } from './JobStore.js';
 import {
     getAzureCache, saveAzureCache,
     createJobRecord, updateJobRecord, saveOutputFile,
@@ -99,6 +100,26 @@ const CLIENT_ERROR_PATTERNS = [
 function classifyError(err: Error): 'client' | 'system' {
     const msg = err.message || '';
     return CLIENT_ERROR_PATTERNS.some(p => p.test(msg)) ? 'client' : 'system';
+}
+
+function buildJobSummary(bankSummary?: BankSummary, vatStats?: VatStats): JobSummary | undefined {
+    if (!bankSummary && !vatStats) return undefined;
+    const s: JobSummary = {};
+    if (bankSummary) {
+        s.moneyIn      = bankSummary.moneyIn;
+        s.moneyOut     = bankSummary.moneyOut;
+        if (bankSummary.balanceOk   != null) { s.balanceOk   = bankSummary.balanceOk; }
+        if (bankSummary.declaredIn  != null) { s.declaredIn  = bankSummary.declaredIn;  s.declaredOut = bankSummary.declaredOut; s.declaredOk = bankSummary.declaredOk; }
+        if (bankSummary.catTotalIn  != null) { s.catTotalIn  = bankSummary.catTotalIn;  s.catTotalOut = bankSummary.catTotalOut; s.catOk = bankSummary.catOk; }
+    }
+    if (vatStats) {
+        s.vatTotal         = vatStats.total;
+        s.vatSalesCount    = vatStats.salesCount;
+        s.vatSalesTotal    = vatStats.salesTotal;
+        s.vatExpensesCount = vatStats.expensesCount;
+        s.vatExpensesTotal = vatStats.expensesTotal;
+    }
+    return s;
 }
 
 // ── Stage timing helper ───────────────────────────────────────────────────────
@@ -543,7 +564,23 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
         } else {
             outputBuffer = await buildPdfOutputExcel(categorized, verification, fileSummaries.length > 1 ? fileSummaries : undefined);
         }
-        jobStore.update(jobId, { status: 'completed', outputBuffer, completedAt: new Date() });
+        const batchBankSummary: BankSummary | undefined = verification ? {
+            total:           categorized.length,
+            moneyIn:         verification.totalIn,
+            moneyOut:        verification.totalOut,
+            openingBalance:  verification.openingBalance,
+            closingBalance:  verification.closingBalance,
+            balanceDiff:     verification.balanceDiff,
+            balanceOk:       verification.balanceOk,
+            declaredIn:      verification.declaredIn,
+            declaredOut:     verification.declaredOut,
+            declaredOk:      verification.declaredOk,
+            catTotalIn:      processingMode !== 'vat' ? verification.catTotalIn  : undefined,
+            catTotalOut:     processingMode !== 'vat' ? verification.catTotalOut : undefined,
+            catOk:           processingMode !== 'vat' ? verification.catOk       : undefined,
+        } : undefined;
+        const batchSummary = buildJobSummary(batchBankSummary, vatStats);
+        jobStore.update(jobId, { status: 'completed', outputBuffer, completedAt: new Date(), summary: batchSummary });
         console.log(`[Orchestrator] Batch job ${jobId} completed — ${allTransactions.length} transactions from ${files.length} file(s)`);
         const _bankType  = jobStore.get(jobId)?.bankType;
         const _txCount   = jobStore.get(jobId)?.transactionCount;
@@ -558,6 +595,7 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
                 transaction_count: _txCount,
                 output_path: outputPath ?? undefined,
                 completed_at: new Date().toISOString(),
+                summary: batchSummary as Record<string, unknown> | undefined,
             });
         })().catch(e => console.warn('[Orchestrator] Supabase persist (batch) failed:', e?.message));
 
@@ -589,22 +627,7 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
             if (senderEmail && emailSubject) {
                 const replyFilename = safeDriveFilename(emailSubject);
                 const clientName = extractClientName(emailSubject);
-                const bankSummary: BankSummary | undefined = verification ? {
-                    total:           categorized.length,
-                    moneyIn:         verification.totalIn,
-                    moneyOut:        verification.totalOut,
-                    openingBalance:  verification.openingBalance,
-                    closingBalance:  verification.closingBalance,
-                    balanceDiff:     verification.balanceDiff,
-                    balanceOk:       verification.balanceOk,
-                    declaredIn:      verification.declaredIn,
-                    declaredOut:     verification.declaredOut,
-                    declaredOk:      verification.declaredOk,
-                    catTotalIn:      processingMode !== 'vat' ? verification.catTotalIn  : undefined,
-                    catTotalOut:     processingMode !== 'vat' ? verification.catTotalOut : undefined,
-                    catOk:           processingMode !== 'vat' ? verification.catOk       : undefined,
-                } : undefined;
-                notifyProcessingComplete({ to: senderEmail, emailSubject, clientName, xlsxBuffer: outputBuffer, filename: replyFilename, driveFileUrl, vatSummary: vatStats, bankSummary });
+                notifyProcessingComplete({ to: senderEmail, emailSubject, clientName, xlsxBuffer: outputBuffer, filename: replyFilename, driveFileUrl, vatSummary: vatStats, bankSummary: batchBankSummary });
             }
         })().catch(e => console.warn('[Orchestrator] Drive+email (batch) failed:', e?.message));
 
@@ -894,7 +917,8 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
             } : undefined;
         }
 
-        jobStore.update(jobId, { status: 'completed', outputBuffer, completedAt: new Date() });
+        const singleSummary = buildJobSummary(emailBankSummary, vatStats);
+        jobStore.update(jobId, { status: 'completed', outputBuffer, completedAt: new Date(), summary: singleSummary });
         console.log(`[Orchestrator] Job ${jobId} completed — ${filename}`);
         const _bankType = jobStore.get(jobId)?.bankType;
         const _txCount  = jobStore.get(jobId)?.transactionCount;
@@ -908,6 +932,7 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
                 transaction_count: _txCount,
                 output_path: outputPath ?? undefined,
                 completed_at: new Date().toISOString(),
+                summary: singleSummary as Record<string, unknown> | undefined,
             });
         })().catch(e => console.warn('[Orchestrator] Supabase persist (single) failed:', e?.message));
 

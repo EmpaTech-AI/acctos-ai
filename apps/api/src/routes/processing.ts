@@ -43,6 +43,7 @@ router.get('/:jobId', async (req: AuthenticatedRequest, res: Response, next: Nex
             createdAt: record.created_at,
             error: record.error,
             errorType: record.error_type,
+            summary: record.summary ?? null,
         },
     });
 });

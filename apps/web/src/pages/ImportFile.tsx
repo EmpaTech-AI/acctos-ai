@@ -12,6 +12,23 @@ type JobStatus = 'queued' | 'processing' | 'completed' | 'failed';
 type StageKey = 'upload' | 'classify' | 'extract' | 'parse' | 'categorize' | 'output';
 type StageState = 'idle' | 'active' | 'completed' | 'failed';
 
+interface JobSummary {
+    moneyIn?:          number;
+    moneyOut?:         number;
+    balanceOk?:        boolean;
+    declaredIn?:       number;
+    declaredOut?:      number;
+    declaredOk?:       boolean;
+    catTotalIn?:       number;
+    catTotalOut?:      number;
+    catOk?:            boolean;
+    vatTotal?:         number;
+    vatSalesCount?:    number;
+    vatSalesTotal?:    number;
+    vatExpensesCount?: number;
+    vatExpensesTotal?: number;
+}
+
 interface Job {
     id: string;
     status: JobStatus;
@@ -23,6 +40,7 @@ interface Job {
     currentFile?: number;
     totalFiles?: number;
     error?: string;
+    summary?: JobSummary | null;
 }
 
 interface RecentJob {
@@ -30,6 +48,7 @@ interface RecentJob {
     filename: string;
     completedAt: string;
     transactionCount?: number;
+    summary?: JobSummary | null;
 }
 
 const LS_ACTIVE_KEY = 'acctos_active_job';
@@ -355,6 +374,55 @@ function loadActiveJob(): ActiveJob | null {
 }
 function clearActiveJob() { localStorage.removeItem(LS_ACTIVE_KEY); }
 
+// ── Summary components ────────────────────────────────────────────────────────
+
+const fmt = (n: number) => '£' + n.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const ok  = { color: '#22c55e' } as const;
+const err = { color: '#f87171' } as const;
+
+function SummaryPanel({ summary: s }: { summary: JobSummary }) {
+    const rows: Array<[string, React.ReactNode]> = [];
+    if (s.moneyIn  != null) rows.push(['Money in',  <span style={ok}>{fmt(s.moneyIn)}</span>]);
+    if (s.moneyOut != null) rows.push(['Money out', <span style={{ color: '#f97316' }}>{fmt(s.moneyOut)}</span>]);
+    if (s.balanceOk  != null) rows.push(['Balance check',    <span style={s.balanceOk  ? ok : err}>{s.balanceOk  ? '✓ OK' : '⚠ Mismatch'}</span>]);
+    if (s.declaredOk != null) rows.push(['Declared totals',  <span style={s.declaredOk ? ok : err}>{s.declaredOk ? '✓ Match' : '⚠ Mismatch'}</span>]);
+    if (s.catOk      != null) rows.push(['Category totals',  <span style={s.catOk      ? ok : err}>{s.catOk      ? '✓ Match' : '⚠ Mismatch'}</span>]);
+    if (s.vatSalesCount    != null) rows.push(['Sales',    <span>{s.vatSalesCount} entries · {fmt(s.vatSalesTotal ?? 0)}</span>]);
+    if (s.vatExpensesCount != null) rows.push(['Expenses', <span>{s.vatExpensesCount} entries · {fmt(s.vatExpensesTotal ?? 0)}</span>]);
+    if (!rows.length) return null;
+    return (
+        <div style={{
+            marginTop: '0.75rem', padding: '0.65rem 0.85rem',
+            background: 'rgba(255,255,255,0.04)', borderRadius: '0.6rem',
+            border: '1px solid rgba(255,255,255,0.08)', display: 'grid',
+            gridTemplateColumns: 'auto 1fr', gap: '0.15rem 1rem', alignItems: 'center',
+        }}>
+            {rows.map(([label, val]) => (
+                <Fragment key={label}>
+                    <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{label}</span>
+                    <span style={{ fontSize: '0.72rem', fontVariantNumeric: 'tabular-nums', textAlign: 'right' }}>{val}</span>
+                </Fragment>
+            ))}
+        </div>
+    );
+}
+
+function SummaryInline({ summary: s }: { summary: JobSummary }) {
+    const parts: string[] = [];
+    if (s.moneyIn  != null) parts.push(`In ${fmt(s.moneyIn)}`);
+    if (s.moneyOut != null) parts.push(`Out ${fmt(s.moneyOut)}`);
+    if (s.vatSalesCount != null) parts.push(`${s.vatSalesCount} sales · ${s.vatExpensesCount} expenses`);
+    const allOk = [s.balanceOk, s.declaredOk, s.catOk].filter(v => v != null);
+    const anyFail = allOk.some(v => !v);
+    const checkStr = allOk.length ? (anyFail ? '⚠ Check mismatch' : '✓ Verified') : null;
+    return (
+        <div style={{ fontSize: '0.7rem', marginTop: '0.2rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
+            {parts.map(p => <span key={p} style={{ color: 'var(--text-muted)' }}>{p}</span>)}
+            {checkStr && <span style={anyFail ? err : ok}>{checkStr}</span>}
+        </div>
+    );
+}
+
 // ── Main component ───────────────────────────────────────────────────────────
 
 export default function ImportFile() {
@@ -386,6 +454,7 @@ export default function ImportFile() {
                         filename: j.filename,
                         completedAt: j.completed_at ?? j.created_at,
                         transactionCount: j.transaction_count,
+                        summary: j.summary ?? null,
                     }))
             );
         }).catch(() => {});
@@ -486,6 +555,7 @@ export default function ImportFile() {
                 filename: j.filename,
                 completedAt: new Date().toISOString(),
                 transactionCount: j.transactionCount,
+                summary: j.summary,
             };
             const filtered = prev.filter(r => r.id !== j.id);
             return [entry, ...filtered];
@@ -685,9 +755,12 @@ export default function ImportFile() {
                             </span>
                         )}
                         {isCompleted && (
-                            <span style={{ fontSize: '0.75rem', color: '#22c55e', fontWeight: 600 }}>
-                                ✓ Complete — {job.transactionCount} transactions extracted
-                            </span>
+                            <div>
+                                <span style={{ fontSize: '0.75rem', color: '#22c55e', fontWeight: 600 }}>
+                                    ✓ Complete — {job.transactionCount} transactions extracted
+                                </span>
+                                {job.summary && <SummaryPanel summary={job.summary} />}
+                            </div>
                         )}
                         {isFailed && (
                             <span style={{ fontSize: '0.75rem', color: '#ef4444' }}>
@@ -832,6 +905,7 @@ export default function ImportFile() {
                                         {formatDate(rj.completedAt)}
                                         {rj.transactionCount != null && ` · ${rj.transactionCount} transactions`}
                                     </div>
+                                    {rj.summary && <SummaryInline summary={rj.summary} />}
                                 </div>
                                 <div style={{ display: 'flex', gap: '0.4rem', flexShrink: 0 }}>
                                     <button

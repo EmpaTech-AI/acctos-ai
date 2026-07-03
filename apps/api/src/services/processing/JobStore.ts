@@ -1,6 +1,23 @@
 export type JobStatus = 'queued' | 'processing' | 'completed' | 'failed';
 export type ProcessingStage = 'classify' | 'extract' | 'parse' | 'categorize' | 'output';
 
+export interface JobSummary {
+    moneyIn?:          number;
+    moneyOut?:         number;
+    balanceOk?:        boolean;
+    declaredIn?:       number;
+    declaredOut?:      number;
+    declaredOk?:       boolean;
+    catTotalIn?:       number;
+    catTotalOut?:      number;
+    catOk?:            boolean;
+    vatTotal?:         number;
+    vatSalesCount?:    number;
+    vatSalesTotal?:    number;
+    vatExpensesCount?: number;
+    vatExpensesTotal?: number;
+}
+
 export interface FileSummary {
     filename: string;
     transactions: number;
@@ -30,6 +47,7 @@ export interface ProcessingJob {
     errorType?: 'client' | 'system';
     stageTiming?: Partial<Record<ProcessingStage, number>>;
     outputBuffer?: Buffer;
+    summary?: JobSummary;
     createdAt: Date;
     completedAt?: Date;
 }

@@ -80,6 +80,7 @@ export async function updateJobRecord(
         error_type: string;
         output_path: string;
         completed_at: string;
+        summary: Record<string, unknown>;
     }>,
 ): Promise<void> {
     const sb = getClient();
@@ -145,7 +146,7 @@ export async function listJobRecords(): Promise<Array<Record<string, any>>> {
     try {
         const { data, error } = await sb
             .from('processing_jobs')
-            .select('id, filename, bank_type, processing_mode, status, transaction_count, completed_at, created_at, output_path')
+            .select('id, filename, bank_type, processing_mode, status, transaction_count, completed_at, created_at, output_path, summary')
             .order('created_at', { ascending: false })
             .limit(100);
         if (error || !data) return [];
