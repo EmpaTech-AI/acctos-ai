@@ -193,19 +193,31 @@ let openAIQuotaExhausted = false;
 
 const CLAUDE_FALLBACK_MODEL = 'claude-haiku-4-5-20251001';
 
-async function categorizeBatchWithClaude(batch: object[]): Promise<CategorizedTransaction[]> {
+async function categorizeBatchWithClaude(batch: object[], attempt = 0): Promise<CategorizedTransaction[]> {
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) throw new Error('OpenAI quota exhausted and ANTHROPIC_API_KEY is not set — cannot fall back to Claude.');
 
     console.warn(`[Categorizer] Falling back to Claude (${CLAUDE_FALLBACK_MODEL}) for batch of ${batch.length} transactions`);
 
     const client = new Anthropic({ apiKey });
-    const message = await client.messages.create({
-        model: CLAUDE_FALLBACK_MODEL,
-        max_tokens: 16384,
-        system: SYSTEM_PROMPT,
-        messages: [{ role: 'user', content: JSON.stringify(batch) }],
-    });
+    let message: Awaited<ReturnType<typeof client.messages.create>>;
+    try {
+        message = await client.messages.create({
+            model: CLAUDE_FALLBACK_MODEL,
+            max_tokens: 16384,
+            system: SYSTEM_PROMPT,
+            messages: [{ role: 'user', content: JSON.stringify(batch) }],
+        });
+    } catch (err: any) {
+        if (err?.status === 429 && attempt < MAX_RETRIES) {
+            const retryAfter = Number(err?.headers?.['retry-after'] || err?.error?.error?.retry_after || '0');
+            const waitMs = retryAfter > 0 ? retryAfter * 1000 : Math.min(15000 * (attempt + 1), 90000);
+            console.warn(`[Categorizer] Claude 429 — waiting ${Math.round(waitMs / 1000)}s (attempt ${attempt + 1}/${MAX_RETRIES})...`);
+            await new Promise(r => setTimeout(r, waitMs));
+            return categorizeBatchWithClaude(batch, attempt + 1);
+        }
+        throw err;
+    }
 
     const content = message.content[0].type === 'text' ? message.content[0].text : '';
     const cleaned = content.replace(/```json\s*/gi, '').replace(/```\s*/gi, '').trim();
