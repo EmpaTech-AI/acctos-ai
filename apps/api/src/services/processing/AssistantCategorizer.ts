@@ -4,7 +4,7 @@ import { fileURLToPath } from 'url';
 import { Anthropic } from '@anthropic-ai/sdk';
 import { ParsedTransaction, formatTransactionsForAssistant } from './parsers/shared.js';
 import { notifyParserError } from './NotificationService.js';
-import { loadVendorCategories, VendorRule } from '../SupabaseService.js';
+import { loadVendorCategories, saveAiVendorRule, VendorRule } from '../SupabaseService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = dirname(__filename);
@@ -478,6 +478,30 @@ export async function categorize(transactions: ParsedTransaction[], context?: { 
         const aiResults = batchResults.flat();
         for (let j = 0; j < aiIndices.length; j++) {
             results[aiIndices[j]] = aiResults[j] ?? buildFallbackRow(inputArray[aiIndices[j]] as any);
+        }
+
+        // ── Learn: save AI-categorized vendors to Supabase for future runs ──────
+        // Only save when AI assigned a specific category (not OTHER fallback from
+        // buildFallbackRow). Normalised description is used as the pattern so
+        // future identical descriptions skip AI entirely.
+        const learnPromises: Promise<void>[] = [];
+        for (let j = 0; j < aiIndices.length; j++) {
+            const formatted = inputArray[aiIndices[j]] as any;
+            const pattern   = (formatted['Description'] || '').trim(); // already normalized
+            const result    = aiResults[j];
+            if (!pattern || pattern.length < 4) continue;
+            // Find the category that was actually placed (non-empty, non-INCOME unless confirmed IN)
+            const placedCat = EXPENSE_CATS.find(k => (result as any)[k] && (result as any)[k] !== '');
+            if (!placedCat || placedCat === 'OTHER') continue; // don't learn generic fallbacks
+            // Skip if this pattern is already covered by a vendor rule (avoid re-inserting)
+            if (applyVendorRule(pattern, vendorRules) !== null) continue;
+            learnPromises.push(saveAiVendorRule(pattern, placedCat));
+        }
+        if (learnPromises.length > 0) {
+            console.log(`[Categorizer] Learning ${learnPromises.length} new vendor rule(s) from AI results`);
+            await Promise.allSettled(learnPromises);
+            // Invalidate cache so next job picks up the new rules
+            vendorRulesCacheAt = 0;
         }
     }
 

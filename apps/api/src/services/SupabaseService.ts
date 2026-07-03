@@ -162,6 +162,21 @@ export async function loadVendorCategories(): Promise<VendorRule[]> {
     }
 }
 
+export async function saveAiVendorRule(pattern: string, category: string): Promise<void> {
+    const sb = getClient();
+    if (!sb) return;
+    try {
+        await sb.from('vendor_categories').insert({
+            pattern,
+            match_type: 'contains',
+            category,
+            source: 'ai',
+        });
+    } catch {
+        // ignore — duplicate or constraint violation is expected and fine
+    }
+}
+
 export async function listJobRecords(): Promise<Array<Record<string, any>>> {
     const sb = getClient();
     if (!sb) return [];
