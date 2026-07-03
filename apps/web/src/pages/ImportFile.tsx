@@ -401,13 +401,17 @@ function SummaryPanel({ summary: s }: { summary: JobSummary }) {
         rows.push(['Declared out', <span style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(s.declaredOut ?? 0)}</span>]);
         rows.push(['Declared totals', <span style={s.declaredOk ? ok : err}>{s.declaredOk ? '✓ Match' : '⚠ Mismatch'}</span>]);
     }
-    if (s.catTotalIn != null) {
+    const isVat = s.vatSalesCount != null || s.vatExpensesCount != null;
+    if (!isVat && s.catTotalIn != null) {
         rows.push(['Categorized in',  <span style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(s.catTotalIn)}</span>]);
         rows.push(['Categorized out', <span style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(s.catTotalOut ?? 0)}</span>]);
         rows.push(['Category totals', <span style={s.catOk ? ok : err}>{s.catOk ? '✓ Match' : '⚠ Mismatch'}</span>]);
     }
-    if (s.vatSalesCount    != null) rows.push(['Sales',    <span>{s.vatSalesCount} entries · {fmt(s.vatSalesTotal ?? 0)}</span>]);
-    if (s.vatExpensesCount != null) rows.push(['Expenses', <span>{s.vatExpensesCount} entries · {fmt(s.vatExpensesTotal ?? 0)}</span>]);
+    if (isVat) {
+        if (s.vatSalesCount    != null) rows.push(['Sales',    <span style={{ fontVariantNumeric: 'tabular-nums' }}>{s.vatSalesCount} entries · {fmt(s.vatSalesTotal ?? 0)}</span>]);
+        if (s.vatExpensesCount != null) rows.push(['Expenses', <span style={{ fontVariantNumeric: 'tabular-nums' }}>{s.vatExpensesCount} entries · {fmt(s.vatExpensesTotal ?? 0)}</span>]);
+        if (s.catOk != null) rows.push(['Totals check', <span style={s.catOk ? ok : err}>{s.catOk ? '✓ Match' : '⚠ Mismatch'}</span>]);
+    }
     if (!rows.length) return null;
     return (
         <div style={{
