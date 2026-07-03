@@ -5,7 +5,7 @@ import { jobStore, FileSummary } from './JobStore.js';
 import { classify, detectBankFromContent, BankType } from './DocumentClassifier.js';
 import { splitPdf } from './PdfSplitter.js';
 import { analyzePages, PageData } from './AzureExtractor.js';
-import { categorize } from './AssistantCategorizer.js';
+import { categorize, CategorizedTransaction } from './AssistantCategorizer.js';
 import { parseExcel } from './ExcelParser.js';
 import { buildPdfOutputExcel, buildExcelOutputExcel, buildVatOutputExcel, VatStats } from './ExcelOutputBuilder.js';
 import { Cell, ParsedTransaction, ParseResult } from './parsers/shared.js';
@@ -536,7 +536,24 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
 
         // 2. Chain gap (all individual files OK, but overall sequence doesn't close) → client alert
         if (failedFiles.length === 0 && verification) {
-            const chain = computeChainVerification(fileSummaries, verification.totalIn, verification.totalOut);
+            // Sort fileSummaries chronologically by balance-chain matching before gap check
+            const sortedForChain = (() => {
+                if (fileSummaries.length <= 1) return fileSummaries;
+                const allClose = new Set(fileSummaries.filter(f => f.closingBalance != null).map(f => Math.round(f.closingBalance! * 100)));
+                const first = fileSummaries.find(f => f.openingBalance != null && !allClose.has(Math.round(f.openingBalance * 100)));
+                if (!first) return fileSummaries;
+                const out = [first];
+                const rem = fileSummaries.filter(f => f !== first);
+                while (rem.length > 0) {
+                    const last = out[out.length - 1];
+                    if (last.closingBalance == null) break;
+                    const idx = rem.findIndex(f => f.openingBalance != null && Math.round(f.openingBalance * 100) === Math.round(last.closingBalance! * 100));
+                    if (idx < 0) break;
+                    out.push(rem.splice(idx, 1)[0]);
+                }
+                return [...out, ...rem];
+            })();
+            const chain = computeChainVerification(sortedForChain, verification.totalIn, verification.totalOut);
             if (chain && !chain.ok) {
                 notifyChainGap({
                     jobId,
@@ -552,19 +569,33 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
         }
         // ─────────────────────────────────────────────────────────────────────────
 
-        jobStore.update(jobId, { currentStage: 'categorize', currentFile: undefined });
-        const categorized = await categorize(sorted, { jobId, filename: files.map(f => f.filename).join(', '), emailSubject });
-        if (verification) applyCatVerification(verification, categorized);
-        if (verification) logVerificationSummary(verification);
-        jobStore.update(jobId, { transactionCount: categorized.length, currentStage: 'output' });
-
         let outputBuffer: Buffer;
         let vatStats: VatStats | undefined;
+        let categorized: CategorizedTransaction[];
+
         if (processingMode === 'vat') {
+            // VAT batch: skip AI categorization — direction split only (moneyIn → sales, moneyOut → expenses)
+            jobStore.update(jobId, { transactionCount: sorted.length, currentStage: 'output', currentFile: undefined });
+            const fmt = (n: number) => n.toFixed(2);
+            const pn = (s: string | undefined) => { const v = parseFloat(String(s ?? '').replace(/,/g, '')); return isFinite(v) ? v : 0; };
+            categorized = sorted.map(p => ({
+                DATE: p.date || '',
+                'Type and Description': (p.type ? p.type + ' ' : '') + (p.description || ''),
+                INCOME: pn(p.moneyIn) > 0 ? fmt(pn(p.moneyIn)) : '',
+                SALARY: '', OTHER: pn(p.moneyOut) > 0 ? '-' + fmt(pn(p.moneyOut)) : '',
+                INSURANCE: '', LOAN: '', CASH: '', TRAVEL: '', PHONE: '',
+                CHARGES: '', Bank_Transfer: '', HMRC: '', RENT: '', BILLS: '',
+                Balance: p.balance || '',
+            } as CategorizedTransaction));
             const result = await buildVatOutputExcel(categorized, emailSubject ? extractClientName(emailSubject) : undefined);
             outputBuffer = result.buffer;
             vatStats = result.vatStats;
         } else {
+            jobStore.update(jobId, { currentStage: 'categorize', currentFile: undefined });
+            categorized = await categorize(sorted, { jobId, filename: files.map(f => f.filename).join(', '), emailSubject });
+            if (verification) applyCatVerification(verification, categorized);
+            if (verification) logVerificationSummary(verification);
+            jobStore.update(jobId, { transactionCount: categorized.length, currentStage: 'output' });
             outputBuffer = await buildPdfOutputExcel(categorized, verification, fileSummaries.length > 1 ? fileSummaries : undefined);
         }
         const batchBankSummary: BankSummary | undefined = verification ? {
@@ -719,33 +750,43 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
             const parsedIn  = excelTransactions.reduce((s, t) => s + parseN(t['Money in']),  0);
             const parsedOut = excelTransactions.reduce((s, t) => s + parseN(t['Money out']), 0);
 
-            timer.start('categorize');
-            jobStore.update(jobId, { transactionCount: parsed.length, currentStage: 'categorize' });
-            const categorized = await categorize(parsed, { jobId, filename, emailSubject });
-            timer.start('output');
-            jobStore.update(jobId, { transactionCount: categorized.length, currentStage: 'output' });
-
-            // Categorized totals — compare against parser totals to verify no amounts were lost
-            const EXP_ONLY = ['SALARY','OTHER','INSURANCE','LOAN','CASH','TRAVEL','PHONE','CHARGES','Bank_Transfer','HMRC','RENT','BILLS'];
-            let catIn = 0, catOut = 0;
-            for (const row of categorized) {
-                const inc = parseN(row.INCOME); if (inc > 0) catIn += inc;
-                for (const k of EXP_ONLY) { const v = parseN((row as any)[k]); if (v !== 0) catOut += Math.abs(v); }
-            }
-            emailBankSummary = {
-                total:      categorized.length,
-                moneyIn:    parsedIn,
-                moneyOut:   parsedOut,
-                catTotalIn:  catIn,
-                catTotalOut: catOut,
-                catOk:       Math.abs(catIn - parsedIn) < 0.05 && Math.abs(catOut - parsedOut) < 0.05,
-            };
-
             if (processingMode === 'vat') {
-                const result = await buildVatOutputExcel(categorized, emailSubject ? extractClientName(emailSubject) : filename);
+                // VAT Excel: skip AI categorization — direction split only (moneyIn → sales, moneyOut → expenses)
+                timer.start('output');
+                jobStore.update(jobId, { transactionCount: parsed.length, currentStage: 'output' });
+                const fmt = (n: number) => n.toFixed(2);
+                const vatCategorized: CategorizedTransaction[] = parsed.map(p => ({
+                    DATE: p.date || '',
+                    'Type and Description': p.description || '',
+                    INCOME: parseN(p.moneyIn) > 0 ? fmt(parseN(p.moneyIn)) : '',
+                    SALARY: '', OTHER: parseN(p.moneyOut) > 0 ? '-' + fmt(parseN(p.moneyOut)) : '',
+                    INSURANCE: '', LOAN: '', CASH: '', TRAVEL: '', PHONE: '',
+                    CHARGES: '', Bank_Transfer: '', HMRC: '', RENT: '', BILLS: '',
+                    Balance: p.balance || '',
+                } as CategorizedTransaction));
+                const result = await buildVatOutputExcel(vatCategorized, emailSubject ? extractClientName(emailSubject) : filename);
                 outputBuffer = result.buffer;
                 vatStats = result.vatStats;
             } else {
+                timer.start('categorize');
+                jobStore.update(jobId, { transactionCount: parsed.length, currentStage: 'categorize' });
+                const categorized = await categorize(parsed, { jobId, filename, emailSubject });
+                timer.start('output');
+                jobStore.update(jobId, { transactionCount: categorized.length, currentStage: 'output' });
+                const EXP_ONLY = ['SALARY','OTHER','INSURANCE','LOAN','CASH','TRAVEL','PHONE','CHARGES','Bank_Transfer','HMRC','RENT','BILLS'];
+                let catIn = 0, catOut = 0;
+                for (const row of categorized) {
+                    const inc = parseN(row.INCOME); if (inc > 0) catIn += inc;
+                    for (const k of EXP_ONLY) { const v = parseN((row as any)[k]); if (v !== 0) catOut += Math.abs(v); }
+                }
+                emailBankSummary = {
+                    total:      categorized.length,
+                    moneyIn:    parsedIn,
+                    moneyOut:   parsedOut,
+                    catTotalIn:  catIn,
+                    catTotalOut: catOut,
+                    catOk:       Math.abs(catIn - parsedIn) < 0.05 && Math.abs(catOut - parsedOut) < 0.05,
+                };
                 outputBuffer = await buildPdfOutputExcel(categorized);
             }
 
