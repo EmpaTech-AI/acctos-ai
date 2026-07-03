@@ -225,10 +225,41 @@ let openAIQuotaExhausted = false;
 
 const CLAUDE_FALLBACK_MODEL = 'claude-haiku-4-5-20251001';
 
+// ── Claude rate limiter: enforce 5 RPM via sequential queue ──────────────────
+// All Claude calls flow through a single async queue so they never fire in
+// parallel. A sliding 60-second window tracks timestamps; if the last 5 calls
+// all happened within 60 s we wait for the window to clear before proceeding.
+const CLAUDE_RPM_LIMIT = 5;
+const _claudeWindowTs: number[] = [];
+let   _claudeQueue: Promise<void> = Promise.resolve();
+
+function withClaudeRateLimit<T>(fn: () => Promise<T>): Promise<T> {
+    let resolve_: (v: T | PromiseLike<T>) => void;
+    let reject_:  (e: unknown) => void;
+    const outer = new Promise<T>((res, rej) => { resolve_ = res; reject_ = rej; });
+
+    _claudeQueue = _claudeQueue.then(async () => {
+        const now = Date.now();
+        if (_claudeWindowTs.length >= CLAUDE_RPM_LIMIT) {
+            const waitMs = (_claudeWindowTs[0] + 61_000) - now;
+            if (waitMs > 0) {
+                console.warn(`[Categorizer] Claude RPM window full — pausing ${Math.ceil(waitMs / 1000)}s`);
+                await new Promise(r => setTimeout(r, waitMs));
+            }
+            _claudeWindowTs.shift();
+        }
+        _claudeWindowTs.push(Date.now());
+        try { resolve_(await fn()); } catch (e) { reject_(e); }
+    }).catch(() => {}); // never break the chain
+
+    return outer;
+}
+
 async function categorizeBatchWithClaude(batch: object[], attempt = 0): Promise<CategorizedTransaction[]> {
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) throw new Error('OpenAI quota exhausted and ANTHROPIC_API_KEY is not set — cannot fall back to Claude.');
 
+    return withClaudeRateLimit(async () => {
     console.warn(`[Categorizer] Falling back to Claude (${CLAUDE_FALLBACK_MODEL}) for batch of ${batch.length} transactions`);
 
     const client = new Anthropic({ apiKey });
@@ -242,11 +273,13 @@ async function categorizeBatchWithClaude(batch: object[], attempt = 0): Promise<
             messages: [{ role: 'user', content: JSON.stringify(indexedBatch) }],
         });
     } catch (err: any) {
-        if (err?.status === 429 && attempt < MAX_RETRIES) {
-            const retryAfter = Number(err?.headers?.['retry-after'] || err?.error?.error?.retry_after || '0');
-            const waitMs = retryAfter > 0 ? retryAfter * 1000 : Math.min(15000 * (attempt + 1), 90000);
-            console.warn(`[Categorizer] Claude 429 — waiting ${Math.round(waitMs / 1000)}s (attempt ${attempt + 1}/${MAX_RETRIES})...`);
-            await new Promise(r => setTimeout(r, waitMs));
+        if (err?.status === 429 && attempt < 2) {
+            // Re-queue through the rate limiter — don't busy-wait here
+            const retryAfter = Number(err?.headers?.['retry-after'] || '0');
+            if (retryAfter > 0) {
+                console.warn(`[Categorizer] Claude 429 despite rate limit — retry-after ${retryAfter}s (attempt ${attempt + 1}/2)`);
+                await new Promise(r => setTimeout(r, retryAfter * 1000));
+            }
             return categorizeBatchWithClaude(batch, attempt + 1);
         }
         throw err;
@@ -282,6 +315,7 @@ async function categorizeBatchWithClaude(batch: object[], attempt = 0): Promise<
 
     // Legacy format: CategorizedTransaction[] — fallback alignment
     return applyFallback(items as CategorizedTransaction[], batch);
+    }); // end withClaudeRateLimit
 }
 
 const MAX_RETRIES = 4;
