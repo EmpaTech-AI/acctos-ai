@@ -140,6 +140,28 @@ export async function getJobRecord(jobId: string): Promise<Record<string, any> |
     }
 }
 
+export interface VendorRule {
+    pattern:    string;
+    match_type: 'exact' | 'contains' | 'starts_with';
+    category:   string;
+}
+
+export async function loadVendorCategories(): Promise<VendorRule[]> {
+    const sb = getClient();
+    if (!sb) return [];
+    try {
+        const { data, error } = await sb
+            .from('vendor_categories')
+            .select('pattern, match_type, category')
+            .eq('active', true)
+            .order('id', { ascending: true });
+        if (error || !data) return [];
+        return data as VendorRule[];
+    } catch {
+        return [];
+    }
+}
+
 export async function listJobRecords(): Promise<Array<Record<string, any>>> {
     const sb = getClient();
     if (!sb) return [];

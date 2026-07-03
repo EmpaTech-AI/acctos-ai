@@ -4,6 +4,7 @@ import { fileURLToPath } from 'url';
 import { Anthropic } from '@anthropic-ai/sdk';
 import { ParsedTransaction, formatTransactionsForAssistant } from './parsers/shared.js';
 import { notifyParserError } from './NotificationService.js';
+import { loadVendorCategories, VendorRule } from '../SupabaseService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = dirname(__filename);
@@ -128,6 +129,35 @@ function applyFallback(items: CategorizedTransaction[], rawTransactions: object[
         deduplicateExpenseColumns(row);
         return row;
     });
+}
+
+// ── Vendor category cache (refreshed every 5 min from Supabase) ───────────────
+let vendorRulesCache: VendorRule[] = [];
+let vendorRulesCacheAt = 0;
+const VENDOR_RULES_TTL = 5 * 60 * 1000;
+
+async function getVendorRules(): Promise<VendorRule[]> {
+    if (vendorRulesCache.length > 0 && Date.now() - vendorRulesCacheAt < VENDOR_RULES_TTL) {
+        return vendorRulesCache;
+    }
+    const rules = await loadVendorCategories();
+    vendorRulesCache = rules;
+    vendorRulesCacheAt = Date.now();
+    if (rules.length > 0) console.log(`[Categorizer] Loaded ${rules.length} vendor rules from Supabase`);
+    return rules;
+}
+
+function applyVendorRule(description: string, rules: VendorRule[]): string | null {
+    const lower = description.toLowerCase();
+    for (const rule of rules) {
+        const pat = rule.pattern.toLowerCase();
+        let match = false;
+        if      (rule.match_type === 'exact')       match = lower === pat;
+        else if (rule.match_type === 'starts_with') match = lower.startsWith(pat);
+        else                                         match = lower.includes(pat);
+        if (match) return rule.category;
+    }
+    return null;
 }
 
 const BATCH_SIZE     = 25;
@@ -382,6 +412,7 @@ export async function categorize(transactions: ParsedTransaction[], context?: { 
     if (!apiKey) throw new Error('OPENAI_API_KEY not set');
 
     const inputArray = formatTransactionsForAssistant(transactions);
+    const vendorRules = await getVendorRules();
 
     // ── Step 1: Pre-categorize high-confidence transactions via rules ──────────
     const preCat: (CategorizedTransaction | null)[] = new Array(inputArray.length).fill(null);
@@ -391,7 +422,11 @@ export async function categorize(transactions: ParsedTransaction[], context?: { 
         const formatted = inputArray[i] as any;
         const rawDesc   = formatted['Description'] || '';
         const normDesc  = normalizeDescription(rawDesc);
-        const category  = applyPreRule(rawDesc) ?? applyPreRule(normDesc);
+        // Vendor DB rules take priority, then hardcoded regex rules
+        const category  = applyVendorRule(rawDesc, vendorRules)
+                       ?? applyVendorRule(normDesc, vendorRules)
+                       ?? applyPreRule(rawDesc)
+                       ?? applyPreRule(normDesc);
         if (category) {
             preCat[i] = buildRuleRow(transactions[i], formatted, category);
         } else {
