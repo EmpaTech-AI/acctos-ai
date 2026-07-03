@@ -651,6 +651,12 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
                         console.log(`[Orchestrator] Uploading to Drive: "${fn}"`);
                         driveFileUrl = await uploadToDriveFolder(outputBuffer, fn, folderId) ?? undefined;
                     }
+                    // Persist Drive URL in summary so it can be used as download fallback
+                    if (driveFileUrl) {
+                        updateJobRecord(jobId, {
+                            summary: { ...(batchSummary as Record<string, unknown>), driveUrl: driveFileUrl },
+                        }).catch(() => {});
+                    }
                 } catch (e: any) {
                     console.warn('[Orchestrator] Drive upload (batch) failed:', e?.message);
                 }
@@ -996,6 +1002,12 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
                         const fn = driveFilename(filename);
                         console.log(`[Orchestrator] Uploading to Drive: "${fn}"`);
                         driveFileUrl = await uploadToDriveFolder(outputBuffer, fn, folderId) ?? undefined;
+                    }
+                    // Persist Drive URL in summary so it can be used as download fallback
+                    if (driveFileUrl) {
+                        updateJobRecord(jobId, {
+                            summary: { ...(singleSummary as Record<string, unknown>), driveUrl: driveFileUrl },
+                        }).catch(() => {});
                     }
                 } catch (e: any) {
                     console.warn('[Orchestrator] Drive upload (single) failed:', e?.message);

@@ -4,6 +4,7 @@ import { authenticateToken, requireRole, AuthenticatedRequest } from '../middlew
 import { createError } from '../middleware/errorHandler.js';
 import { jobStore } from '../services/processing/JobStore.js';
 import { getJobRecord, listJobRecords, downloadOutputFile } from '../services/SupabaseService.js';
+import { downloadDriveFile } from '../services/google/GoogleService.js';
 import { ADMIN_ROLES } from '../utils/roles.js';
 
 const router = Router();
@@ -66,13 +67,32 @@ router.get('/:jobId/download', async (req: AuthenticatedRequest, res: Response, 
     const record = await getJobRecord(req.params.jobId);
     if (!record) return next(createError('Job not found', 404, 'NOT_FOUND'));
     if (record.status !== 'completed') return next(createError('Processing not yet complete', 400, 'NOT_READY'));
-    if (!record.output_path) return next(createError('Output file unavailable', 500, 'NO_OUTPUT'));
-    const buffer = await downloadOutputFile(record.output_path as string);
-    if (!buffer) return next(createError('Output file unavailable', 500, 'NO_OUTPUT'));
     const baseName = (record.filename as string).replace(/\.[^.]+$/, '');
-    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename="${baseName}_processed.xlsx"`);
-    res.send(buffer);
+
+    // Try Supabase Storage first
+    if (record.output_path) {
+        const buffer = await downloadOutputFile(record.output_path as string);
+        if (buffer) {
+            res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+            res.setHeader('Content-Disposition', `attachment; filename="${baseName}_processed.xlsx"`);
+            return res.send(buffer);
+        }
+    }
+
+    // Fallback: download from Google Drive using the stored Drive URL
+    const driveUrl = (record.summary as Record<string, any>)?.driveUrl as string | undefined;
+    if (driveUrl) {
+        try {
+            const { buffer } = await downloadDriveFile(driveUrl);
+            res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+            res.setHeader('Content-Disposition', `attachment; filename="${baseName}_processed.xlsx"`);
+            return res.send(buffer);
+        } catch (e: any) {
+            console.warn('[Download] Drive fallback failed:', e?.message);
+        }
+    }
+
+    return next(createError('Output file unavailable', 500, 'NO_OUTPUT'));
 });
 
 /**

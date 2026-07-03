@@ -18,6 +18,7 @@ export interface JobSummary {
     vatSalesTotal?:    number;
     vatExpensesCount?: number;
     vatExpensesTotal?: number;
+    driveUrl?:         string;
 }
 
 export interface FileSummary {
