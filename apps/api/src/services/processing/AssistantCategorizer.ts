@@ -131,6 +131,21 @@ function applyFallback(items: CategorizedTransaction[], rawTransactions: object[
     });
 }
 
+// ── Clean a description before saving it as a vendor rule ────────────────────
+// Strips leading row-number prefixes ("1) ") and trailing date fragments
+// ("On 12 Mar", "On 12 March", "03/07") so patterns stay reusable across months.
+const LEARN_DATE_SUFFIX_RE  = /\s+[Oo]n\s+\d{1,2}\s+\w{3,9}(\s+\d{4})?.*$/;
+const LEARN_DATE2_SUFFIX_RE = /\s+\d{1,2}[\/\-]\d{1,2}([\/\-]\d{2,4})?.*$/;
+const LEARN_ROW_PREFIX_RE   = /^\d+[).\s]+/;
+
+function cleanPatternForLearning(desc: string): string {
+    return desc
+        .replace(LEARN_ROW_PREFIX_RE, '')
+        .replace(LEARN_DATE_SUFFIX_RE, '')
+        .replace(LEARN_DATE2_SUFFIX_RE, '')
+        .trim();
+}
+
 // ── Vendor category cache (refreshed every 5 min from Supabase) ───────────────
 let vendorRulesCache: VendorRule[] = [];
 let vendorRulesCacheAt = 0;
@@ -487,10 +502,11 @@ export async function categorize(transactions: ParsedTransaction[], context?: { 
         const learnPromises: Promise<void>[] = [];
         for (let j = 0; j < aiIndices.length; j++) {
             const formatted = inputArray[aiIndices[j]] as any;
-            const pattern   = (formatted['Description'] || '').trim(); // already normalized
-            const result    = aiResults[j];
-            if (!pattern || pattern.length < 4) continue;
-            // Find the category that was actually placed (non-empty, non-INCOME unless confirmed IN)
+            const rawPattern = (formatted['Description'] || '').trim();
+            const pattern    = cleanPatternForLearning(rawPattern);
+            const result     = aiResults[j];
+            if (!pattern || pattern.length < 5) continue;
+            // Find the category that was actually placed (non-empty)
             const placedCat = EXPENSE_CATS.find(k => (result as any)[k] && (result as any)[k] !== '');
             if (!placedCat || placedCat === 'OTHER') continue; // don't learn generic fallbacks
             // Skip if this pattern is already covered by a vendor rule (avoid re-inserting)
