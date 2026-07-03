@@ -49,11 +49,12 @@ Apply in this order — first match wins:
 7. INSURANCE  — Hastings, Admiral, Aviva, AXA, Direct Line, Churchill, or description contains "Insurance"
 8. BILLS      — utilities: British Gas, EDF, Octopus, E.ON, Thames Water, Severn Trent; Council Tax; broadband: BT, Sky, Virgin Media, TalkTalk; TV Licence
 9. CHARGES    — BANK FEES ONLY: Overdraft Fee, Monthly Account Fee, Interest Charged, Returned Item Fee, Unpaid DD Fee, FX Fee, CHAPS Fee, Service Charge
-10. Bank_Transfer — transfers to people (Bill Payment to [Name], Faster Payment to [Name]); Revolut top-up; Monzo transfer; transfer to own account
-11. SALARY    — payroll or wages paid out
+10. SALARY    — description contains the word "salary" or "salaries" → SALARY always, even if payment is to a person or via Faster Payment
+11. Bank_Transfer — transfers to people (Bill Payment to [Name], Faster Payment to [Name]); Revolut top-up; Monzo transfer; transfer to own account. NOT if description mentions salary.
 12. OTHER     — MANDATORY FALLBACK: all shopping (Aldi, Lidl, Tesco, Amazon, Apple), restaurants, takeaways, gyms, fitness, betting, entertainment (Vue, Netflix), subscriptions, retail, anything not above
 
 🚨 CHARGES IS NOT A FALLBACK. CHARGES = bank-originated fees only. Shopping → OTHER.
+🚨 SALARY beats Bank_Transfer: "Faster Payment to John salary" → SALARY, not Bank_Transfer.
 
 CATEGORY RULES (OUTFLOWS)
 
