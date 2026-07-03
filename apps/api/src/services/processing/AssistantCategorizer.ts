@@ -253,11 +253,16 @@ async function categorizeBatchWithClaude(batch: object[], attempt = 0): Promise<
     }
 
     const content = message.content[0].type === 'text' ? message.content[0].text : '';
-    const cleaned = content.replace(/```json\s*/gi, '').replace(/```\s*/gi, '').trim();
+    const stripped = content.replace(/```json\s*/gi, '').replace(/```\s*/gi, '').trim();
+
+    // Extract outermost JSON object or array — handles Claude adding preamble/postamble text
+    const objMatch = stripped.match(/\{[\s\S]*\}/);
+    const arrMatch = stripped.match(/\[[\s\S]*\]/);
+    const cleaned  = (objMatch ?? arrMatch)?.[0] ?? stripped;
 
     let parsed: any;
     try { parsed = JSON.parse(cleaned); }
-    catch { throw new Error('Claude returned invalid JSON: ' + cleaned.slice(0, 300)); }
+    catch { throw new Error('Claude returned invalid JSON: ' + stripped.slice(0, 300)); }
 
     const items: any[] = Array.isArray(parsed) ? parsed : (parsed.results || parsed.items || []);
 
