@@ -687,11 +687,32 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
                 moneyOut:    t['Money out'],
                 balance:     t.Balance,
             }));
+            // Ground-truth totals direct from the parser column mapping — pure arithmetic, no AI
+            const parseN = (s: string | undefined | null) => { const n = parseFloat(String(s ?? '').replace(/,/g, '')); return isFinite(n) ? n : 0; };
+            const parsedIn  = excelTransactions.reduce((s, t) => s + parseN(t['Money in']),  0);
+            const parsedOut = excelTransactions.reduce((s, t) => s + parseN(t['Money out']), 0);
+
             timer.start('categorize');
             jobStore.update(jobId, { transactionCount: parsed.length, currentStage: 'categorize' });
             const categorized = await categorize(parsed);
             timer.start('output');
             jobStore.update(jobId, { transactionCount: categorized.length, currentStage: 'output' });
+
+            // Categorized totals — compare against parser totals to verify no amounts were lost
+            const EXP_ONLY = ['SALARY','OTHER','INSURANCE','LOAN','CASH','TRAVEL','PHONE','CHARGES','Bank_Transfer','HMRC','RENT','BILLS'];
+            let catIn = 0, catOut = 0;
+            for (const row of categorized) {
+                const inc = parseN(row.INCOME); if (inc > 0) catIn += inc;
+                for (const k of EXP_ONLY) { const v = parseN((row as any)[k]); if (v !== 0) catOut += Math.abs(v); }
+            }
+            emailBankSummary = {
+                total:      categorized.length,
+                moneyIn:    parsedIn,
+                moneyOut:   parsedOut,
+                catTotalIn:  catIn,
+                catTotalOut: catOut,
+                catOk:       Math.abs(catIn - parsedIn) < 0.05 && Math.abs(catOut - parsedOut) < 0.05,
+            };
 
             if (processingMode === 'vat') {
                 const result = await buildVatOutputExcel(categorized, emailSubject ? extractClientName(emailSubject) : filename);
@@ -699,7 +720,6 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
                 vatStats = result.vatStats;
             } else {
                 outputBuffer = await buildPdfOutputExcel(categorized);
-                // Excel inputs have no statement totals — emailBankSummary stays undefined
             }
 
         } else {
