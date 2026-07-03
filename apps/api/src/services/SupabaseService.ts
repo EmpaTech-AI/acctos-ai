@@ -86,9 +86,22 @@ export async function updateJobRecord(
     const sb = getClient();
     if (!sb) return;
     try {
-        await sb.from('processing_jobs').update(patch).eq('id', id);
+        const { error } = await sb.from('processing_jobs').update(patch).eq('id', id);
+        if (error) throw error;
     } catch (err: any) {
-        console.warn('[Supabase] updateJobRecord failed:', err?.message);
+        // If the update fails because the summary column doesn't exist yet,
+        // retry without summary so status/completed_at are always persisted.
+        if (patch.summary !== undefined && err?.message?.toLowerCase().includes('summary')) {
+            console.warn('[Supabase] updateJobRecord: summary column missing — retrying without summary');
+            const { summary: _s, ...patchWithoutSummary } = patch;
+            try {
+                await sb.from('processing_jobs').update(patchWithoutSummary).eq('id', id);
+            } catch (e2: any) {
+                console.warn('[Supabase] updateJobRecord (no summary) failed:', e2?.message);
+            }
+        } else {
+            console.warn('[Supabase] updateJobRecord failed:', err?.message);
+        }
     }
 }
 
