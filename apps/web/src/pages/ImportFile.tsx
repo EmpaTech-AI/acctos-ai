@@ -484,13 +484,20 @@ export default function ImportFile() {
             axios.get(`/v1/processing/${active.id}`)
                 .then(res => {
                     const j: Job = { id: active.id, filename: active.filename, ...res.data.job };
-                    setJob(j);
                     if (j.status === 'completed') {
                         clearActiveJob();
                         addToRecent(j);
+                        setJob(j);
                     } else if (j.status === 'failed') {
                         clearActiveJob();
+                        setJob(j);
+                    } else if (!j.currentStage) {
+                        // No step info = came from Supabase, no container tracking it.
+                        // Job was lost in a container restart — clear silently so the
+                        // user gets a clean UI (results sent via email if it completed).
+                        clearActiveJob();
                     } else {
+                        setJob(j);
                         startPolling(active.id);
                     }
                 })
@@ -777,14 +784,26 @@ export default function ImportFile() {
                             </span>
                         )}
                         {isProcessing && (
-                            <span style={{ fontSize: '0.75rem', color: '#6366f1' }}>
-                                {job.totalFiles && job.totalFiles > 1
-                                    ? `File ${job.currentFile || 1} of ${job.totalFiles}${job.bankType ? ` · ${job.bankType.toUpperCase()}` : ''}${job.currentStage ? ` · ${job.currentStage}` : ''}`
-                                    : job.bankType
-                                        ? `Processing ${job.bankType.toUpperCase()} statement${job.pageCount ? ` · ${job.pageCount} pages` : ''}`
-                                        : 'Processing…'
-                                }
-                            </span>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.75rem' }}>
+                                <span style={{ fontSize: '0.75rem', color: '#6366f1' }}>
+                                    {job.totalFiles && job.totalFiles > 1
+                                        ? `File ${job.currentFile || 1} of ${job.totalFiles}${job.bankType ? ` · ${job.bankType.toUpperCase()}` : ''}${job.currentStage ? ` · ${job.currentStage}` : ''}`
+                                        : job.bankType
+                                            ? `Processing ${job.bankType.toUpperCase()} statement${job.pageCount ? ` · ${job.pageCount} pages` : ''}`
+                                            : 'Processing…'
+                                    }
+                                </span>
+                                <button
+                                    onClick={reset}
+                                    style={{
+                                        background: 'none', border: 'none', padding: 0,
+                                        fontSize: '0.7rem', color: 'rgba(255,255,255,0.3)',
+                                        cursor: 'pointer', textDecoration: 'underline',
+                                    }}
+                                >
+                                    dismiss
+                                </button>
+                            </div>
                         )}
                         {isCompleted && (
                             <div>
