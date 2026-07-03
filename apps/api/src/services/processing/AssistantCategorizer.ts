@@ -549,21 +549,29 @@ export async function categorize(transactions: ParsedTransaction[], context?: { 
         // AI returns signal = the keyword that drove the category (outflows only).
         // null signal means no specific trigger → nothing to learn.
         const learnPromises: Promise<void>[] = [];
+        let signalCount = 0;
         for (let j = 0; j < aiIndices.length; j++) {
             const result  = aiResults[j];
             const signal  = ((result as any).__signal as string | undefined)?.trim();
             if (!signal || signal.length < 3) continue;
-            // Find the category placed by enforcement (non-empty expense column)
+            signalCount++;
+            // Find the category placed by AI (non-empty expense column)
             const placedCat = EXPENSE_CATS.filter(k => k !== 'INCOME')
                 .find(k => (result as any)[k] && (result as any)[k] !== '');
-            if (!placedCat || placedCat === 'OTHER') continue;
-            if (applyVendorRule(signal, vendorRules) !== null) continue;
+            if (!placedCat || placedCat === 'OTHER') {
+                console.log(`[Categorizer] Signal "${signal}" skipped — category is ${placedCat ?? 'none'}`);
+                continue;
+            }
+            if (applyVendorRule(signal, vendorRules) !== null) {
+                console.log(`[Categorizer] Signal "${signal}" skipped — already in vendor rules`);
+                continue;
+            }
+            console.log(`[Categorizer] Learning signal "${signal}" → ${placedCat}`);
             learnPromises.push(saveAiVendorRule(signal, placedCat));
         }
+        console.log(`[Categorizer] Learning summary: ${signalCount} signal(s) from ${aiIndices.length} AI results → ${learnPromises.length} new rule(s)`);
         if (learnPromises.length > 0) {
-            console.log(`[Categorizer] Learning ${learnPromises.length} new vendor rule(s) from AI results`);
             await Promise.allSettled(learnPromises);
-            // Invalidate cache so next job picks up the new rules
             vendorRulesCacheAt = 0;
         }
     }
