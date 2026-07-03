@@ -137,12 +137,14 @@ function applyFallback(items: CategorizedTransaction[], rawTransactions: object[
 const LEARN_DATE_SUFFIX_RE  = /\s+[Oo]n\s+\d{1,2}\s+\w{3,9}(\s+\d{4})?.*$/;
 const LEARN_DATE2_SUFFIX_RE = /\s+\d{1,2}[\/\-]\d{1,2}([\/\-]\d{2,4})?.*$/;
 const LEARN_ROW_PREFIX_RE   = /^\d+[).\s]+/;
+const LEARN_REF_NOISE_RE    = /\s+[Rr]ef:\s+.*$/;
 
 function cleanPatternForLearning(desc: string): string {
     return desc
         .replace(LEARN_ROW_PREFIX_RE, '')
         .replace(LEARN_DATE_SUFFIX_RE, '')
         .replace(LEARN_DATE2_SUFFIX_RE, '')
+        .replace(LEARN_REF_NOISE_RE, '')
         .trim();
 }
 
