@@ -304,7 +304,8 @@ export function startBatchProcessingJob(files: FileInput[], tracking?: TrackingC
         }
     }
 
-    const batchName = uniqueFiles.length === 1 ? uniqueFiles[0].filename : `${uniqueFiles.length} files`;
+    const batchName = emailSubject
+        ?? (uniqueFiles.length === 1 ? uniqueFiles[0].filename : `${uniqueFiles.length} files`);
     jobStore.create(jobId, batchName);
     createJobRecord({ id: jobId, filename: batchName, processingMode }).catch(() => {});
 
@@ -668,8 +669,9 @@ export function startProcessingJob(
     senderEmail?: string,
 ): string {
     const jobId = randomUUID();
-    jobStore.create(jobId, filename);
-    createJobRecord({ id: jobId, filename, processingMode }).catch(() => {});
+    const displayName = emailSubject ?? filename;
+    jobStore.create(jobId, displayName);
+    createJobRecord({ id: jobId, filename: displayName, processingMode }).catch(() => {});
 
     runJob(jobId, filename, mimeType, fileBuffer, tracking, processingMode, emailSubject, senderEmail).catch(err => {
         console.error(`[Orchestrator] Job ${jobId} unhandled crash:`, err);
