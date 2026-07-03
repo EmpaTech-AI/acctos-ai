@@ -232,13 +232,14 @@ async function categorizeBatchWithClaude(batch: object[], attempt = 0): Promise<
     console.warn(`[Categorizer] Falling back to Claude (${CLAUDE_FALLBACK_MODEL}) for batch of ${batch.length} transactions`);
 
     const client = new Anthropic({ apiKey });
+    const indexedBatch = batch.map((t, i) => ({ id: i, ...(t as any) }));
     let message: Awaited<ReturnType<typeof client.messages.create>>;
     try {
         message = await client.messages.create({
             model: CLAUDE_FALLBACK_MODEL,
             max_tokens: 16384,
             system: SYSTEM_PROMPT,
-            messages: [{ role: 'user', content: JSON.stringify(batch) }],
+            messages: [{ role: 'user', content: JSON.stringify(indexedBatch) }],
         });
     } catch (err: any) {
         if (err?.status === 429 && attempt < MAX_RETRIES) {
@@ -258,8 +259,24 @@ async function categorizeBatchWithClaude(batch: object[], attempt = 0): Promise<
     try { parsed = JSON.parse(cleaned); }
     catch { throw new Error('Claude returned invalid JSON: ' + cleaned.slice(0, 300)); }
 
-    const items: CategorizedTransaction[] = Array.isArray(parsed) ? parsed : (parsed.items || []);
-    return applyFallback(items, batch);
+    const items: any[] = Array.isArray(parsed) ? parsed : (parsed.results || parsed.items || []);
+
+    // New format: [{ id, category, signal }] — same as OpenAI path
+    if (items.length > 0 && 'id' in items[0] && 'category' in items[0]) {
+        const catMap    = new Map<number, string>(items.map((r: any) => [Number(r.id), String(r.category)]));
+        const signalMap = new Map<number, string>(
+            items.filter((r: any) => r.signal).map((r: any) => [Number(r.id), String(r.signal)])
+        );
+        return (batch as any[]).map((t: any, i: number) => {
+            const row = buildCatRow(t, catMap.get(i) ?? 'OTHER');
+            const signal = signalMap.get(i);
+            if (signal) (row as any).__signal = signal;
+            return row;
+        });
+    }
+
+    // Legacy format: CategorizedTransaction[] — fallback alignment
+    return applyFallback(items as CategorizedTransaction[], batch);
 }
 
 const MAX_RETRIES = 4;
