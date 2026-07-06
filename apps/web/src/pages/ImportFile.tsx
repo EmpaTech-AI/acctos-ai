@@ -467,6 +467,8 @@ export default function ImportFile() {
 
     // Load job history from Supabase on mount; also resume any in-progress job
     useEffect(() => {
+        const active = loadActiveJob();
+
         axios.get('/v1/processing').then(res => {
             const jobs: Array<Record<string, any>> = res.data.jobs ?? [];
             setRecentJobs(
@@ -480,10 +482,25 @@ export default function ImportFile() {
                         summary: j.summary ?? null,
                     }))
             );
+
+            // If no localStorage active job, check if an email-triggered job is in progress
+            // right now so the pipeline shows immediately on page load (not after 3s bg poll).
+            if (!active) {
+                const inProgress = jobs.find((j: any) => j.status === 'queued' || j.status === 'processing');
+                if (inProgress) {
+                    axios.get(`/v1/processing/${inProgress.id}`).then(liveRes => {
+                        const live = liveRes.data.job;
+                        if (live?.currentStage) {
+                            saveActiveJob(inProgress.id, inProgress.filename);
+                            setJob({ id: inProgress.id, filename: inProgress.filename, ...live });
+                            startPolling(inProgress.id);
+                        }
+                    }).catch(() => {});
+                }
+            }
         }).catch(() => {});
 
         // Resume polling if a job was in-flight when the user navigated away
-        const active = loadActiveJob();
         if (active) {
             axios.get(`/v1/processing/${active.id}`)
                 .then(res => {
