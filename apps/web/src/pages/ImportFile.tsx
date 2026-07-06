@@ -541,7 +541,7 @@ export default function ImportFile() {
         if (bgPollRef.current) clearInterval(bgPollRef.current);
     }, []);
 
-    // Background poll every 10s — picks up Gmail-triggered jobs automatically
+    // Background poll every 3s — picks up Gmail-triggered jobs automatically
     useEffect(() => {
         bgPollRef.current = setInterval(async () => {
             const currentJob = jobRef.current;
@@ -586,7 +586,7 @@ export default function ImportFile() {
                     );
                 }
             } catch { /* ignore */ }
-        }, 10000);
+        }, 3000);
         return () => { if (bgPollRef.current) clearInterval(bgPollRef.current); };
     }, []);
 
