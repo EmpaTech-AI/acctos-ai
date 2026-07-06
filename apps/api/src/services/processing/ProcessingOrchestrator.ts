@@ -756,6 +756,14 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
             const parsedIn  = excelTransactions.reduce((s, t) => s + parseN(t['Money in']),  0);
             const parsedOut = excelTransactions.reduce((s, t) => s + parseN(t['Money out']), 0);
 
+            // Balance verification (when Balance column is present in the Excel)
+            const parseYMD = (dmy: string) => { const [d, m, y] = dmy.split('/').map(Number); return isNaN(y) ? 0 : y * 10000 + m * 100 + (d || 0); };
+            const excelAscending = parsed.length > 1
+                ? parseYMD(parsed[0].date || '') < parseYMD(parsed[parsed.length - 1].date || '')
+                : false;
+            const excelVerification = computeVerification(parsed, undefined, excelAscending);
+            if (excelVerification) logVerificationSummary(excelVerification);
+
             if (processingMode === 'vat') {
                 // VAT Excel: skip AI categorization — direction split only (moneyIn → sales, moneyOut → expenses)
                 timer.start('output');
@@ -773,6 +781,17 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
                 const result = await buildVatOutputExcel(vatCategorized, emailSubject ? extractClientName(emailSubject) : filename);
                 outputBuffer = result.buffer;
                 vatStats = result.vatStats;
+                if (excelVerification?.openingBalance != null) {
+                    emailBankSummary = {
+                        total:          parsed.length,
+                        moneyIn:        parsedIn,
+                        moneyOut:       parsedOut,
+                        openingBalance: excelVerification.openingBalance,
+                        closingBalance: excelVerification.closingBalance,
+                        balanceDiff:    excelVerification.balanceDiff,
+                        balanceOk:      excelVerification.balanceOk,
+                    };
+                }
             } else {
                 timer.start('categorize');
                 jobStore.update(jobId, { transactionCount: parsed.length, currentStage: 'categorize' });
@@ -786,12 +805,16 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
                     for (const k of EXP_ONLY) { const v = parseN((row as any)[k]); if (v !== 0) catOut += Math.abs(v); }
                 }
                 emailBankSummary = {
-                    total:      categorized.length,
-                    moneyIn:    parsedIn,
-                    moneyOut:   parsedOut,
-                    catTotalIn:  catIn,
-                    catTotalOut: catOut,
-                    catOk:       Math.abs(catIn - parsedIn) < 0.05 && Math.abs(catOut - parsedOut) < 0.05,
+                    total:          categorized.length,
+                    moneyIn:        parsedIn,
+                    moneyOut:       parsedOut,
+                    openingBalance: excelVerification?.openingBalance,
+                    closingBalance: excelVerification?.closingBalance,
+                    balanceDiff:    excelVerification?.balanceDiff,
+                    balanceOk:      excelVerification?.balanceOk,
+                    catTotalIn:     catIn,
+                    catTotalOut:    catOut,
+                    catOk:          Math.abs(catIn - parsedIn) < 0.05 && Math.abs(catOut - parsedOut) < 0.05,
                 };
                 outputBuffer = await buildPdfOutputExcel(categorized);
             }
