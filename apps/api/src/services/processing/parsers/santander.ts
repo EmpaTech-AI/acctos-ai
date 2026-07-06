@@ -334,14 +334,33 @@ export function parse(cells: Cell[]): ParseResult {
         const dateText = v[dateCol] ?? '';
         const dateStr = parseAnyDate(dateText, yrState, period);
         if (!dateStr) {
-            // No date — may be a description continuation for the previous transaction
-            // (occurs when Azure DI splits an incoming row across a page break:
-            //  page N last row has the amount, page N+1 first row has the description text)
-            if (lastPushed && !lastPushed.description) {
+            // No date — continuation row for the previous transaction, or an opening-balance row.
+            if (lastPushed) {
+                // (a) description continuation: date row had no description, next row has text
                 const cont = normStr(v[1] ?? '');
                 const isHeaderWord = /^(date|description(\s+money\s+in)?|money\s+(in|out)|balance)$/i.test(cont);
-                if (cont && !isMoneyText(cont) && !isHeaderWord) {
+                if (!lastPushed.description && cont && !isMoneyText(cont) && !isHeaderWord) {
                     lastPushed.description = cleanDesc(cont);
+                }
+                // (b) amount continuation: date row had no amounts, next row has Credits/Debits
+                if (lastPushed.moneyIn === '' && lastPushed.moneyOut === '') {
+                    const contIn  = inCol  !== null ? parseAbsStrict(v[inCol]  ?? '') : null;
+                    const contOut = outCol !== null ? parseAbsStrict(v[outCol] ?? '') : null;
+                    if (contIn  !== null) lastPushed.moneyIn  = contIn;
+                    if (contOut !== null) lastPushed.moneyOut = contOut;
+                    // Balance may also be on continuation when absent from the date row
+                    if (lastPushed._anchor === null && balCol !== null) {
+                        const contBal = parseMoneyStrict(v[balCol] ?? '');
+                        if (contBal !== null) lastPushed._anchor = contBal;
+                    }
+                }
+            } else if (balCol !== null) {
+                // No transactions yet — check for opening balance row with no date
+                // (Santander Business format: "Previous statement balance" in description col)
+                const descText = normStr(v[descCol] ?? '');
+                if (isOpeningBal(descText)) {
+                    const ob = parseMoneyStrict(v[balCol] ?? '');
+                    if (ob !== null) { openingBalance = ob; lastBalance = ob; }
                 }
             }
             continue;
@@ -434,8 +453,9 @@ export function parse(cells: Cell[]): ParseResult {
         const moneyIn  = parseAbsStrict(inRaw);
         const moneyOut = parseAbsStrict(outRaw);
 
-        if (moneyIn === null && moneyOut === null) continue;
-        // Allow empty description here — continuation row will fill it in
+        // Skip only if no amounts AND no description — rows with description but no
+        // amounts are kept as "pending"; a continuation row will fill in the amounts.
+        if (moneyIn === null && moneyOut === null && !description && !typeCode) continue;
 
         const txn: RawTxn = {
             date:        dateStr,
@@ -454,7 +474,9 @@ export function parse(cells: Cell[]): ParseResult {
     // ── Finalize ───────────────────────────────────────────────────────────────
     applyBalances(rawTxns, openingBalance);
 
+    // Santander Business Account PDFs list transactions oldest-first (ascending).
     return {
+        ascending: true as boolean,
         transactions: rawTxns
             .filter(t => t.date && t.description && (t.moneyIn !== '' || t.moneyOut !== ''))
             .map(t => ({
