@@ -197,7 +197,7 @@ export function computeChainVerification(
         const next = fileSummaries[i + 1];
         if (cur.closingBalance == null || next.openingBalance == null) continue;
         const gapDiff = Math.round((next.openingBalance - cur.closingBalance) * 100) / 100;
-        if (Math.abs(gapDiff) >= 0.02) {
+        if (Math.abs(gapDiff) > 0.02) {
             gaps.push({
                 afterFile:    cur.filename,
                 beforeFile:   next.filename,
@@ -213,7 +213,7 @@ export function computeChainVerification(
         chainClosingBalance: chainClose,
         expectedClosing: expected,
         diff,
-        ok: Math.abs(diff) < 0.02 && gaps.length === 0,
+        ok: Math.abs(diff) <= 0.02 && gaps.length === 0,
         gaps,
     };
 }
