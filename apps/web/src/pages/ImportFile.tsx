@@ -641,10 +641,10 @@ export default function ImportFile() {
 
     const startPolling = (jobId: string) => {
         if (pollRef.current) clearInterval(pollRef.current);
-        // Fast poll (500ms) for the first 10s to catch quick cache-hit jobs,
-        // then slow down to 2s for longer-running jobs.
+        // Fast poll (500ms) for the first 60s so stage transitions are visible,
+        // then slow down to 1s for very long-running jobs.
         let ticks = 0;
-        const FAST_TICKS = 20; // 20 × 500ms = 10s
+        const FAST_TICKS = 120; // 120 × 500ms = 60s
         const poll = async () => {
             try {
                 const res = await axios.get(`/v1/processing/${jobId}`);
@@ -662,7 +662,7 @@ export default function ImportFile() {
             if (ticks === FAST_TICKS) {
                 // Switch from fast to slow polling
                 clearInterval(pollRef.current!);
-                pollRef.current = setInterval(poll, 2000);
+                pollRef.current = setInterval(poll, 1000);
             }
         };
         pollRef.current = setInterval(poll, 500);
