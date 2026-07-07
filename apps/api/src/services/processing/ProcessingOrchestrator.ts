@@ -434,8 +434,15 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
             if (bankType === 'generic') {
                 const detected = detectBankFromContent(combinedContent);
                 if (detected !== 'generic') {
-                    console.log(`[Orchestrator] Bank detected from content: ${detected}`);
-                    bankType = detected;
+                    if (confirmedBankType && detected !== confirmedBankType) {
+                        // Content detection found a different bank — likely a false positive
+                        // (e.g. a payee named "Nationwide" inside a Barclays statement).
+                        console.log(`[Orchestrator] Ignoring content-detected bank "${detected}" — trusting confirmed "${confirmedBankType}"`);
+                        bankType = confirmedBankType;
+                    } else {
+                        console.log(`[Orchestrator] Bank detected from content: ${detected}`);
+                        bankType = detected;
+                    }
                 } else if (confirmedBankType) {
                     console.log(`[Orchestrator] File ${fi + 1}/${files.length}: reusing confirmed bank "${confirmedBankType}" from earlier file`);
                     bankType = confirmedBankType;
@@ -499,15 +506,15 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
         // combined opening/closing accordingly instead of using upload-order values.
         if (combinedStatementTotals && fileTotals.length > 1) {
             const allClose = new Set(
-                fileTotals.filter(t => t.closingBalance !== undefined).map(t => Math.round(t.closingBalance! * 100))
+                fileTotals.filter(t => t.closingBalance != null).map(t => Math.round(t.closingBalance! * 100))
             );
             const allOpen = new Set(
-                fileTotals.filter(t => t.openingBalance !== undefined).map(t => Math.round(t.openingBalance! * 100))
+                fileTotals.filter(t => t.openingBalance != null).map(t => Math.round(t.openingBalance! * 100))
             );
-            const firstFile = fileTotals.find(t => t.openingBalance !== undefined && !allClose.has(Math.round(t.openingBalance * 100)));
-            const lastFile  = fileTotals.find(t => t.closingBalance !== undefined && !allOpen.has(Math.round(t.closingBalance * 100)));
-            if (firstFile?.openingBalance !== undefined) combinedStatementTotals.openingBalance = firstFile.openingBalance;
-            if (lastFile?.closingBalance  !== undefined) combinedStatementTotals.closingBalance  = lastFile.closingBalance;
+            const firstFile = fileTotals.find(t => t.openingBalance != null && !allClose.has(Math.round(t.openingBalance * 100)));
+            const lastFile  = fileTotals.find(t => t.closingBalance != null && !allOpen.has(Math.round(t.closingBalance * 100)));
+            if (firstFile?.openingBalance != null) combinedStatementTotals.openingBalance = firstFile.openingBalance;
+            if (lastFile?.closingBalance  != null) combinedStatementTotals.closingBalance  = lastFile.closingBalance;
         } else if (combinedStatementTotals && fileTotals.length === 1) {
             combinedStatementTotals.openingBalance = fileTotals[0].openingBalance;
             combinedStatementTotals.closingBalance  = fileTotals[0].closingBalance;
