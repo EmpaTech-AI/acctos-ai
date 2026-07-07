@@ -658,6 +658,9 @@ function extractBarclaysStatementTotals(cells: Cell[]): ParseResult['statementTo
 
 export function parse(cells: Cell[]): ParseResult {
     const ctx = cells.find(c => c.rowIndex < 0)?.content ?? '';
+    // "Statement of Fees" is a Barclays fees notice, not a bank statement.
+    // It has no transaction rows — only fee summaries that look like amounts.
+    if (/\bStatement\s+of\s+Fees\b/i.test(ctx)) return { transactions: [] };
     const result = /Premier BK AC/i.test(ctx) ? parsePremier(cells) : parseNormal(cells);
     if (!result.statementTotals) {
         const totals = extractBarclaysStatementTotals(cells);
