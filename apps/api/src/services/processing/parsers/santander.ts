@@ -474,9 +474,34 @@ export function parse(cells: Cell[]): ParseResult {
     // ── Finalize ───────────────────────────────────────────────────────────────
     applyBalances(rawTxns, openingBalance);
 
+    // ── Extract statement totals from summary lines (first-page text) ──────────
+    // Santander PDFs always have a summary block: "Balance brought forward...",
+    // "Total credits:", "Total debits:", "Your balance at close of business..."
+    // These are more reliable than summing parsed transactions (which may miss
+    // rows that Azure DI failed to extract).
+    let statementTotals: ParseResult['statementTotals'] | undefined;
+    const summaryText = cells.find(c => c.rowIndex === -1)?.content ?? allText ?? '';
+    const summaryOpenM  = summaryText.match(/Balance brought forward from[^£\n]*£\s*([\d,]+\.?\d*)/i);
+    const summaryCloseM = summaryText.match(/Your balance at close of business[^£\n]*£\s*([\d,]+\.?\d*)/i);
+    const summaryCredM  = summaryText.match(/Total credits?:\s*£?\s*([\d,]+\.?\d*)/i);
+    const summaryDebM   = summaryText.match(/Total debits?:\s*-?£?\s*([\d,]+\.?\d*)/i);
+    const summaryOpen   = summaryOpenM  ? parseFloat(summaryOpenM[1].replace(/,/g,''))  : null;
+    const summaryClose  = summaryCloseM ? parseFloat(summaryCloseM[1].replace(/,/g,'')) : null;
+    const summaryCred   = summaryCredM  ? parseFloat(summaryCredM[1].replace(/,/g,''))  : null;
+    const summaryDeb    = summaryDebM   ? parseFloat(summaryDebM[1].replace(/,/g,''))   : null;
+    if (summaryOpen !== null || summaryClose !== null || summaryCred !== null) {
+        statementTotals = {
+            openingBalance: summaryOpen  ?? undefined,
+            closingBalance: summaryClose ?? undefined,
+            moneyIn:        summaryCred  ?? 0,
+            moneyOut:       summaryDeb   ?? 0,
+        } as any;
+    }
+
     // Santander Business Account PDFs list transactions oldest-first (ascending).
     return {
         ascending: true as boolean,
+        statementTotals,
         transactions: rawTxns
             .filter(t => t.date && t.description && (t.moneyIn !== '' || t.moneyOut !== ''))
             .map(t => ({

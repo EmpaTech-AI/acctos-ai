@@ -348,7 +348,7 @@ const CATEGORY_SCHEMA = {
 function buildCatRow(formatted: any, category: string): CategorizedTransaction {
     const row: any = {
         DATE:                   formatted.Date        || '',
-        'Type and Description': formatted.Description || '',
+        'Type and Description': formatted.Description || formatted.Merchant || '',
         INCOME: '', SALARY: '', OTHER: '', INSURANCE: '', LOAN: '',
         CASH: '', TRAVEL: '', PHONE: '', CHARGES: '', Bank_Transfer: '',
         HMRC: '', RENT: '', BILLS: '',
