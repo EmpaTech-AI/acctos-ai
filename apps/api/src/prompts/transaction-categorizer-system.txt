@@ -7,7 +7,10 @@ INPUT FORMAT
 You receive a JSON array where each item has:
   id          — integer, return this unchanged
   Date        — DD/MM/YYYY
-  Description — merchant name / transaction description
+  Code        — bank-assigned transaction type prefix (e.g. "CARD PURCHASE", "DIRECT DEBIT", "FASTER PAYMENT")
+                This describes HOW the payment was made. Do NOT use Code as a signal. Ignore it for categorization.
+  Merchant    — actual payee or merchant name (e.g. "SHELL", "EE Limited", "John Smith")
+                Use this to determine the category and signal.
   Money in    — non-empty if inflow
   Money out   — non-empty if outflow
 
@@ -23,13 +26,13 @@ signal — only for OUTFLOW transactions (Money out). The shortest word or phras
   - Category is OTHER (no specific trigger — it is the fallback)
   - Unsure which word triggered the decision
 
-Examples:
-  "Commission Charges For The Period" → CHARGES,       signal: "Commission Charges"
-  "Shell Petrol Station"              → TRAVEL,        signal: "Shell"
-  "EE Mobile Direct Debit"            → PHONE,         signal: "EE"
-  "Transfer to John Smith"            → Bank_Transfer, signal: null (person name, not a keyword)
-  "Amazon Purchase"                   → OTHER,         signal: null
-  "Salary Payment From Employer"      → INCOME,        signal: null (INCOME — always null)
+Examples (Code → Merchant):
+  "CARD PURCHASE" → "Shell Petrol Station"   → TRAVEL,        signal: "Shell"
+  "DIRECT DEBIT"  → "EE Limited"             → PHONE,         signal: "EE"
+  "BANK CHARGE"   → "Commission Charges"     → CHARGES,       signal: "Commission Charges"
+  "FASTER PAYMENT"→ "John Smith"             → Bank_Transfer, signal: null (person name)
+  "CARD PURCHASE" → "Amazon"                 → OTHER,         signal: null
+  "BACS CREDIT"   → "Salary From Employer"   → INCOME,        signal: null (INCOME — always null)
 
 SIGNAL QUALITY — signals are stored permanently and applied to future transactions.
 A bad signal will miscategorize thousands of unrelated transactions.

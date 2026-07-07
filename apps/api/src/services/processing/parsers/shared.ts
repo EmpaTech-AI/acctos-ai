@@ -215,10 +215,12 @@ export function maxCol(cells: Cell[]): number {
 /** Format transactions into the object format the OpenAI Assistant expects */
 export function formatTransactionsForAssistant(transactions: ParsedTransaction[]): object[] {
     return transactions.map(t => ({
-        'Date': t.date,
-        'Description': `${t.type || ''} ${t.description || ''}`.trim() || '',
-        'Money in': t.moneyIn || '',
-        'Money out': t.moneyOut || '',
-        'Balance': t.balance || '',
+        'Date':        t.date,
+        'Code':        t.type        || '',   // bank-assigned prefix — ignore for category signal
+        'Merchant':    t.description || '',   // actual payee/merchant — use this for categorization
+        'Description': `${t.type || ''} ${t.description || ''}`.trim() || '', // combined — for Excel output only
+        'Money in':    t.moneyIn  || '',
+        'Money out':   t.moneyOut || '',
+        'Balance':     t.balance  || '',
     }));
 }

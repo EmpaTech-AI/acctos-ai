@@ -483,17 +483,18 @@ export async function categorize(transactions: ParsedTransaction[], context?: { 
 
     for (let i = 0; i < inputArray.length; i++) {
         const formatted = inputArray[i] as any;
-        const rawDesc   = formatted['Description'] || '';
-        const normDesc  = normalizeDescription(rawDesc);
+        // Merchant is already the clean payee/merchant name (no bank prefix).
+        // Description is the combined fallback for older paths that don't have Merchant.
+        const merchant  = (formatted['Merchant'] || formatted['Description'] || '') as string;
+        const normDesc  = normalizeDescription(merchant);
         // Vendor DB rules take priority, then hardcoded regex rules
-        const category  = applyVendorRule(rawDesc, vendorRules)
+        const category  = applyVendorRule(merchant, vendorRules)
                        ?? applyVendorRule(normDesc, vendorRules)
-                       ?? applyPreRule(rawDesc)
+                       ?? applyPreRule(merchant)
                        ?? applyPreRule(normDesc);
         if (category) {
             preCat[i] = buildRuleRow(transactions[i], formatted, category);
         } else {
-            formatted['Description'] = normDesc; // send cleaned description to AI
             aiIndices.push(i);
         }
     }
@@ -510,7 +511,13 @@ export async function categorize(transactions: ParsedTransaction[], context?: { 
     }
 
     if (aiIndices.length > 0) {
-        const aiFormatted  = aiIndices.map(i => inputArray[i]);
+        // Strip the combined Description field before sending to AI — AI receives Code + Merchant
+        // as separate fields so it can ignore bank prefixes and focus on the merchant name.
+        const aiFormatted = aiIndices.map(i => {
+            const f = inputArray[i] as any;
+            const { Description: _drop, ...rest } = f;
+            return rest;
+        });
         const totalBatches = Math.ceil(aiFormatted.length / BATCH_SIZE);
 
         const batches: object[][] = [];
