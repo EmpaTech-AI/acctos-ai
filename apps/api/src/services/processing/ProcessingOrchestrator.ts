@@ -451,6 +451,23 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
             if (fileAscending) ascending = true;
             console.log(`[Orchestrator] File ${fi + 1}/${files.length} "${filename}": ${fileTransactions.length} transactions`);
 
+            // Statement-level duplicate detection: catches the same statement downloaded twice
+            // with different PDF metadata (e.g. different Barclays download-session IDs in
+            // the filename) so SHA-256 byte-dedup above doesn't catch it.
+            if (statementTotals?.openingBalance != null && statementTotals?.closingBalance != null) {
+                const isDup = fileTotals.some(prev =>
+                    prev.openingBalance != null && prev.closingBalance != null &&
+                    Math.abs(prev.openingBalance - statementTotals.openingBalance!) < 0.01 &&
+                    Math.abs(prev.closingBalance - statementTotals.closingBalance!) < 0.01 &&
+                    Math.abs(prev.moneyIn  - statementTotals.moneyIn)  < 0.01 &&
+                    Math.abs(prev.moneyOut - statementTotals.moneyOut) < 0.01
+                );
+                if (isDup) {
+                    console.warn(`[Orchestrator] Duplicate statement skipped: "${filename}" (same open/close/in/out as already-processed file)`);
+                    continue;
+                }
+            }
+
             // Per-file summary for the output Excel "Files" sheet
             const parsedInFile  = Math.round(fileTransactions.reduce((s, t) => s + (parseFloat((t.moneyIn  || '0').replace(/,/g, '')) || 0), 0) * 100) / 100;
             const parsedOutFile = Math.round(fileTransactions.reduce((s, t) => s + (parseFloat((t.moneyOut || '0').replace(/,/g, '')) || 0), 0) * 100) / 100;
