@@ -11,15 +11,22 @@ import { parse as parseBasic } from './santander-basic.js';
 
 // ── Money helpers ──────────────────────────────────────────────────────────────
 
-// Allows optional space after £: "£ 146.49" or "£146.49" or "1,234.56"
+// Santander Online Banking exports show negative balances as "£ - 25.71" (space before digits).
+const NEG_BAL_RE = /^£\s*-\s*((?:\d{1,3}(?:,\d{3})+|\d+)\.\d{2})$/;
+
+// Allows optional space after £: "£ 146.49" or "£146.49" or "1,234.56" or "£ - 25.71"
 function isMoneyText(s: string): boolean {
-    return /^-?£?\s*(?:\d{1,3}(?:,\d{3})+|\d+)\.\d{2}$/.test(normStr(s));
+    const n = normStr(s);
+    return /^-?£?\s*(?:\d{1,3}(?:,\d{3})+|\d+)\.\d{2}$/.test(n) || NEG_BAL_RE.test(n);
 }
 
 function parseMoneyStrict(s: string): number | null {
-    if (!isMoneyText(s)) return null;
-    const n = Number(normStr(s).replace(/[£,\s]/g, ''));
-    return Number.isFinite(n) ? n : null;
+    const n = normStr(s);
+    const neg = n.match(NEG_BAL_RE);
+    if (neg) return -parseFloat(neg[1].replace(/,/g, ''));
+    if (!/^-?£?\s*(?:\d{1,3}(?:,\d{3})+|\d+)\.\d{2}$/.test(n)) return null;
+    const val = Number(n.replace(/[£,\s]/g, ''));
+    return Number.isFinite(val) ? val : null;
 }
 
 function parseAbsStrict(s: string): number | null {
@@ -474,31 +481,55 @@ export function parse(cells: Cell[]): ParseResult {
     // ── Finalize ───────────────────────────────────────────────────────────────
     applyBalances(rawTxns, openingBalance);
 
+    // ── Online Banking export: PDF is newest-first — reverse to ascending order ─
+    // Santander Online Banking table exports list transactions in reverse
+    // chronological order (newest first). Reverse so Excel output is oldest-first.
+    const isOnlineBanking = /online\s+banking/i.test(allText);
+    if (isOnlineBanking) rawTxns.reverse();
+
     // ── Extract statement totals from summary lines (first-page text) ──────────
-    // Santander PDFs always have a summary block: "Balance brought forward...",
-    // "Total credits:", "Total debits:", "Your balance at close of business..."
-    // These are more reliable than summing parsed transactions (which may miss
-    // rows that Azure DI failed to extract).
     let statementTotals: ParseResult['statementTotals'] | undefined;
-    const summaryText = cells.find(c => c.rowIndex === -1)?.content ?? allText ?? '';
-    const summaryOpenM  = summaryText.match(/Balance brought forward from[^£]*£\s*([\d,]+\.?\d*)/i);
-    const summaryCloseM = summaryText.match(/Your balance at close of business[^£]*£\s*([\d,]+\.?\d*)/i);
-    const summaryCredM  = summaryText.match(/Total credits?:\s*£?\s*([\d,]+\.?\d*)/i);
-    const summaryDebM   = summaryText.match(/Total debits?:\s*-?£?\s*([\d,]+\.?\d*)/i);
-    const summaryOpen   = summaryOpenM  ? parseFloat(summaryOpenM[1].replace(/,/g,''))  : null;
-    const summaryClose  = summaryCloseM ? parseFloat(summaryCloseM[1].replace(/,/g,'')) : null;
-    const summaryCred   = summaryCredM  ? parseFloat(summaryCredM[1].replace(/,/g,''))  : null;
-    const summaryDeb    = summaryDebM   ? parseFloat(summaryDebM[1].replace(/,/g,''))   : null;
-    if (summaryOpen !== null || summaryClose !== null || summaryCred !== null) {
-        statementTotals = {
-            openingBalance: summaryOpen  ?? undefined,
-            closingBalance: summaryClose ?? undefined,
-            moneyIn:        summaryCred  ?? 0,
-            moneyOut:       summaryDeb   ?? 0,
-        } as any;
+
+    if (isOnlineBanking) {
+        // Online Banking exports have no summary block. Derive totals from
+        // transactions: closing = balance of the newest tx (last after reversing),
+        // opening = closing - totalIn + totalOut (internally consistent check).
+        const valid = rawTxns.filter(t => t.date && (t.moneyIn !== '' || t.moneyOut !== ''));
+        if (valid.length > 0) {
+            const tIn   = round2(valid.reduce((s, t) => s + (t.moneyIn  === '' ? 0 : t.moneyIn  as number), 0));
+            const tOut  = round2(valid.reduce((s, t) => s + (t.moneyOut === '' ? 0 : t.moneyOut as number), 0));
+            const close = parseFloat(valid[valid.length - 1].balance || '0');
+            statementTotals = {
+                openingBalance: round2(close - tIn + tOut),
+                closingBalance: close,
+                moneyIn:        tIn,
+                moneyOut:       tOut,
+            } as any;
+        }
+    } else {
+        // Santander PDFs always have a summary block: "Balance brought forward...",
+        // "Total credits:", "Total debits:", "Your balance at close of business..."
+        const summaryText = cells.find(c => c.rowIndex === -1)?.content ?? allText ?? '';
+        const summaryOpenM  = summaryText.match(/Balance brought forward from[^£]*£\s*([\d,]+\.?\d*)/i);
+        const summaryCloseM = summaryText.match(/Your balance at close of business[^£]*£\s*([\d,]+\.?\d*)/i);
+        const summaryCredM  = summaryText.match(/Total credits?:\s*£?\s*([\d,]+\.?\d*)/i);
+        const summaryDebM   = summaryText.match(/Total debits?:\s*-?£?\s*([\d,]+\.?\d*)/i);
+        const summaryOpen   = summaryOpenM  ? parseFloat(summaryOpenM[1].replace(/,/g,''))  : null;
+        const summaryClose  = summaryCloseM ? parseFloat(summaryCloseM[1].replace(/,/g,'')) : null;
+        const summaryCred   = summaryCredM  ? parseFloat(summaryCredM[1].replace(/,/g,''))  : null;
+        const summaryDeb    = summaryDebM   ? parseFloat(summaryDebM[1].replace(/,/g,''))   : null;
+        if (summaryOpen !== null || summaryClose !== null || summaryCred !== null) {
+            statementTotals = {
+                openingBalance: summaryOpen  ?? undefined,
+                closingBalance: summaryClose ?? undefined,
+                moneyIn:        summaryCred  ?? 0,
+                moneyOut:       summaryDeb   ?? 0,
+            } as any;
+        }
     }
 
     // Santander Business Account PDFs list transactions oldest-first (ascending).
+    // Online Banking exports are reversed above, so also ascending after that.
     return {
         ascending: true as boolean,
         statementTotals,
