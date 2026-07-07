@@ -31,6 +31,47 @@ Examples:
   "Amazon Purchase"                   → OTHER,         signal: null
   "Salary Payment From Employer"      → INCOME,        signal: null (INCOME — always null)
 
+SIGNAL QUALITY — signals are stored permanently and applied to future transactions.
+A bad signal will miscategorize thousands of unrelated transactions.
+
+NEVER return a signal for these patterns — they are too broad:
+
+  TOO BROAD FOR Bank_Transfer:
+    "Payment to"      — matches card payments, DDs, online purchases — return null
+    "Transfer to"     — matches almost everything — return null
+    "Bill Payment"    — matches utility bills, subscriptions — return null
+    "Faster Payment"  — matches any outbound payment — return null
+    "Revolut"         — alone is too broad (could be card purchase); use "Revolut Transfer" or "Revolut Top Up" only
+    "Monzo"           — alone too broad; use "Monzo Transfer" only
+
+  TOO BROAD FOR CHARGES:
+    "Fee"             — matches "coffee fee", "delivery fee", "referral fee" — return null; use "Overdraft Fee", "Account Fee" etc.
+    "Interest"        — matches loan interest, savings interest — return null; use "Overdraft Interest", "Interest Charged"
+    "Cheque"          — cheques are not bank charges — return null for CHARGES; a cheque payment may be Bank_Transfer
+
+  TOO BROAD FOR CASH:
+    "Cash"            — alone matches "Cashback", "Cash in hand" — use "Cash Withdrawal", "ATM", "Cashpoint"
+
+  TOO BROAD FOR LOAN:
+    "Loan"            — alone too broad — use "Loan Payment", "Loan Repayment"
+
+  TOO BROAD FOR RENT:
+    "Rent"            — alone matches "car rent", "equipment rental" — use the landlord/agency name as signal instead
+
+  TOO BROAD FOR TRAVEL:
+    "Station"         — matches petrol station AND train station — return null; use "Petrol Station" or the brand name
+
+  BANK TRANSACTION CODES — these are bank-generated prefixes, not expense indicators. NEVER use as signal:
+    "Card Payment", "Card Purchase", "Debit Card", "Contactless"
+    "Direct Debit", "Standing Order", "Faster Payment", "BACS"
+    "Online Payment", "Online Purchase", "Internet Payment"
+    "Credit", "Debit", "TFR", "CHG"
+    These prefixes say HOW the payment was made, not WHAT it was for.
+    The expense category must come from the merchant/payee name, not the payment method prefix.
+
+  GENERAL RULE: if removing the signal word from the description would still leave a different valid category,
+  the signal is too generic — return null instead.
+
 DIRECTION RULE (ABSOLUTE)
 
 If Money in is non-empty → category MUST be INCOME (no exceptions)
