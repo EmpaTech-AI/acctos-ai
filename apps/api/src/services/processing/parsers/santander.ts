@@ -481,8 +481,8 @@ export function parse(cells: Cell[]): ParseResult {
     // rows that Azure DI failed to extract).
     let statementTotals: ParseResult['statementTotals'] | undefined;
     const summaryText = cells.find(c => c.rowIndex === -1)?.content ?? allText ?? '';
-    const summaryOpenM  = summaryText.match(/Balance brought forward from[^£\n]*£\s*([\d,]+\.?\d*)/i);
-    const summaryCloseM = summaryText.match(/Your balance at close of business[^£\n]*£\s*([\d,]+\.?\d*)/i);
+    const summaryOpenM  = summaryText.match(/Balance brought forward from[^£]*£\s*([\d,]+\.?\d*)/i);
+    const summaryCloseM = summaryText.match(/Your balance at close of business[^£]*£\s*([\d,]+\.?\d*)/i);
     const summaryCredM  = summaryText.match(/Total credits?:\s*£?\s*([\d,]+\.?\d*)/i);
     const summaryDebM   = summaryText.match(/Total debits?:\s*-?£?\s*([\d,]+\.?\d*)/i);
     const summaryOpen   = summaryOpenM  ? parseFloat(summaryOpenM[1].replace(/,/g,''))  : null;
