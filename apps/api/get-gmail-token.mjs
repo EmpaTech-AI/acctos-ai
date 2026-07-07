@@ -11,8 +11,11 @@ import { google } from 'googleapis';
 import http from 'http';
 import { URL } from 'url';
 import { config } from 'dotenv';
+import { fileURLToPath } from 'url';
+import path from 'path';
 
-config(); // load apps/api/.env
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+config({ path: path.join(__dirname, '.env') });
 
 const CLIENT_ID     = process.env.GOOGLE_CLIENT_ID;
 const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;

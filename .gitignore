@@ -59,6 +59,13 @@ apps/api/patch-*.ts
 apps/api/compare-*.ts
 apps/api/test-excel-*.ts
 apps/api/apps/
+# Underscore-prefixed one-off debug/inspection scripts
+apps/api/_*.ts
+apps/api/_*.mjs
+apps/api/_*.json
+# Other loose utility/debug scripts
+apps/api/create-azure-cache.mjs
+apps/api/inspect-output.ts
 
 # Test output artefacts (processed statements, test xlsx results)
 apps/api/*_processed*.xlsx
