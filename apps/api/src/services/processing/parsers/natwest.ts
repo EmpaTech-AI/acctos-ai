@@ -331,7 +331,12 @@ export function parse(cells: Cell[]): ParseResult {
         if (date) {
             flush();
             currentDate = date;
-            current = { date: currentDate, type: txType, description: txDesc, moneyOut, moneyIn, balance };
+            // Azure DI occasionally places the description in col 0 (date column), leaving
+            // d1Col empty. When txDesc is empty but rawDate has extra text beyond the parsed
+            // date (e.g. "Card Transaction 5668 12JUL25 CD MEAT LAND SUPPLIERS"), use rawDate
+            // as the description so the transaction is not silently dropped by flush().
+            const desc = txDesc || (rawDate && rawDate !== date ? rawDate : '');
+            current = { date: currentDate, type: txType, description: desc, moneyOut, moneyIn, balance };
         } else if (current) {
             const hasAmt = !!(moneyIn || moneyOut);
             // NatWest omits the date for same-day transactions after the first — each such row
@@ -340,7 +345,11 @@ export function parse(cells: Cell[]): ParseResult {
             // Rows with an amount but NO balance are not real transactions — skip them.
             if (isSingleOrSplit5col && hasAmt && balance) {
                 flush();
-                current = { date: currentDate, type: txType, description: txDesc, moneyOut, moneyIn, balance };
+                // Azure DI occasionally places the description in col 0 (date column) when
+                // the date cell is blank, leaving col 1 (d1Col) empty. Use rawDate as
+                // description fallback when txDesc is empty and rawDate didn't parse as a date.
+                const desc = txDesc || (!date && rawDate ? rawDate : '');
+                current = { date: currentDate, type: txType, description: desc, moneyOut, moneyIn, balance };
             } else if (isSingleOrSplit5col && hasAmt && !balance) {
                 // No balance → not a real transaction row
             } else {
@@ -362,8 +371,10 @@ export function parse(cells: Cell[]): ParseResult {
                 if (moneyIn  && !current.moneyIn)  current.moneyIn  = moneyIn;
             }
         } else if (hasAmount && currentDate) {
-            // Orphaned amount with no preceding date row (page-break edge case)
-            current = { date: currentDate, type: txType, description: txDesc, moneyOut, moneyIn, balance };
+            // Orphaned amount with no preceding date row (page-break edge case).
+            // Azure DI may place description in col 0, leaving d1Col empty — use rawDate fallback.
+            const desc = txDesc || (!date && rawDate ? rawDate : '');
+            current = { date: currentDate, type: txType, description: desc, moneyOut, moneyIn, balance };
         }
     }
 
