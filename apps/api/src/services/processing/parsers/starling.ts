@@ -10,6 +10,13 @@ const RAW_TYPES = [
     'CARD SUBSCRIPTION', 'CHIP & PIN', 'ATM',
 ];
 
+// These types are always outgoing — never a credit/refund in Starling exports.
+// When Azure DI places the amount in col 3 (IN) instead of col 4 (OUT),
+// we correct the direction automatically.
+const ALWAYS_OUT_TYPES = new Set([
+    'CARD SUBSCRIPTION', 'DIRECT DEBIT', 'STANDING ORDER',
+]);
+
 function isHeaderRow(cells: string[]): boolean {
     const j = cells.join(' ').toLowerCase();
     return (
@@ -111,7 +118,13 @@ function extractFromSection(
             const outAmt = parseMoney(normStr(row.get(4) ?? ''));
 
             if (inAmt !== null && inAmt > 0 && (outAmt === null || outAmt === 0)) {
-                moneyIn = formatMoney(inAmt);
+                // Amount only in col 3 (IN column). For types that are always outgoing,
+                // Azure DI likely extracted the amount to the wrong column — correct it.
+                if (ALWAYS_OUT_TYPES.has(type.toUpperCase())) {
+                    moneyOut = formatMoney(inAmt);
+                } else {
+                    moneyIn = formatMoney(inAmt);
+                }
             } else if (outAmt !== null && outAmt > 0 && (inAmt === null || inAmt === 0)) {
                 moneyOut = formatMoney(outAmt);
             } else if (inAmt !== null && outAmt !== null) {
