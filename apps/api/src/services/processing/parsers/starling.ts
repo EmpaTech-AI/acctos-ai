@@ -236,8 +236,41 @@ export function parse(cells: Cell[]): ParseResult {
     let sectionRows: number[] = [];
     let sectionLayout: '6col' | '5col' = globalLayout;
 
+    // PAGE_GAP: row-offset system adds 10 000 between pages when splitting page-by-page.
+    // A gap ≥ this value means we've crossed a page boundary and each group should be
+    // assessed for its own layout — exactly how Make.com processed each page separately.
+    const PAGE_GAP = 9_000;
+
     function flushSection() {
-        extractFromSection(sectionRows, grid, sectionLayout, transactions);
+        if (!sectionRows.length) { sectionRows = []; return; }
+
+        // Split into page-groups (gaps ≥ PAGE_GAP indicate page boundaries).
+        // Each group gets its own layout detection, mirroring Make.com per-page behaviour.
+        const groups: number[][] = [];
+        let grp: number[] = [sectionRows[0]];
+        for (let i = 1; i < sectionRows.length; i++) {
+            if (sectionRows[i] - sectionRows[i - 1] >= PAGE_GAP) {
+                groups.push(grp);
+                grp = [];
+            }
+            grp.push(sectionRows[i]);
+        }
+        groups.push(grp);
+
+        for (const g of groups) {
+            // Per-group maxCol: if no col-5 data in this page, use 5col mode
+            // (col 3 = single amount → moneyOut). This fixes Azure DI column-shift
+            // on pages where the IN/OUT column distinction is lost.
+            let grpMaxCol = 0;
+            for (const r of g) {
+                for (const c of grid.get(r)!.keys()) {
+                    if (c > grpMaxCol) grpMaxCol = c;
+                }
+            }
+            const grpLayout: '6col' | '5col' = grpMaxCol >= 5 ? '6col' : '5col';
+            extractFromSection(g, grid, grpLayout, transactions);
+        }
+
         sectionRows = [];
     }
 
