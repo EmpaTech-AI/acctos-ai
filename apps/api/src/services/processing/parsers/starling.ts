@@ -13,6 +13,8 @@ const RAW_TYPES = [
 // These types are always outgoing — never a credit/refund in Starling exports.
 // When Azure DI places the amount in col 3 (IN) instead of col 4 (OUT),
 // we correct the direction automatically.
+// Excluded: CONTACTLESS, APPLE PAY, CHIP & PIN, ONLINE PAYMENT (refunds possible),
+//           FASTER PAYMENT (explicitly IN or OUT depending on direction).
 const ALWAYS_OUT_TYPES = new Set([
     'CARD SUBSCRIPTION', 'DIRECT DEBIT', 'STANDING ORDER',
 ]);
@@ -117,20 +119,27 @@ function extractFromSection(
             const inAmt  = parseMoney(normStr(row.get(3) ?? ''));
             const outAmt = parseMoney(normStr(row.get(4) ?? ''));
 
+            const typeUpper = type.toUpperCase();
             if (inAmt !== null && inAmt > 0 && (outAmt === null || outAmt === 0)) {
                 // Amount only in col 3 (IN column). For types that are always outgoing,
                 // Azure DI likely extracted the amount to the wrong column — correct it.
-                if (ALWAYS_OUT_TYPES.has(type.toUpperCase())) {
+                if (ALWAYS_OUT_TYPES.has(typeUpper)) {
                     moneyOut = formatMoney(inAmt);
                 } else {
                     moneyIn = formatMoney(inAmt);
                 }
             } else if (outAmt !== null && outAmt > 0 && (inAmt === null || inAmt === 0)) {
                 moneyOut = formatMoney(outAmt);
-            } else if (inAmt !== null && outAmt !== null) {
-                // Both present — larger wins
-                if (inAmt >= outAmt) moneyIn  = formatMoney(inAmt);
-                else                 moneyOut = formatMoney(outAmt);
+            } else if (inAmt !== null && outAmt !== null && inAmt > 0 && outAmt > 0) {
+                if (ALWAYS_OUT_TYPES.has(typeUpper)) {
+                    // Azure DI shifted columns: col 3 = real OUT amount, col 4 = EOD balance
+                    // (which spilled from col 5). Use col 3 as OUT, discard col 4.
+                    moneyOut = formatMoney(inAmt);
+                } else {
+                    // Both present — larger wins (e.g. in/out on same row for other types)
+                    if (inAmt >= outAmt) moneyIn  = formatMoney(inAmt);
+                    else                 moneyOut = formatMoney(outAmt);
+                }
             } else {
                 continue;
             }
