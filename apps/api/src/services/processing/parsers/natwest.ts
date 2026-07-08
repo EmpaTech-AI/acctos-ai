@@ -378,9 +378,10 @@ export function parse(cells: Cell[]): ParseResult {
         t.description = normStr(desc);
     }
 
-    // Extract declared statement totals from the summary block that sits above the header.
-    // NatWest places "Previous Balance / Paid In / Withdrawn / New Balance" as grid rows
-    // (rowIndex >= 0) before the transaction table header — not in OCR text (rowIndex < 0).
+    // Extract declared statement totals from the summary block.
+    // NatWest usually places "Previous Balance / Paid In / Withdrawn / New Balance" as grid rows
+    // before the header (scannable), but when the header is row 0 the summary only appears in
+    // the raw OCR text (rowIndex < 0). We try the grid scan first; fall back to OCR regex.
     let declaredIn: number | undefined, declaredOut: number | undefined;
     let declaredOpen: number | undefined, declaredClose: number | undefined;
     const scanLimit = headerRowIndex >= 0 ? headerRowIndex : 20;
@@ -400,6 +401,20 @@ export function parse(cells: Cell[]): ParseResult {
         else if (/previous\s+balance/.test(label))                    declaredOpen  = val;
         else if (/new\s+balance/.test(label))                         declaredClose = val;
     }
+
+    // OCR-text fallback: when header is at row 0 the summary block doesn't appear as grid rows.
+    // Parse "Paid In\n£8,992.95" / "Withdrawn\n£8,439.89" patterns from the raw OCR content.
+    if (declaredIn === undefined && declaredOut === undefined && ocrText) {
+        const paidInM  = ocrText.match(/paid\s+in\s+£\s*([\d,]+\.\d{2})/i);
+        const withdrM  = ocrText.match(/withdrawn\s+£\s*([\d,]+\.\d{2})/i);
+        const prevBalM = ocrText.match(/previous\s+balance\s+£\s*([\d,]+\.\d{2})/i);
+        const newBalM  = ocrText.match(/new\s+balance\s+£\s*([\d,]+\.\d{2})/i);
+        if (paidInM) declaredIn    = parseMoney(paidInM[1])  ?? undefined;
+        if (withdrM) declaredOut   = parseMoney(withdrM[1])  ?? undefined;
+        if (prevBalM) declaredOpen = parseMoney(prevBalM[1]) ?? undefined;
+        if (newBalM)  declaredClose= parseMoney(newBalM[1])  ?? undefined;
+    }
+
     const statementTotals = declaredIn !== undefined || declaredOut !== undefined
         ? {
             moneyIn:        declaredIn  ?? 0,
