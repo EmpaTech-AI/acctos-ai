@@ -380,7 +380,22 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
                 pageData = await analyzePages(pageBuffers);
                 usedAzure = true;
                 console.log(`[Orchestrator] File ${fi + 1}/${files.length} Azure DI:`, pageData.map((p, i) => `page${i+1}:${p?.cells?.length ?? 'null'}cells`));
-                saveAzureCache(fileHash, filename, pageData).catch(() => {});
+
+                // If every page returned null Azure DI may have had a transient
+                // failure (or the split produced bad chunks). Wait 5 minutes and
+                // retry once with the original buffer sent as a single unit.
+                if (pageData.every(p => p === null)) {
+                    const RETRY_DELAY_MS = 5 * 60 * 1_000;
+                    console.warn(`[Orchestrator] File "${filename}": all Azure DI pages null — retrying in 5 min`);
+                    await new Promise(r => setTimeout(r, RETRY_DELAY_MS));
+                    const retryBuffers = await splitPdf(buffer);
+                    pageData = await analyzePages(retryBuffers);
+                    console.log(`[Orchestrator] Retry result for "${filename}":`, pageData.map((p, i) => `page${i+1}:${p?.cells?.length ?? 'null'}cells`));
+                }
+
+                if (pageData.some(p => p !== null)) {
+                    saveAzureCache(fileHash, filename, pageData).catch(() => {});
+                }
             }
 
             if (usedAzure && tracking) {

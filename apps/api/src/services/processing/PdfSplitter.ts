@@ -18,7 +18,16 @@ export async function splitPdf(pdfBuffer: Buffer): Promise<Buffer[]> {
         return [pdfBuffer];
     }
 
-    const srcDoc    = await PDFDocument.load(pdfBuffer);
+    let srcDoc: PDFDocument;
+    try {
+        srcDoc = await PDFDocument.load(pdfBuffer);
+    } catch (loadErr: any) {
+        // pdf-lib rejected the file (e.g. corrupt HTTP transfer from Make.com).
+        // Azure DI can handle multi-page PDFs directly, so send the whole buffer
+        // without splitting — it will process all pages in one call.
+        console.warn(`[PdfSplitter] PDFDocument.load failed — sending whole buffer to Azure DI: ${loadErr?.message}`);
+        return [pdfBuffer];
+    }
     const pageCount = srcDoc.getPageCount();
     const pages: Buffer[] = [];
 
