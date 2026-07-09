@@ -457,6 +457,7 @@ export default function ImportFile() {
     const [isDragging, setIsDragging] = useState(false);
     const [job, setJob] = useState<Job | null>(null);
     const [recentJobs, setRecentJobs] = useState<RecentJob[]>([]);
+    const [recentPage, setRecentPage] = useState(1);
     const [previewJobId, setPreviewJobId] = useState<string | null>(null);
     const [previewFilename, setPreviewFilename] = useState('');
     const [processingMode, setProcessingMode] = useState<'bank_statement' | 'vat'>('bank_statement');
@@ -957,18 +958,23 @@ export default function ImportFile() {
             </div>
 
             {/* ── Recent jobs list ── */}
-            {recentJobs.length > 0 && (
+            {recentJobs.length > 0 && (() => {
+                const PAGE_SIZE = 20;
+                const totalPages = Math.ceil(recentJobs.length / PAGE_SIZE);
+                const page = Math.min(recentPage, totalPages);
+                const pageJobs = recentJobs.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+                return (
                 <div className="card" style={{ maxWidth: 620, marginTop: '1.25rem' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '1rem' }}>
                         <Clock size={16} color="var(--text-muted)" />
                         <span style={{ fontWeight: 600, fontSize: '0.88rem' }}>Recent files</span>
                         <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-                            — all processed files
+                            — {recentJobs.length} processed file{recentJobs.length !== 1 ? 's' : ''}
                         </span>
                     </div>
 
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                        {recentJobs.map(rj => (
+                        {pageJobs.map(rj => (
                             <div key={rj.id} style={{
                                 display: 'flex', alignItems: 'center', gap: '0.75rem',
                                 padding: '0.65rem 0.9rem',
@@ -1009,8 +1015,53 @@ export default function ImportFile() {
                             </div>
                         ))}
                     </div>
+
+                    {totalPages > 1 && (
+                        <div style={{
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            gap: '0.5rem', marginTop: '0.9rem',
+                        }}>
+                            <button
+                                className="btn-secondary"
+                                style={{ padding: '0.3rem 0.65rem', fontSize: '0.76rem' }}
+                                disabled={page <= 1}
+                                onClick={() => setRecentPage(p => p - 1)}
+                            >
+                                ‹
+                            </button>
+                            {Array.from({ length: totalPages }, (_, i) => i + 1).map(n => (
+                                <button
+                                    key={n}
+                                    className="btn-secondary"
+                                    style={{
+                                        padding: '0.3rem 0.6rem', fontSize: '0.76rem', minWidth: '2rem',
+                                        ...(n === page ? {
+                                            background: 'rgba(99,102,241,0.25)',
+                                            border: '1px solid rgba(99,102,241,0.5)',
+                                            color: 'var(--primary)',
+                                        } : {}),
+                                    }}
+                                    onClick={() => setRecentPage(n)}
+                                >
+                                    {n}
+                                </button>
+                            ))}
+                            <button
+                                className="btn-secondary"
+                                style={{ padding: '0.3rem 0.65rem', fontSize: '0.76rem' }}
+                                disabled={page >= totalPages}
+                                onClick={() => setRecentPage(p => p + 1)}
+                            >
+                                ›
+                            </button>
+                            <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginLeft: '0.25rem' }}>
+                                {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, recentJobs.length)} of {recentJobs.length}
+                            </span>
+                        </div>
+                    )}
                 </div>
-            )}
+                );
+            })()}
 
             {/* ── Preview modal ── */}
             {previewJobId && (
