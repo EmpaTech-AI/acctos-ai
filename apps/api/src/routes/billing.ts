@@ -250,16 +250,6 @@ router.get('/usage-status', async (req: AuthenticatedRequest, res: Response, nex
 
         if (!tenant) return next(createError('Tenant not found', 404, 'NOT_FOUND'));
 
-        // One-time migration: upgrade tenants still on the old 1000 default to 5000
-        if (tenant.pagesLimit <= 1000 && tenant.rowsLimit <= 1000) {
-            await (prisma.tenant as any).update({
-                where: { id: tenantId },
-                data: { pagesLimit: 5000, rowsLimit: 5000 },
-            });
-            tenant.pagesLimit = 5000;
-            tenant.rowsLimit  = 5000;
-        }
-
         const resetDay = tenant.billingResetDay ?? DEFAULT_BILLING_RESET_DAY;
         const periodStart = tenant.lastResetAt
             ? new Date(tenant.lastResetAt)
