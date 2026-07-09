@@ -1,4 +1,5 @@
 import { google } from 'googleapis';
+import { randomBytes } from 'crypto';
 
 function buildGmailClient() {
     const auth = new google.auth.OAuth2(
@@ -103,6 +104,80 @@ export async function markAsRead(messageId: string): Promise<void> {
         requestBody: { removeLabelIds: ['UNREAD'] },
     });
 }
+
+// ── Outbound email via Gmail API ──────────────────────────────────────────────
+
+interface SendOpts {
+    from:        string;
+    to:          string;
+    subject:     string;
+    text?:       string;
+    html?:       string;
+    attachment?: { filename: string; content: Buffer };
+}
+
+function buildRawMime(opts: SendOpts): string {
+    const b1 = `mp_${randomBytes(8).toString('hex')}`;
+    const enc = (s: string) => `=?UTF-8?B?${Buffer.from(s).toString('base64')}?=`;
+
+    const lines: string[] = [
+        `From: ${opts.from}`,
+        `To: ${opts.to}`,
+        `Subject: ${enc(opts.subject)}`,
+        'MIME-Version: 1.0',
+    ];
+
+    if (opts.attachment) {
+        const b2 = `alt_${b1}`;
+        lines.push(`Content-Type: multipart/mixed; boundary="${b1}"`, '');
+        lines.push(`--${b1}`, `Content-Type: multipart/alternative; boundary="${b2}"`, '');
+        if (opts.text) {
+            lines.push(`--${b2}`, 'Content-Type: text/plain; charset=UTF-8',
+                'Content-Transfer-Encoding: base64', '', Buffer.from(opts.text).toString('base64'));
+        }
+        if (opts.html) {
+            lines.push(`--${b2}`, 'Content-Type: text/html; charset=UTF-8',
+                'Content-Transfer-Encoding: base64', '', Buffer.from(opts.html).toString('base64'));
+        }
+        lines.push(`--${b2}--`);
+        lines.push(
+            `--${b1}`,
+            'Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            `Content-Disposition: attachment; filename="${enc(opts.attachment.filename)}"`,
+            'Content-Transfer-Encoding: base64', '',
+            opts.attachment.content.toString('base64'),
+            `--${b1}--`,
+        );
+    } else if (opts.html) {
+        const b2 = `alt_${b1}`;
+        lines.push(`Content-Type: multipart/alternative; boundary="${b2}"`, '');
+        if (opts.text) {
+            lines.push(`--${b2}`, 'Content-Type: text/plain; charset=UTF-8',
+                'Content-Transfer-Encoding: base64', '', Buffer.from(opts.text).toString('base64'));
+        }
+        lines.push(`--${b2}`, 'Content-Type: text/html; charset=UTF-8',
+            'Content-Transfer-Encoding: base64', '', Buffer.from(opts.html).toString('base64'));
+        lines.push(`--${b2}--`);
+    } else {
+        lines.push('Content-Type: text/plain; charset=UTF-8',
+            'Content-Transfer-Encoding: base64', '', Buffer.from(opts.text ?? '').toString('base64'));
+    }
+
+    return Buffer.from(lines.join('\r\n')).toString('base64url');
+}
+
+/**
+ * Send an email via the Gmail API using the configured OAuth2 credentials.
+ * The `from` address must be the authenticated Gmail account or a verified
+ * "Send As" alias configured in Gmail settings.
+ */
+export async function sendGmailMessage(opts: SendOpts): Promise<void> {
+    const gmail = buildGmailClient();
+    await gmail.users.messages.send({ userId: 'me', requestBody: { raw: buildRawMime(opts) } });
+    console.log(`[Gmail] Email sent to ${opts.to}: "${opts.subject}"`);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 function flattenParts(parts: any[]): any[] {
     const result: any[] = [];

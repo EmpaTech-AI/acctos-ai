@@ -15,25 +15,19 @@
  *
  * Delivery:
  *   - Always logs to console.
- *   - Sends email via Resend when RESEND_API_KEY is set.
- *     RESEND_FROM_EMAIL : sender address (default: notifications@acctos.ai)
+ *   - Sends email via Gmail API (info@support.acctos.ai) using the same
+ *     OAuth2 credentials as the Gmail poller (GOOGLE_REFRESH_TOKEN).
  *     ALERT_TEAM_EMAIL  : team recipient (default: vasil.lozev@aiassist.bg)
  *     ALERT_CLIENT_EMAIL: client recipient (default: vasil.lozev@aiassist.bg)
  *
  * All functions are fire-and-forget — they never throw and never delay processing.
  */
 
-import { Resend } from 'resend';
+import { sendGmailMessage } from '../google/GmailService.js';
 
-const TEAM_EMAIL   = process.env.ALERT_TEAM_EMAIL   || 'vasil.lozev@aiassist.bg';
+const TEAM_EMAIL   = process.env.ALERT_TEAM_EMAIL || 'vasil.lozev@aiassist.bg';
 const CLIENT_EMAIL = process.env.ALERT_CLIENT_EMAIL || 'vasil.lozev@aiassist.bg';
-const FROM_EMAIL   = process.env.RESEND_FROM_EMAIL  || 'notifications@acctos.ai';
-
-function getResend(): Resend | null {
-    const key = process.env.RESEND_API_KEY;
-    if (!key) return null;
-    return new Resend(key);
-}
+const FROM_EMAIL   = 'info@support.acctos.ai';
 
 function ukTimeStr(): string {
     const parts = new Intl.DateTimeFormat('en-GB', {
@@ -306,11 +300,6 @@ export interface ProcessingCompleteAlert {
 }
 
 export function notifyProcessingComplete(alert: ProcessingCompleteAlert): void {
-    const resend = getResend();
-    if (!resend) {
-        console.warn(`[Notifications] RESEND_API_KEY not set — reply email not sent to ${alert.to}`);
-        return;
-    }
 
     const replySubject = /^re:/i.test(alert.emailSubject)
         ? alert.emailSubject
@@ -484,28 +473,19 @@ export function notifyProcessingComplete(alert: ProcessingCompleteAlert): void {
       <p style="margin-top:24px;color:#6b7280;font-size:13px">Ако имате въпроси, моля отговорете на този имейл.</p>
     </body></html>`;
 
-    const sendTo = (to: string) => resend.emails.send({
-        from:    FROM_EMAIL,
+    const sendTo = (to: string) => sendGmailMessage({
+        from:       FROM_EMAIL,
         to,
-        subject: replySubject,
+        subject:    replySubject,
         text,
         html,
-        attachments: [{
-            filename: alert.filename,
-            content:  alert.xlsxBuffer,
-        }],
-    }).then(result => {
-        if (result.error) {
-            console.error(`[Notifications] Resend error sending reply to ${to}:`, result.error);
-        } else {
-            console.log(`[Notifications] Reply with Excel sent to ${to}: "${replySubject}" (id: ${result.data?.id})`);
-        }
+        attachment: { filename: alert.filename, content: alert.xlsxBuffer },
+    }).then(() => {
+        console.log(`[Notifications] Reply with Excel sent to ${to}: "${replySubject}"`);
     }).catch(err => {
         console.error(`[Notifications] Failed to send reply email to ${to}:`, err.message);
     });
 
-    // Always send a copy to team email (works on free Resend plan).
-    // Also attempt delivery to the accountant — succeeds once the sending domain is verified.
     sendTo(TEAM_EMAIL);
     if (alert.to && alert.to !== TEAM_EMAIL) sendTo(alert.to);
 }
@@ -518,11 +498,6 @@ export interface UnsupportedAttachmentAlert {
 }
 
 export function notifyUnsupportedAttachment(alert: UnsupportedAttachmentAlert): void {
-    const resend = getResend();
-    if (!resend) {
-        console.warn(`[Notifications] RESEND_API_KEY not set — unsupported-attachment reply not sent to ${alert.to}`);
-        return;
-    }
 
     const replySubject = /^re:/i.test(alert.emailSubject)
         ? alert.emailSubject
@@ -565,11 +540,8 @@ export function notifyUnsupportedAttachment(alert: UnsupportedAttachmentAlert): 
       <p style="margin-top:24px;color:#6b7280;font-size:13px">Ако имате въпроси, моля отговорете на този имейл.</p>
     </body></html>`;
 
-    const sendTo = (to: string) => resend.emails.send({ from: FROM_EMAIL, to, subject: replySubject, text, html })
-        .then(r => {
-            if (r.error) console.error(`[Notifications] Resend error (unsupported) to ${to}:`, r.error);
-            else console.log(`[Notifications] Unsupported-attachment reply sent to ${to}`);
-        })
+    const sendTo = (to: string) => sendGmailMessage({ from: FROM_EMAIL, to, subject: replySubject, text, html })
+        .then(() => console.log(`[Notifications] Unsupported-attachment reply sent to ${to}`))
         .catch(err => console.error(`[Notifications] Failed to send unsupported-attachment reply to ${to}:`, err.message));
 
     sendTo(TEAM_EMAIL);
@@ -579,24 +551,7 @@ export function notifyUnsupportedAttachment(alert: UnsupportedAttachmentAlert): 
 // ── Shared email sender ───────────────────────────────────────────────────────
 
 function sendEmail(to: string, subject: string, text: string): void {
-    const resend = getResend();
-    if (!resend) {
-        console.warn(`[Notifications] RESEND_API_KEY not set — email not sent to ${to}: "${subject}"`);
-        return;
-    }
-
-    resend.emails.send({
-        from:    FROM_EMAIL,
-        to,
-        subject,
-        text,
-    }).then(result => {
-        if (result.error) {
-            console.error(`[Notifications] Resend error sending to ${to}:`, result.error);
-        } else {
-            console.log(`[Notifications] Email sent to ${to}: "${subject}" (id: ${result.data?.id})`);
-        }
-    }).catch(err => {
-        console.error(`[Notifications] Failed to send email to ${to}:`, err.message);
-    });
+    sendGmailMessage({ from: FROM_EMAIL, to, subject, text })
+        .then(() => console.log(`[Notifications] Email sent to ${to}: "${subject}"`))
+        .catch(err => console.error(`[Notifications] Failed to send email to ${to}:`, err.message));
 }
