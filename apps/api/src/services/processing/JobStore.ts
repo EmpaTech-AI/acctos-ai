@@ -46,8 +46,8 @@ export interface ProcessingJob {
     totalFiles?: number;
     duplicatesRemoved?: string[];
     error?: string;
-    /** 'client' = bad/unsupported file; 'system' = our infrastructure/code failed */
-    errorType?: 'client' | 'system';
+    /** 'client' = bad/unsupported file; 'system' = our infrastructure/code failed; 'LIMIT_EXCEEDED' = usage limit or manual pause */
+    errorType?: 'client' | 'system' | 'LIMIT_EXCEEDED';
     stageTiming?: Partial<Record<ProcessingStage, number>>;
     outputBuffer?: Buffer;
     summary?: JobSummary;

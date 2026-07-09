@@ -8,6 +8,7 @@ import { createError } from '../middleware/errorHandler.js';
 import { ADMIN_ROLES } from '../utils/roles.js';
 import { startProcessingJob, startBatchProcessingJob } from '../services/processing/ProcessingOrchestrator.js';
 import { BankType } from '../services/processing/DocumentClassifier.js';
+import { checkProcessingAllowed } from '../utils/usageLimits.js';
 
 const upload = multer({
     storage: multer.memoryStorage(),
@@ -196,6 +197,17 @@ router.post('/import', requireRole(...ADMIN_ROLES), upload.array('files', 20), a
 
         const tenantId = req.user!.tenantId;
         const tracking = tenantId ? { prisma: req.app.locals.prisma, tenantId } : undefined;
+
+        // Limit gate: reject immediately so the user sees a clear 429 before any job is created
+        if (tenantId) {
+            const limitCheck = await checkProcessingAllowed(req.app.locals.prisma, tenantId);
+            if (!limitCheck.allowed) {
+                const message = limitCheck.reason === 'limit_exceeded'
+                    ? 'Usage limit reached for this billing period. Please upgrade your plan or wait for the next reset.'
+                    : 'Processing is currently paused. Please contact your administrator.';
+                return next(createError(message, 429, 'LIMIT_EXCEEDED'));
+            }
+        }
 
         // Optional bank type hint for multi-file batches where filenames don't contain the bank name
         // (e.g. page-split exports: "Statements__page1-20.pdf"). Passed as query param ?bankType=santander.

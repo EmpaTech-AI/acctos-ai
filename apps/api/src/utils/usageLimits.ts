@@ -389,3 +389,67 @@ export async function checkAndPauseIfNeeded(
         return false;
     }
 }
+
+/**
+ * Gate check: should a NEW processing job be allowed to start for this tenant?
+ *
+ * - Returns { allowed: false, reason: 'paused' } when scenariosPaused is true
+ *   (set either by limit auto-pause or by an admin manual stop).
+ * - Returns { allowed: false, reason: 'limit_exceeded' } when current-period
+ *   usage >= plan limits; also sets scenariosPaused=true as a side-effect.
+ * - Returns { allowed: true } otherwise.
+ *
+ * Call this at the START of every job, before any work begins. Never call it
+ * mid-job — running jobs always complete regardless of limit state.
+ * Fails open (returns allowed: true) on DB errors so a DB blip never blocks
+ * legitimate processing.
+ */
+export async function checkProcessingAllowed(
+    prisma: PrismaClient,
+    tenantId: string,
+): Promise<{ allowed: true } | { allowed: false; reason: 'paused' | 'limit_exceeded' }> {
+    try {
+        const tenant = await (prisma.tenant as any).findUnique({
+            where: { id: tenantId },
+            select: {
+                scenariosPaused: true,
+                pagesLimit: true,
+                rowsLimit: true,
+                addonPagesLimit: true,
+                addonRowsLimit: true,
+                lastResetAt: true,
+                billingResetDay: true,
+            },
+        });
+        if (!tenant) return { allowed: true }; // unknown tenant — don't block
+
+        if (tenant.scenariosPaused) {
+            return { allowed: false, reason: 'paused' };
+        }
+
+        const resetDay   = tenant.billingResetDay ?? DEFAULT_BILLING_RESET_DAY;
+        const periodStart = tenant.lastResetAt
+            ? new Date(tenant.lastResetAt)
+            : getExpectedResetDate(resetDay);
+        const usage      = await getCurrentPeriodUsage(prisma, tenantId, periodStart);
+        const totalPages = (tenant.pagesLimit ?? 5000) + (tenant.addonPagesLimit ?? 0);
+        const totalRows  = (tenant.rowsLimit  ?? 5000) + (tenant.addonRowsLimit  ?? 0);
+
+        if (usage.pages >= totalPages || usage.rows >= totalRows) {
+            // Auto-set the paused flag so subsequent checks are fast (DB read only)
+            try {
+                await (prisma.tenant as any).update({
+                    where: { id: tenantId },
+                    data: { scenariosPaused: true },
+                });
+            } catch { /* non-fatal */ }
+            return { allowed: false, reason: 'limit_exceeded' };
+        }
+
+        return { allowed: true };
+    } catch (e: any) {
+        // Fail open — a DB error should never block legitimate processing
+        console.warn('[checkProcessingAllowed] DB error, allowing job:', e.message?.split('\n')[0]);
+        return { allowed: true };
+    }
+}

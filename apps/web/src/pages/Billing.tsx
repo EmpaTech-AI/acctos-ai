@@ -144,7 +144,7 @@ interface UsageStatus {
 }
 
 export default function Billing() {
-    const { isAdmin, activeTenant } = useAuth();
+    const { isAdmin, isSuperAdmin, activeTenant } = useAuth();
     const { t } = useLanguage();
     const [usageStatus, setUsageStatus] = useState<UsageStatus | null>(null);
     const [rawUsage, setRawUsage] = useState<{ pages: number; rows: number } | null>(null);
@@ -177,6 +177,29 @@ export default function Billing() {
             setAdjustPagesMsg({ type: 'error', text: err.response?.data?.error?.message || 'Failed to adjust pages' });
         } finally {
             setAdjustingPages(false);
+        }
+    };
+
+    // Admin manual pause/resume state
+    const [togglingPause, setTogglingPause] = useState(false);
+    const [pauseMsg, setPauseMsg] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
+
+    const handleToggleProcessing = async () => {
+        const action = isPaused ? 'resume' : 'pause';
+        if (!window.confirm(isPaused
+            ? 'Resume processing? New jobs will be accepted again.'
+            : 'Pause processing? No new jobs will start. Running jobs will complete normally.'))
+            return;
+        setTogglingPause(true);
+        setPauseMsg(null);
+        try {
+            await axios.post(`/v1/billing/${action}-processing`);
+            setPauseMsg({ type: 'success', text: isPaused ? 'Processing resumed.' : 'Processing paused.' });
+            await fetchData();
+        } catch (err: any) {
+            setPauseMsg({ type: 'error', text: err.response?.data?.error?.message || `Failed to ${action} processing` });
+        } finally {
+            setTogglingPause(false);
         }
     };
 
@@ -413,6 +436,50 @@ export default function Billing() {
                             : t.purchaseToResume
                         }
                     </div>
+                </div>
+            )}
+
+            {/* Admin / Superadmin: manual processing gate control */}
+            {(isAdmin || isSuperAdmin) && (
+                <div style={{
+                    display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap',
+                    padding: '0.65rem 1rem',
+                    marginBottom: '1rem',
+                    background: isPaused ? 'rgba(239,68,68,0.07)' : 'rgba(34,197,94,0.06)',
+                    border: `1px solid ${isPaused ? 'rgba(239,68,68,0.25)' : 'rgba(34,197,94,0.2)'}`,
+                    borderRadius: '0.75rem',
+                }}>
+                    <span style={{
+                        width: 8, height: 8, borderRadius: '50%', flexShrink: 0,
+                        background: isPaused ? '#ef4444' : '#22c55e',
+                        boxShadow: isPaused ? '0 0 6px #ef4444' : '0 0 6px #22c55e',
+                    }} />
+                    <span style={{ fontSize: '0.83rem', fontWeight: 600, color: isPaused ? '#fca5a5' : '#86efac' }}>
+                        Processing: {isPaused ? 'Paused' : 'Active'}
+                    </span>
+                    <span style={{ fontSize: '0.76rem', color: 'var(--text-muted)', flex: 1 }}>
+                        {isPaused
+                            ? 'New jobs are blocked. Running jobs complete normally.'
+                            : 'New jobs are accepted normally.'}
+                    </span>
+                    <button
+                        onClick={handleToggleProcessing}
+                        disabled={togglingPause}
+                        style={{
+                            padding: '0.3rem 0.85rem', fontSize: '0.78rem', fontWeight: 600,
+                            border: 'none', borderRadius: '0.5rem', cursor: 'pointer',
+                            background: isPaused ? 'rgba(34,197,94,0.2)' : 'rgba(239,68,68,0.15)',
+                            color: isPaused ? '#22c55e' : '#ef4444',
+                            opacity: togglingPause ? 0.6 : 1,
+                        }}
+                    >
+                        {togglingPause ? '…' : isPaused ? 'Resume' : 'Pause'}
+                    </button>
+                    {pauseMsg && (
+                        <span style={{ fontSize: '0.75rem', color: pauseMsg.type === 'success' ? '#10b981' : '#ef4444' }}>
+                            {pauseMsg.text}
+                        </span>
+                    )}
                 </div>
             )}
 

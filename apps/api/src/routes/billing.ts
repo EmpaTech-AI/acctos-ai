@@ -862,6 +862,63 @@ router.post(
 );
 
 /**
+ * POST /v1/billing/pause-processing
+ *
+ * Admin-only. Manually pauses new processing jobs for the tenant.
+ * Running jobs are NOT interrupted — they complete normally.
+ * Any new upload or email that triggers processing will be rejected until resumed.
+ */
+router.post(
+    '/pause-processing',
+    requireRole('ORG_OWNER', 'ADMIN'),
+    async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+        try {
+            const prisma: PrismaClient = req.app.locals.prisma;
+            const tenantId = req.user!.tenantId;
+            if (!tenantId) return next(createError('No tenant selected', 400, 'NO_TENANT'));
+
+            await (prisma.tenant as any).update({
+                where: { id: tenantId },
+                data: { scenariosPaused: true },
+            });
+
+            console.log(`[Billing] Processing manually paused for tenant ${tenantId} by ${req.user!.email}`);
+            res.json({ success: true, processingPaused: true });
+        } catch (error) {
+            next(error);
+        }
+    }
+);
+
+/**
+ * POST /v1/billing/resume-processing
+ *
+ * Admin-only. Resumes processing after a manual pause or limit-based auto-pause.
+ * If limits are still exceeded, the next job will re-trigger the auto-pause.
+ */
+router.post(
+    '/resume-processing',
+    requireRole('ORG_OWNER', 'ADMIN'),
+    async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+        try {
+            const prisma: PrismaClient = req.app.locals.prisma;
+            const tenantId = req.user!.tenantId;
+            if (!tenantId) return next(createError('No tenant selected', 400, 'NO_TENANT'));
+
+            await (prisma.tenant as any).update({
+                where: { id: tenantId },
+                data: { scenariosPaused: false },
+            });
+
+            console.log(`[Billing] Processing manually resumed for tenant ${tenantId} by ${req.user!.email}`);
+            res.json({ success: true, processingPaused: false });
+        } catch (error) {
+            next(error);
+        }
+    }
+);
+
+/**
  * PUT /v1/billing/set-plan
  *
  * Admin-only. Manually sets the subscription plan/status for the tenant.

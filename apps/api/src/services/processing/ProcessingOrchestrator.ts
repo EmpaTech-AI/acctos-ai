@@ -17,6 +17,7 @@ import {
     createJobRecord, updateJobRecord, saveOutputFile,
 } from '../SupabaseService.js';
 import { uploadToDriveFolder, uploadToDriveSubfolder } from '../google/GoogleService.js';
+import { checkProcessingAllowed } from '../../utils/usageLimits.js';
 
 function getDriveFolderId(processingMode?: 'bank_statement' | 'vat'): string {
     return processingMode === 'vat'
@@ -330,6 +331,19 @@ export function startBatchProcessingJob(files: FileInput[], tracking?: TrackingC
 async function runBatchJob(jobId: string, files: FileInput[], tracking?: TrackingContext, bankHint?: BankType, processingMode?: 'bank_statement' | 'vat', emailSubject?: string, senderEmail?: string): Promise<void> {
     const timer = makeStageTimer();
     try {
+        // ── Limit gate: check BEFORE any work starts — never interrupts a running job ──
+        if (tracking?.tenantId && tracking?.prisma) {
+            const limitCheck = await checkProcessingAllowed(tracking.prisma, tracking.tenantId);
+            if (!limitCheck.allowed) {
+                const errMsg = limitCheck.reason === 'limit_exceeded'
+                    ? 'Usage limit reached for this billing period. Processing paused.'
+                    : 'Processing is currently paused. Contact your administrator.';
+                jobStore.update(jobId, { status: 'failed', error: errMsg, errorType: 'LIMIT_EXCEEDED' });
+                console.warn(`[Orchestrator] Batch job ${jobId} blocked — ${limitCheck.reason}`);
+                return;
+            }
+        }
+
         jobStore.update(jobId, { status: 'processing', totalFiles: files.length });
 
         // Warn when the client hasn't sent enough files for a complete period
@@ -760,6 +774,19 @@ export function startProcessingJob(
 async function runJob(jobId: string, filename: string, mimeType: string, fileBuffer: Buffer, tracking?: TrackingContext, processingMode?: 'bank_statement' | 'vat', emailSubject?: string, senderEmail?: string): Promise<void> {
     const timer = makeStageTimer();
     try {
+        // ── Limit gate: check BEFORE any work starts — never interrupts a running job ──
+        if (tracking?.tenantId && tracking?.prisma) {
+            const limitCheck = await checkProcessingAllowed(tracking.prisma, tracking.tenantId);
+            if (!limitCheck.allowed) {
+                const errMsg = limitCheck.reason === 'limit_exceeded'
+                    ? 'Usage limit reached for this billing period. Processing paused.'
+                    : 'Processing is currently paused. Contact your administrator.';
+                jobStore.update(jobId, { status: 'failed', error: errMsg, errorType: 'LIMIT_EXCEEDED' });
+                console.warn(`[Orchestrator] Job ${jobId} blocked — ${limitCheck.reason}`);
+                return;
+            }
+        }
+
         // ── Stage: classify ──────────────────────────────────────────────────────
         timer.start('classify');
         jobStore.update(jobId, { status: 'processing', currentStage: 'classify' });
