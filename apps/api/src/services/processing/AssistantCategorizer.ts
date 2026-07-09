@@ -79,10 +79,14 @@ function applyFallbackToRow(row: CategorizedTransaction, src: any): void {
     }
 }
 
+function typeAndDesc(f: any): string {
+    return f['Description'] || [f['Code'], f['Merchant']].filter(Boolean).join(' ') || '';
+}
+
 function buildFallbackRow(src: any): CategorizedTransaction {
     const row = {} as CategorizedTransaction;
     row.DATE = src['Date'] || '';
-    row['Type and Description'] = src['Description'] || '';
+    row['Type and Description'] = typeAndDesc(src);
     row.Balance = src['Balance'] || '';
     for (const k of EXPENSE_CATS) (row as any)[k] = '';
     applyFallbackToRow(row, src);
@@ -103,8 +107,8 @@ function applyFallback(items: CategorizedTransaction[], rawTransactions: object[
     if (items.length === rawTransactions.length) {
         for (let i = 0; i < items.length; i++) {
             const src = rawTransactions[i] as any;
-            const typeAndDesc = src['Description'] || '';
-            if (typeAndDesc) items[i]['Type and Description'] = typeAndDesc;
+            const td = typeAndDesc(src);
+            if (td) items[i]['Type and Description'] = td;
             applyFallbackToRow(items[i], src);
             deduplicateExpenseColumns(items[i]);
         }
@@ -123,8 +127,8 @@ function applyFallback(items: CategorizedTransaction[], rawTransactions: object[
         const matched = catByKey.get(key);
         if (matched) catByKey.delete(key);  // consume — prevents aliasing when multiple rows share the same key
         const row = matched ? { ...matched } : buildFallbackRow(src_);  // shallow-clone to ensure unique object
-        const typeAndDesc = src_['Description'] || '';
-        if (typeAndDesc) row['Type and Description'] = typeAndDesc;
+        const td = typeAndDesc(src_);
+        if (td) row['Type and Description'] = td;
         applyFallbackToRow(row, src_);
         deduplicateExpenseColumns(row);
         return row;
@@ -347,8 +351,8 @@ const CATEGORY_SCHEMA = {
 
 function buildCatRow(formatted: any, category: string): CategorizedTransaction {
     const row: any = {
-        DATE:                   formatted.Date        || '',
-        'Type and Description': formatted.Description || formatted.Merchant || '',
+        DATE:                   formatted.Date || '',
+        'Type and Description': typeAndDesc(formatted),
         INCOME: '', SALARY: '', OTHER: '', INSURANCE: '', LOAN: '',
         CASH: '', TRAVEL: '', PHONE: '', CHARGES: '', Bank_Transfer: '',
         HMRC: '', RENT: '', BILLS: '',
