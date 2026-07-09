@@ -17,7 +17,7 @@ import {
     createJobRecord, updateJobRecord, saveOutputFile,
 } from '../SupabaseService.js';
 import { uploadToDriveFolder, uploadToDriveSubfolder } from '../google/GoogleService.js';
-import { checkProcessingAllowed } from '../../utils/usageLimits.js';
+import { checkProcessingAllowed, recordOrchestratorUsage } from '../../utils/usageLimits.js';
 
 function getDriveFolderId(processingMode?: 'bank_statement' | 'vat'): string {
     return processingMode === 'vat'
@@ -366,6 +366,7 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
         const fileTotals: Array<{ moneyIn: number; moneyOut: number; openingBalance?: number; closingBalance?: number }> = [];
         const fileSummaries: FileSummary[] = [];
         let ascending = false;
+        let totalPagesSpent = 0;
 
         for (let fi = 0; fi < files.length; fi++) {
             const { filename, mimeType, buffer } = files[fi];
@@ -388,11 +389,13 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
                 console.log(`[Orchestrator] Azure cache HIT for file ${fi + 1}: "${filename}"`);
                 pageData = cachedPages;
                 jobStore.update(jobId, { pageCount: cachedPages.filter(p => p !== null).length });
+                totalPagesSpent += cachedPages.filter(p => p !== null).length;
             } else {
                 const pageBuffers = await splitPdf(buffer);
                 jobStore.update(jobId, { pageCount: pageBuffers.length });
                 pageData = await analyzePages(pageBuffers);
                 usedAzure = true;
+                totalPagesSpent += pageData.filter(p => p !== null).length;
                 console.log(`[Orchestrator] File ${fi + 1}/${files.length} Azure DI:`, pageData.map((p, i) => `page${i+1}:${p?.cells?.length ?? 'null'}cells`));
 
                 // If every page returned null Azure DI may have had a transient
@@ -669,6 +672,16 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
         const batchSummary = buildJobSummary(batchBankSummary, vatStats);
         jobStore.update(jobId, { status: 'completed', outputBuffer, completedAt: new Date(), summary: batchSummary });
         console.log(`[Orchestrator] Batch job ${jobId} completed — ${allTransactions.length} transactions from ${files.length} file(s)`);
+
+        if (tracking) {
+            void recordOrchestratorUsage(tracking.prisma, tracking.tenantId, {
+                pagesSpent:       totalPagesSpent,
+                rowsUsed:         0,
+                documentsHandled: files.length,
+                jobId,
+            });
+        }
+
         const _bankType  = jobStore.get(jobId)?.bankType;
         const _txCount   = jobStore.get(jobId)?.transactionCount;
         const _batchName = jobStore.get(jobId)?.filename ?? 'batch';
@@ -801,12 +814,15 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
         let outputBuffer: Buffer;
         let vatStats: VatStats | undefined;
         let emailBankSummary: BankSummary | undefined;
+        let _pagesSpent = 0;
+        let _rowsUsed   = 0;
 
         if (classification.fileFormat === 'excel') {
             // ── Stage: extract (OpenAI two-pass for Excel) ───────────────────────
             timer.start('extract');
             const excelTransactions = await parseExcel(fileBuffer);
             if (excelTransactions.length === 0) throw new Error('No transactions found in spreadsheet');
+            _rowsUsed = excelTransactions.length;
 
             // Convert ExcelTransaction → ParsedTransaction for categorization (both modes)
             const parsed = excelTransactions.map(t => ({
@@ -896,11 +912,13 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
                 console.log(`[Orchestrator] Azure cache HIT for "${filename}"`);
                 pageData = cachedPages;
                 jobStore.update(jobId, { pageCount: cachedPages.filter(p => p !== null).length });
+                _pagesSpent = cachedPages.filter(p => p !== null).length;
             } else {
                 const pageBuffers = await splitPdf(fileBuffer);
                 jobStore.update(jobId, { pageCount: pageBuffers.length });
                 pageData = await analyzePages(pageBuffers);
                 usedAzure = true;
+                _pagesSpent = pageData.filter(p => p !== null).length;
                 console.log(`[Orchestrator] Azure DI results per page:`, pageData.map((p, i) => `page${i+1}:${p?.cells?.length ?? 'null'}cells`));
                 saveAzureCache(fileHash, filename, pageData).catch(() => {});
             }
@@ -1060,6 +1078,16 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
         const singleSummary = buildJobSummary(emailBankSummary, vatStats);
         jobStore.update(jobId, { status: 'completed', outputBuffer, completedAt: new Date(), summary: singleSummary });
         console.log(`[Orchestrator] Job ${jobId} completed — ${filename}`);
+
+        if (tracking) {
+            void recordOrchestratorUsage(tracking.prisma, tracking.tenantId, {
+                pagesSpent:       _pagesSpent,
+                rowsUsed:         _rowsUsed,
+                documentsHandled: 1,
+                jobId,
+            });
+        }
+
         const _bankType = jobStore.get(jobId)?.bankType;
         const _txCount  = jobStore.get(jobId)?.transactionCount;
 

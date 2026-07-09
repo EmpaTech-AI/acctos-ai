@@ -453,3 +453,66 @@ export async function checkProcessingAllowed(
         return { allowed: true };
     }
 }
+
+/**
+ * Records processing usage from the new Orchestrator directly into the same
+ * DB tables that Make.com's /api/usage/document endpoint writes to.
+ *
+ * Safe during the Make.com transition period because there is no overlap:
+ *   - HTTP-upload jobs (already on the new Orchestrator) → recorded here
+ *   - Email/Drive jobs (still on Make.com) → recorded by Make.com via the route
+ *   - After migration (everything on the new Orchestrator) → recorded here only
+ *
+ * Idempotent: duplicate jobId calls are silently dropped (P2002).
+ * Non-fatal: any DB error is logged and swallowed — never fails the job.
+ */
+export async function recordOrchestratorUsage(
+    prisma: PrismaClient,
+    tenantId: string,
+    usage: { pagesSpent: number; rowsUsed: number; documentsHandled: number; jobId: string },
+): Promise<void> {
+    if (usage.pagesSpent === 0 && usage.rowsUsed === 0) return;
+    try {
+        const today = new Date(); today.setUTCHours(0, 0, 0, 0);
+        await prisma.documentUsageEvent.create({
+            data: {
+                customerId:       tenantId,
+                idempotencyKey:   `orchestrator-${usage.jobId}`,
+                pagesSpent:       usage.pagesSpent,
+                rowsUsed:         usage.rowsUsed,
+                documentsHandled: usage.documentsHandled,
+                jobId:            usage.jobId,
+                scenarioName:     'orchestrator',
+                timestamp:        new Date(),
+            },
+        });
+        await prisma.documentUsageAggregate.upsert({
+            where: { customerId_date: { customerId: tenantId, date: today } },
+            create: {
+                customerId:       tenantId,
+                date:             today,
+                pagesSpent:       usage.pagesSpent,
+                rowsUsed:         usage.rowsUsed,
+                documentsHandled: usage.documentsHandled,
+                eventCount:       1,
+            },
+            update: {
+                pagesSpent:       { increment: usage.pagesSpent },
+                rowsUsed:         { increment: usage.rowsUsed },
+                documentsHandled: { increment: usage.documentsHandled },
+                eventCount:       { increment: 1 },
+            },
+        });
+        // Re-run limit check — sets scenariosPaused if newly exceeded.
+        // Also pauses Make.com scenarios when makeApiKey is present (transition period);
+        // after migration makeApiKey will be absent and this becomes a DB-only flag set.
+        checkAndPauseIfNeeded(prisma, tenantId).catch((e: any) =>
+            console.warn('[recordOrchestratorUsage] Limit check failed:', e?.message?.split('\n')[0])
+        );
+        console.log(`[Orchestrator] Usage recorded — pages: ${usage.pagesSpent}, rows: ${usage.rowsUsed}, docs: ${usage.documentsHandled}`);
+    } catch (e: any) {
+        if (e?.code !== 'P2002') {
+            console.warn('[recordOrchestratorUsage] Failed to record usage:', e?.message?.split('\n')[0]);
+        }
+    }
+}
