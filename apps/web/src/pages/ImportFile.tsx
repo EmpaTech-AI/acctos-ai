@@ -834,7 +834,7 @@ export default function ImportFile() {
                                         cursor: 'pointer', textDecoration: 'underline',
                                     }}
                                 >
-                                    dismiss
+                                    Refresh UI
                                 </button>
                             </div>
                         )}
