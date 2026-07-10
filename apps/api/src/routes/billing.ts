@@ -244,7 +244,7 @@ router.get('/usage-status', async (req: AuthenticatedRequest, res: Response, nex
                 pagesLimit: true, rowsLimit: true,
                 addonPagesLimit: true, addonRowsLimit: true,
                 scenariosPaused: true, lastResetAt: true,
-                billingResetDay: true,
+                billingResetDay: true, limitWarningFiredAt: true,
             },
         });
 
