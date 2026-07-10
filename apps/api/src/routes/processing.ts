@@ -11,6 +11,15 @@ const router = Router();
 router.use(authenticateToken);
 router.use(requireRole(...ADMIN_ROLES));
 
+/** Build a safe Content-Disposition header that handles non-ASCII filenames (RFC 6266). */
+function contentDisposition(filename: string): string {
+    // ASCII fallback (strips non-ASCII so Node.js doesn't throw on the header value)
+    const ascii = filename.replace(/[^\x20-\x7E]/g, '_').replace(/"/g, "'");
+    // RFC 5987 encoded form preserves the original Unicode name in supporting browsers
+    const encoded = encodeURIComponent(filename);
+    return `attachment; filename="${ascii}"; filename*=UTF-8''${encoded}`;
+}
+
 /**
  * GET /v1/processing
  * List all jobs (from Supabase, newest first). Used by UI to show job history.
@@ -62,7 +71,7 @@ router.get('/:jobId/download', async (req: AuthenticatedRequest, res: Response, 
         if (!job.outputBuffer) return next(createError('Output file unavailable', 500, 'NO_OUTPUT'));
         const baseName = job.filename.replace(/\.[^.]+$/, '');
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-        res.setHeader('Content-Disposition', `attachment; filename="${baseName}_processed.xlsx"`);
+        res.setHeader('Content-Disposition', contentDisposition(`${baseName}_processed.xlsx`));
         return res.send(job.outputBuffer);
     }
     console.log(`[Download] ${jobId}: NOT in memory — falling back to Supabase`);
@@ -77,7 +86,7 @@ router.get('/:jobId/download', async (req: AuthenticatedRequest, res: Response, 
         const buffer = await downloadOutputFile(record.output_path as string);
         if (buffer) {
             res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-            res.setHeader('Content-Disposition', `attachment; filename="${baseName}_processed.xlsx"`);
+            res.setHeader('Content-Disposition', contentDisposition(`${baseName}_processed.xlsx`));
             return res.send(buffer);
         }
         console.warn(`[Download] ${jobId}: Supabase Storage download returned null for path "${record.output_path}"`);
@@ -91,7 +100,7 @@ router.get('/:jobId/download', async (req: AuthenticatedRequest, res: Response, 
         try {
             const { buffer } = await downloadDriveFile(driveUrl);
             res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-            res.setHeader('Content-Disposition', `attachment; filename="${baseName}_processed.xlsx"`);
+            res.setHeader('Content-Disposition', contentDisposition(`${baseName}_processed.xlsx`));
             return res.send(buffer);
         } catch (e: any) {
             console.warn(`[Download] ${jobId}: Drive fallback failed:`, e?.message);
