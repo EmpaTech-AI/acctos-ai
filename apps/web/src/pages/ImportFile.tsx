@@ -652,8 +652,18 @@ export default function ImportFile() {
             a.download = filename.replace(/\.[^.]+$/, '') + '_processed.xlsx';
             a.click();
             URL.revokeObjectURL(url);
-        } catch {
-            alert('Download failed. Please try again.');
+        } catch (err: any) {
+            const status = err?.response?.status;
+            const code   = err?.response?.data?.error?.code ?? err?.response?.data?.code;
+            if (status === 400) {
+                alert('Download failed: file is still processing.');
+            } else if (status === 404) {
+                alert('Download failed: job not found.');
+            } else if (code === 'NO_OUTPUT') {
+                alert('Download failed: output file not available. The server may have restarted — please re-process the file.');
+            } else {
+                alert(`Download failed (${status ?? 'network error'}). Check Railway logs for details.`);
+            }
         }
     };
 
