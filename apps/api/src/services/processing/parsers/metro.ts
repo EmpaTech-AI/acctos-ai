@@ -38,7 +38,32 @@ function hasMovement(r: PhysRow): boolean {
     return (r.moneyIn !== null && r.moneyIn > 0) || (r.moneyOut !== null && r.moneyOut > 0);
 }
 
+/** Extract bank-declared totals from Metro Bank's "Your account summary" section. */
+function extractDeclaredTotals(content: string): { moneyIn: number; moneyOut: number; openingBalance: number; closingBalance: number } | null {
+    // Labels and values appear on separate lines:
+    //   Opening balance\n£2,277.06
+    //   Total money in\n£2,615.99
+    //   Total money out\n£3,826.21
+    //   End balance\n£1,066.84
+    const sep = /\s*[\r\n]+\s*/;
+    const pound = /£\s*([\d,]+(?:\.\d{1,2})?)/;
+    function after(label: RegExp): number | null {
+        const m = content.match(new RegExp(label.source + sep.source + pound.source, 'i'));
+        if (!m) return null;
+        return parseMoney(m[1].replace(/,/g, ''));
+    }
+    const openingBalance = after(/Opening balance/);
+    const moneyIn        = after(/Total money in/);
+    const moneyOut       = after(/Total money out/);
+    const closingBalance = after(/End balance/);
+    if (openingBalance === null || moneyIn === null || moneyOut === null || closingBalance === null) return null;
+    return { moneyIn, moneyOut, openingBalance, closingBalance };
+}
+
 export function parse(cells: Cell[]): ParseResult {
+    const contextContent = cells.find(c => c.rowIndex < 0)?.content ?? '';
+    const declared = extractDeclaredTotals(contextContent);
+
     const grid    = buildGrid(cells);
     const colCount = maxCol(cells);
 
@@ -195,5 +220,6 @@ export function parse(cells: Cell[]): ParseResult {
         });
     }
 
-    return { transactions, ascending: true };
+    const statementTotals = declared ?? undefined;
+    return { transactions, ascending: true, ...(statementTotals ? { statementTotals } : {}) };
 }

@@ -169,21 +169,25 @@ async function parseAllCells(pageCells: Array<Cell[] | null>, bankType: BankType
 
     if (bankType === 'monzo') {
         let pendingRow: ParsedTransaction | null | undefined = null;
+        let statementTotals: ParseResult['statementTotals'];
         for (const cells of pageCells) {
             if (!cells) continue;
             const result = parseMonzo(cells, { pendingFromPrev: pendingRow });
             allTransactions.push(...result.transactions);
             pendingRow = result.pendingRow;
+            // Declared totals live in the page-0 header — take the first hit
+            if (!statementTotals && result.statementTotals) statementTotals = result.statementTotals;
         }
         if (pendingRow) allTransactions.push(pendingRow);
-        return { transactions: allTransactions };
+        return { transactions: allTransactions, ascending: false, ...(statementTotals ? { statementTotals } : {}) };
     } else {
         // Merge all pages into one flat cell array so that state like currentDate
         // carries across page boundaries. Each page's row indices are offset to
-        // avoid collisions. Synthetic context cells (rowIndex < 0) are kept once.
+        // avoid collisions. Context cells (rowIndex < 0) from every page are
+        // concatenated into one so parsers can search across the full document.
         const combined: Cell[] = [];
         let rowOffset = 0;
-        let syntheticInjected = false;
+        const allContextContent: string[] = [];
 
         for (const cells of pageCells) {
             if (!cells) continue;
@@ -191,16 +195,18 @@ async function parseAllCells(pageCells: Array<Cell[] | null>, bankType: BankType
             let pageMaxRow = -1;
             for (const c of cells) {
                 if (c.rowIndex < 0) {
-                    if (!syntheticInjected) {
-                        combined.push(c);
-                        syntheticInjected = true;
-                    }
+                    if (c.content) allContextContent.push(c.content);
                 } else {
                     combined.push({ ...c, rowIndex: c.rowIndex + rowOffset });
                     if (c.rowIndex > pageMaxRow) pageMaxRow = c.rowIndex;
                 }
             }
             if (pageMaxRow >= 0) rowOffset += pageMaxRow + 10000;
+        }
+
+        // Single combined context cell carrying content from all pages
+        if (allContextContent.length > 0) {
+            combined.unshift({ rowIndex: -1, columnIndex: 0, content: allContextContent.join('\n') });
         }
 
         if (bankType === 'generic') {
