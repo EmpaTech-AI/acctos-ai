@@ -76,6 +76,12 @@ async function pollLabel(labelName: string, processingMode: 'bank_statement' | '
                 ).catch(e => console.warn('[GmailPoller] Originals Drive upload failed:', e?.message));
             }
 
+            // Mark as read BEFORE starting the job — if we start the job first and
+            // markAsRead subsequently fails, the email stays unread and gets re-processed
+            // on the next poll cycle, causing duplicate jobs and duplicate reply emails.
+            await markAsRead(message.id);
+            console.log(`[GmailPoller] Message ${message.id} marked as read`);
+
             if (pdfs.length > 0) {
                 // One or more PDFs → batch processing (Excel attachments alongside are ignored)
                 console.log(`[GmailPoller] Processing ${pdfs.length} PDF(s) from "${message.subject}" as ${processingMode}`);
@@ -95,12 +101,7 @@ async function pollLabel(labelName: string, processingMode: 'bank_statement' | '
                 // Multiple Excel files with no PDFs → not supported via email
                 console.log(`[GmailPoller] Message ${message.id} has ${excels.length} Excel files but no PDFs — sending error reply`);
                 notifyUnsupportedAttachment({ to: extractEmail(message.from), emailSubject: message.subject });
-                await markAsRead(message.id);
-                continue;
             }
-
-            await markAsRead(message.id);
-            console.log(`[GmailPoller] Message ${message.id} queued and marked as read`);
         } catch (e: any) {
             console.error(`[GmailPoller] Failed to process message ${message.id}: ${e.message}`);
         }

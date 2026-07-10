@@ -282,17 +282,20 @@ router.get('/usage-status', async (req: AuthenticatedRequest, res: Response, nex
         const warningAlreadySent = tenant.limitWarningFiredAt &&
             tenant.limitWarningFiredAt >= periodStart;
         if (isLow && !warningAlreadySent) {
-            // Mark as fired synchronously to prevent duplicate webhooks on concurrent polls
+            // Mark as fired BEFORE firing webhook — if the DB update fails, skip the
+            // webhook entirely so we don't spam the client on every poll cycle.
+            let markedOk = false;
             try {
                 await (prisma.tenant as any).update({
                     where: { id: tenantId },
                     data: { limitWarningFiredAt: new Date() },
                 });
+                markedOk = true;
             } catch (e: any) {
-                console.warn('[usage-status] Failed to set limitWarningFiredAt:', e.message?.split('\n')[0]);
+                console.warn('[usage-status] Failed to set limitWarningFiredAt — skipping webhook to prevent spam:', e.message?.split('\n')[0]);
             }
-            // Fire webhook fire-and-forget
-            fetch('https://services.leadconnectorhq.com/hooks/M8qlENxCOGWIcTpZuQvP/webhook-trigger/fdbf74ef-26a9-4f67-9684-240092b90613', {
+            // Only fire webhook when the guard was successfully saved
+            if (markedOk) fetch('https://services.leadconnectorhq.com/hooks/M8qlENxCOGWIcTpZuQvP/webhook-trigger/fdbf74ef-26a9-4f67-9684-240092b90613', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
