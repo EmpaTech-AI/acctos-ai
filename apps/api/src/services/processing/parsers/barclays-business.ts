@@ -293,58 +293,85 @@ function extractDeclaredTotals(cells: Cell[], table: string[][]): ParseResult['s
     let openingBalance: number | undefined;
     let closingBalance: number | undefined;
 
-    // Pass 1: cell grid (5-col layout: date | desc | moneyIn | moneyOut | balance)
+    // Pass 1: cell grid.
+    // Supports two layouts:
+    //   5-col (main transaction table): date | label | moneyIn | moneyOut | balance  → label in col1
+    //   2-col (summary box):            label | value                                → label in col0
     for (const row of table) {
-        // Label is usually in col1 (desc); fall back to col0
-        const label = (row[1] || row[0] || '').toLowerCase().trim();
+        // col1 is the desc/label column in the 5-col layout; col0 in a 2-col summary box.
+        // If col1 looks like a money value (digits/commas/£) rather than a text label, prefer col0.
+        const col0 = (row[0] || '').toLowerCase().trim();
+        const col1 = (row[1] || '').toLowerCase().trim();
+        const col1isMoneyLike = col1 !== '' && /^[£\d,.\s]+$/.test(col1);
+        const label = col1isMoneyLike ? col0 : (col1 || col0);
+
+        // Value columns — try all positions; parseMoney handles commas/£/empty gracefully.
+        const allCols = [row[4], row[2], row[3], row[1]];
+        const pickVal = () => allCols.reduce((acc: number | null, c) => acc ?? parseMoney(c || ''), null);
 
         if (/start\s+balance|opening\s+balance/.test(label)) {
-            // Balance value lives in col4 (balance col); fall back to whichever money col has it
-            const v = parseMoney(row[4]) ?? parseMoney(row[2]) ?? parseMoney(row[3]);
+            const v = pickVal();
             if (v !== null) openingBalance = Math.abs(v);
         } else if (/end\s+balance|closing\s+balance/.test(label)) {
-            const raw = row[4] || row[2] || row[3] || '';
+            // Check all columns for the raw string so we can detect OD suffix.
+            const raw = row[4] || row[2] || row[3] || row[1] || '';
             const v = parseMoney(raw);
             if (v !== null) closingBalance = /\bOD\b/i.test(raw) ? -Math.abs(v) : v;
-        } else if (/total\s+payments?\s*[\/\\]\s*receipts?/i.test(label)) {
-            // Combined "Total payments / receipts" row: col2 = receipts (in), col3 = payments (out)
-            const vIn  = parseMoney(row[2]);
-            const vOut = parseMoney(row[3]);
+        } else if (/total\s+payments?\s*[\/\\]?\s*receipts?/i.test(label)) {
+            // Combined row: col2 = receipts (in), col3 = payments (out).
+            // Slash between "payments" and "receipts" is optional — Azure DI sometimes drops it.
+            const vIn  = parseMoney(row[2] || '');
+            const vOut = parseMoney(row[3] || '');
             if (vIn  !== null) moneyIn  = Math.abs(vIn);
             if (vOut !== null) moneyOut = Math.abs(vOut);
         } else if (/total\s+payments?/i.test(label) && !/receipts?/i.test(label)) {
-            const v = parseMoney(row[3]) ?? parseMoney(row[2]);
+            const v = parseMoney(row[3] || '') ?? parseMoney(row[2] || '');
             if (v !== null) moneyOut = Math.abs(v);
         } else if (/total\s+receipts?/i.test(label)) {
-            const v = parseMoney(row[2]) ?? parseMoney(row[3]);
+            const v = parseMoney(row[2] || '') ?? parseMoney(row[3] || '');
             if (v !== null) moneyIn = Math.abs(v);
+        } else if (/\bmoney\s+in\b/i.test(label) && !/\bmoney\s+out\b/i.test(label)) {
+            // "Money in" as a standalone summary row label (some Barclays Business layouts).
+            const v = parseMoney(row[2] || '') ?? parseMoney(row[4] || '') ?? parseMoney(row[1] || '');
+            if (v !== null) moneyIn = Math.abs(v);
+        } else if (/\bmoney\s+out\b/i.test(label)) {
+            const v = parseMoney(row[3] || '') ?? parseMoney(row[2] || '') ?? parseMoney(row[1] || '');
+            if (v !== null) moneyOut = Math.abs(v);
         }
     }
 
-    // Pass 2: content string fallback (label\n£amount format)
+    // Pass 2: content string fallback (label followed by £amount, separated by space or newline).
     if (moneyIn === undefined || moneyOut === undefined || openingBalance === undefined || closingBalance === undefined) {
         const content = cells.find(c => c.rowIndex < 0)?.content ?? '';
+        // sep: one or more whitespace chars (space, tab, newline) optionally with a £ sign
         const pick = (re: RegExp): number | undefined => {
             const m = re.exec(content);
             if (!m) return undefined;
             const v = parseMoney(m[1]);
             return v !== null ? Math.abs(v) : undefined;
         };
+        // Allow space OR newline as separator between label and amount.
+        const SEP = /\s+£?\s*/;
+        const amt = /([\d,]+\.?\d*)/;
+        const mk = (label: string) => new RegExp(label + SEP.source + amt.source, 'i');
+
         if (moneyIn === undefined)
-            moneyIn = pick(/\bMoney\s+in\s*[\r\n]+£?([\d,]+\.?\d*)/i)
-                   ?? pick(/\bTotal\s+receipts?\s*[\r\n]+£?([\d,]+\.?\d*)/i);
+            moneyIn = pick(mk('\\bMoney\\s+in\\b'))
+                   ?? pick(mk('\\bTotal\\s+receipts?'));
         if (moneyOut === undefined)
-            moneyOut = pick(/\bMoney\s+out\s*[\r\n]+£?([\d,]+\.?\d*)/i)
-                    ?? pick(/\bTotal\s+payments?\s*[\r\n]+£?([\d,]+\.?\d*)/i);
+            moneyOut = pick(mk('\\bMoney\\s+out\\b'))
+                    ?? pick(mk('\\bTotal\\s+payments?'));
         if (openingBalance === undefined)
-            openingBalance = pick(/\bStart\s+balance\s*[\r\n]+£?([\d,]+\.?\d*)/i)
-                          ?? pick(/\bOpening\s+balance\s*[\r\n]+£?([\d,]+\.?\d*)/i);
+            openingBalance = pick(mk('\\bStart\\s+balance'))
+                          ?? pick(mk('\\bOpening\\s+balance'));
         if (closingBalance === undefined) {
-            const ecm = /\bEnd\s+balance\s*[\r\n]+£?([\d,]+\.?\d*)(\s*OD)?/i.exec(content)
-                     ?? /\bClosing\s+balance\s*[\r\n]+£?([\d,]+\.?\d*)(\s*OD)?/i.exec(content);
+            const ecm = mk('\\bEnd\\s+balance').exec(content)
+                     ?? mk('\\bClosing\\s+balance').exec(content);
             if (ecm) {
                 const v = parseMoney(ecm[1]);
-                if (v !== null) closingBalance = ecm[2]?.trim() ? -Math.abs(v) : v;
+                // Check for OD in the original content near this match.
+                const near = content.slice(ecm.index, ecm.index + 40);
+                if (v !== null) closingBalance = /\bOD\b/i.test(near) ? -Math.abs(v) : v;
             }
         }
     }
