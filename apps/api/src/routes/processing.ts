@@ -71,7 +71,6 @@ router.get('/:jobId/download', async (req: AuthenticatedRequest, res: Response, 
     if (!record) return next(createError('Job not found', 404, 'NOT_FOUND'));
     if (record.status !== 'completed') return next(createError('Processing not yet complete', 400, 'NOT_READY'));
     const baseName = (record.filename as string).replace(/\.[^.]+$/, '');
-    const jobId    = req.params.jobId;
 
     // Try Supabase Storage first
     if (record.output_path) {
