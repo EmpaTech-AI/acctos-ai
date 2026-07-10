@@ -7,7 +7,12 @@ function getClient(): SupabaseClient | null {
     if (_client) return _client;
     const url = process.env.SUPABASE_URL;
     const key = process.env.SUPABASE_SERVICE_KEY;
-    if (!url || !key) return null;
+    if (!url || !key) {
+        console.warn('[Supabase] getClient: missing env vars — SUPABASE_URL:', !!url, 'SUPABASE_SERVICE_KEY:', !!key);
+        return null;
+    }
+    // Warn if anon key is used instead of service_role (anon keys are shorter)
+    if (key.length < 200) console.warn('[Supabase] WARNING: SUPABASE_SERVICE_KEY looks like an anon key — Storage uploads will fail without proper RLS policies');
     _client = createClient(url, key);
     return _client;
 }
@@ -107,17 +112,19 @@ export async function updateJobRecord(
 
 export async function saveOutputFile(jobId: string, buffer: Buffer): Promise<string | null> {
     const sb = getClient();
-    if (!sb) return null;
+    if (!sb) { console.warn('[Supabase] saveOutputFile: no client — skipping storage save'); return null; }
     try {
         const path = `${jobId}.xlsx`;
+        console.log(`[Supabase] saveOutputFile: uploading ${buffer.length} bytes → ${BUCKET}/${path}`);
         const { error } = await sb.storage.from(BUCKET).upload(path, buffer, {
             contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
             upsert: true,
         });
         if (error) {
-            console.warn('[Supabase] saveOutputFile upload error:', error.message);
+            console.warn('[Supabase] saveOutputFile upload error:', error.message, '| status:', (error as any).statusCode);
             return null;
         }
+        console.log(`[Supabase] saveOutputFile: upload OK → ${path}`);
         return path;
     } catch (err: any) {
         console.warn('[Supabase] saveOutputFile failed:', err?.message);
