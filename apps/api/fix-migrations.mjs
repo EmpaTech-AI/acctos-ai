@@ -7,19 +7,22 @@ const STUCK = [
     '20260710120000_add_categorization_vendor_rules',
 ];
 
+console.log('[fix-migrations] Starting cleanup of stuck migrations...');
 const prisma = new PrismaClient();
 try {
     for (const name of STUCK) {
+        // Delete regardless of rolled_back_at — catches both FAILED and ROLLED_BACK states.
+        // migrate deploy will re-run the (now no-op) migration file cleanly.
         const deleted = await prisma.$executeRaw`
             DELETE FROM "_prisma_migrations"
             WHERE migration_name = ${name}
               AND finished_at IS NULL
-              AND rolled_back_at IS NULL
         `;
-        if (deleted > 0) console.log(`[fix-migrations] Cleared: ${name}`);
+        console.log(`[fix-migrations] ${name}: deleted ${deleted} row(s)`);
     }
 } catch (e) {
-    console.warn('[fix-migrations] Skipped:', e?.message?.slice(0, 120));
+    console.warn('[fix-migrations] Error:', e?.message?.slice(0, 200));
 } finally {
     await prisma.$disconnect();
+    console.log('[fix-migrations] Done.');
 }
