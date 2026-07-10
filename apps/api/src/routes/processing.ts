@@ -68,6 +68,7 @@ router.get('/:jobId/download', async (req: AuthenticatedRequest, res: Response, 
     if (!record) return next(createError('Job not found', 404, 'NOT_FOUND'));
     if (record.status !== 'completed') return next(createError('Processing not yet complete', 400, 'NOT_READY'));
     const baseName = (record.filename as string).replace(/\.[^.]+$/, '');
+    const jobId    = req.params.jobId;
 
     // Try Supabase Storage first
     if (record.output_path) {
@@ -77,6 +78,9 @@ router.get('/:jobId/download', async (req: AuthenticatedRequest, res: Response, 
             res.setHeader('Content-Disposition', `attachment; filename="${baseName}_processed.xlsx"`);
             return res.send(buffer);
         }
+        console.warn(`[Download] ${jobId}: Supabase Storage download returned null for path "${record.output_path}"`);
+    } else {
+        console.warn(`[Download] ${jobId}: output_path is null in DB — Supabase Storage save likely failed at job completion`);
     }
 
     // Fallback: download from Google Drive using the stored Drive URL
@@ -88,10 +92,13 @@ router.get('/:jobId/download', async (req: AuthenticatedRequest, res: Response, 
             res.setHeader('Content-Disposition', `attachment; filename="${baseName}_processed.xlsx"`);
             return res.send(buffer);
         } catch (e: any) {
-            console.warn('[Download] Drive fallback failed:', e?.message);
+            console.warn(`[Download] ${jobId}: Drive fallback failed:`, e?.message);
         }
+    } else {
+        console.warn(`[Download] ${jobId}: driveUrl missing from summary — Drive upload may have failed or not yet run`);
     }
 
+    console.error(`[Download] ${jobId}: all download paths exhausted — file unavailable`);
     return next(createError('Output file unavailable', 500, 'NO_OUTPUT'));
 });
 
