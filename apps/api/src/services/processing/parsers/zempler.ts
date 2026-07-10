@@ -9,6 +9,25 @@ import {
     normStr, parseMoney, formatMoney, buildGrid, maxRow,
 } from './shared.js';
 
+function extractDeclaredBalances(cells: Cell[]): ParseResult['statementTotals'] | undefined {
+    const content = cells.find(c => c.rowIndex < 0)?.content ?? '';
+    // Format: "Opening Balance: - £2,788.53 Closing Balance: - £810.67 From..."
+    // Azure DI may render £ as a replacement char; strip non-word chars between "-" and digits.
+    const parseBalAmt = (raw: string): number | null => {
+        const m = raw.trim().match(/^(-\s*)?[^\d]*([\d,]+\.?\d*)$/);
+        if (!m) return null;
+        const v = parseFloat(m[2].replace(/,/g, ''));
+        return isNaN(v) ? null : (m[1] ? -v : v);
+    };
+    const openM  = content.match(/Opening\s+Balance:\s*([-\s\xa3£\d,.]+?)(?=\s*Closing)/i);
+    const closeM = content.match(/Closing\s+Balance:\s*([-\s\xa3£\d,.]+?)(?=\s+From|\n|$)/i);
+    if (!openM || !closeM) return undefined;
+    const openingBalance = parseBalAmt(openM[1]);
+    const closingBalance = parseBalAmt(closeM[1]);
+    if (openingBalance === null || closingBalance === null) return undefined;
+    return { openingBalance, closingBalance };
+}
+
 export function parse(cells: Cell[]): ParseResult {
     const grid = buildGrid(cells.filter(c => c.rowIndex >= 0));
     const rows = maxRow(cells);
@@ -77,5 +96,6 @@ export function parse(cells: Cell[]): ParseResult {
         transactions.push({ date: r.date, type: '', description: r.desc, moneyIn, moneyOut, balance });
     }
 
-    return { transactions, ascending: true };
+    const statementTotals = extractDeclaredBalances(cells);
+    return { transactions, ascending: true, ...(statementTotals ? { statementTotals } : {}) };
 }

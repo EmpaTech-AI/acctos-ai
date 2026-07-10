@@ -368,8 +368,8 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
         const allTransactions: ParsedTransaction[] = [];
         let confirmedBankType: BankType | null = bankHint ?? null;
         if (confirmedBankType) console.log(`[Orchestrator] Bank hint applied: ${confirmedBankType}`);
-        let combinedStatementTotals: { moneyIn: number; moneyOut: number; openingBalance?: number; closingBalance?: number } | undefined;
-        const fileTotals: Array<{ moneyIn: number; moneyOut: number; openingBalance?: number; closingBalance?: number }> = [];
+        let combinedStatementTotals: { moneyIn?: number; moneyOut?: number; openingBalance?: number; closingBalance?: number } | undefined;
+        const fileTotals: Array<{ moneyIn?: number; moneyOut?: number; openingBalance?: number; closingBalance?: number }> = [];
         const fileSummaries: FileSummary[] = [];
         let ascending = false;
         let totalPagesSpent = 0;
@@ -504,8 +504,8 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
                     prev.openingBalance != null && prev.closingBalance != null &&
                     Math.abs(prev.openingBalance - statementTotals.openingBalance!) < 0.01 &&
                     Math.abs(prev.closingBalance - statementTotals.closingBalance!) < 0.01 &&
-                    Math.abs(prev.moneyIn  - statementTotals.moneyIn)  < 0.01 &&
-                    Math.abs(prev.moneyOut - statementTotals.moneyOut) < 0.01
+                    (prev.moneyIn  == null || statementTotals.moneyIn  == null || Math.abs(prev.moneyIn  - statementTotals.moneyIn)  < 0.01) &&
+                    (prev.moneyOut == null || statementTotals.moneyOut == null || Math.abs(prev.moneyOut - statementTotals.moneyOut) < 0.01)
                 );
                 if (isDup) {
                     console.warn(`[Orchestrator] Duplicate statement skipped: "${filename}" (same open/close/in/out as already-processed file)`);
@@ -531,8 +531,10 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
                 if (!combinedStatementTotals) {
                     combinedStatementTotals = { ...statementTotals };
                 } else {
-                    combinedStatementTotals.moneyIn += statementTotals.moneyIn;
-                    combinedStatementTotals.moneyOut += statementTotals.moneyOut;
+                    if (statementTotals.moneyIn != null)
+                        combinedStatementTotals.moneyIn = (combinedStatementTotals.moneyIn ?? 0) + statementTotals.moneyIn;
+                    if (statementTotals.moneyOut != null)
+                        combinedStatementTotals.moneyOut = (combinedStatementTotals.moneyOut ?? 0) + statementTotals.moneyOut;
                 }
             }
             allTransactions.push(...fileTransactions);

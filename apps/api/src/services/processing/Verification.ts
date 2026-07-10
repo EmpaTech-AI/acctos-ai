@@ -25,7 +25,7 @@ export interface VerificationSummary {
  */
 export function computeVerification(
     transactions: ParsedTransaction[],
-    declared?: { moneyIn: number; moneyOut: number; openingBalance?: number; closingBalance?: number },
+    declared?: { moneyIn?: number; moneyOut?: number; openingBalance?: number; closingBalance?: number },
     ascending = false,
 ): VerificationSummary | undefined {
     if (!transactions.length) return undefined;
@@ -70,7 +70,7 @@ export function computeVerification(
     let declaredOut: number | undefined;
     let declaredOk: boolean | undefined;
 
-    if (declared) {
+    if (declared && declared.moneyIn != null && declared.moneyOut != null) {
         declaredIn = declared.moneyIn;
         declaredOut = declared.moneyOut;
         declaredOk =

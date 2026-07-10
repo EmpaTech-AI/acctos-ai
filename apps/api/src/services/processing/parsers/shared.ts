@@ -17,7 +17,7 @@ export interface ParseResult {
     transactions: ParsedTransaction[];
     pendingRow?: ParsedTransaction | null;
     /** Totals declared by the bank in the document itself (e.g. Pockit summary rows, HSBC summary section). */
-    statementTotals?: { moneyIn: number; moneyOut: number; openingBalance?: number; closingBalance?: number };
+    statementTotals?: { moneyIn?: number; moneyOut?: number; openingBalance?: number; closingBalance?: number };
     /** true = oldest transaction first (e.g. Mettle PDF). false/undefined = newest first (default). */
     ascending?: boolean;
 }
