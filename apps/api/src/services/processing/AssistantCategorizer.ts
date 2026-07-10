@@ -491,11 +491,14 @@ export async function categorize(transactions: ParsedTransaction[], context?: { 
         // Description is the combined fallback for older paths that don't have Merchant.
         const merchant  = (formatted['Merchant'] || formatted['Description'] || '') as string;
         const normDesc  = normalizeDescription(merchant);
-        // Vendor DB rules take priority, then hardcoded regex rules
-        const category  = applyVendorRule(merchant, vendorRules)
-                       ?? applyVendorRule(normDesc, vendorRules)
-                       ?? applyPreRule(merchant)
-                       ?? applyPreRule(normDesc);
+        // Vendor DB rules: try normalized description first so bank-prefix stripping
+        // (e.g. "BILL PAYMENT TO BT GROUP" → "BT GROUP") lets specific merchant rules
+        // win before generic prefix rules like "bill payment to → Bank_Transfer".
+        // Fall back to raw merchant for rules that intentionally match the prefix.
+        const category  = applyVendorRule(normDesc, vendorRules)
+                       ?? applyVendorRule(merchant, vendorRules)
+                       ?? applyPreRule(normDesc)
+                       ?? applyPreRule(merchant);
         if (category) {
             preCat[i] = buildRuleRow(transactions[i], formatted, category);
         } else {
