@@ -246,6 +246,31 @@ function assignYears(rowMaps: RowMap[], headerIdx: number, defaultYear: number):
     return yearMap;
 }
 
+// ── Declared totals extraction ────────────────────────────────────────────────
+
+function extractDeclaredTotals(rowMaps: RowMap[]): ParseResult['statementTotals'] | undefined {
+    let openingBalance: number | undefined;
+    let moneyIn: number | undefined;
+    let moneyOut: number | undefined;
+    let closingBalance: number | undefined;
+
+    for (const r of rowMaps) {
+        const label = normStr(r.get(0) ?? '').toLowerCase();
+        const valStr = normStr(r.get(1) ?? '');
+        if (!valStr) continue;
+        const v = amountToNumber(valStr);
+        if (v === null) continue;
+
+        if (/balance brought forward/.test(label))              openingBalance = v;
+        else if (/\btotal money in\b/.test(label))              moneyIn = Math.abs(v);
+        else if (/\btotal money out\b/.test(label))             moneyOut = Math.abs(v);
+        else if (/your balance at close|balance at close of/.test(label)) closingBalance = v;
+    }
+
+    if (openingBalance === undefined && closingBalance === undefined) return undefined;
+    return { moneyIn, moneyOut, openingBalance, closingBalance };
+}
+
 // ── Main export ───────────────────────────────────────────────────────────────
 
 export function parse(cells: Cell[]): ParseResult {
@@ -395,5 +420,6 @@ export function parse(cells: Cell[]): ParseResult {
         curr.balance = numberToAmountString(nextBal - (amountToNumber(next.moneyIn) ?? 0) + (amountToNumber(next.moneyOut) ?? 0));
     }
 
-    return { transactions, ascending: true };
+    const statementTotals = extractDeclaredTotals(rowMaps);
+    return { transactions, ascending: true, ...(statementTotals ? { statementTotals } : {}) };
 }
