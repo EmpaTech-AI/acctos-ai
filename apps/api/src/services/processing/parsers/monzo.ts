@@ -40,7 +40,28 @@ function isHeaderRow(cols: string[]): boolean {
     return hits >= 3;
 }
 
+/** Extract bank-declared totals from the page-1 content string. */
+function extractDeclaredTotals(content: string): { moneyIn: number; moneyOut: number; closingBalance: number } | null {
+    // Content has (newline may fall between amount and label):
+    //   -£52,212.77 Total outgoings
+    //   +£52,213.75\nTotal deposits
+    //   £0.98 Business Account balance
+    const inM  = content.match(/\+£\s*([\d,]+(?:\.\d{1,2})?)\s*[\r\n]*\s*Total deposits/i);
+    const outM = content.match(/-£\s*([\d,]+(?:\.\d{1,2})?)\s+Total outgoings/i);
+    const balM = content.match(/£\s*([\d,]+(?:\.\d{1,2})?)\s+Business Account balance/i);
+    if (!inM || !outM) return null;
+    const moneyIn  = parseMoney(inM[1].replace(/,/g, ''));
+    const moneyOut = parseMoney(outM[1].replace(/,/g, ''));
+    const closingBalance = balM ? (parseMoney(balM[1].replace(/,/g, '')) ?? 0) : 0;
+    if (moneyIn === null || moneyOut === null) return null;
+    return { moneyIn, moneyOut, closingBalance };
+}
+
 export function parse(cells: Cell[], _opts?: { pendingFromPrev?: ParsedTransaction | null }): ParseResult {
+    // Context cell (rowIndex -1) carries the full document text — use it for declared totals
+    const contextContent = cells.find(c => c.rowIndex < 0)?.content ?? '';
+    const declared = extractDeclaredTotals(contextContent);
+
     const grid = buildGrid(cells);
     const rows = maxRow(cells);
     const cols = maxCol(cells);
@@ -202,7 +223,7 @@ export function parse(cells: Cell[], _opts?: { pendingFromPrev?: ParsedTransacti
     }
 
     // Monzo statements are newest-first (ascending: false).
-    // Derive statementTotals: closing = first txn balance; opening = closing + out - in.
+    // Prefer bank-declared totals from header; fall back to summing transactions.
     let totalIn = 0, totalOut = 0;
     for (const t of transactions) {
         totalIn  += parseMoney(t.moneyIn  || '') ?? 0;
@@ -211,15 +232,23 @@ export function parse(cells: Cell[], _opts?: { pendingFromPrev?: ParsedTransacti
     totalIn  = Math.round(totalIn  * 100) / 100;
     totalOut = Math.round(totalOut * 100) / 100;
 
-    const closingBal = transactions.length > 0 ? parseMoney(transactions[0].balance || '') : null;
-    const openingBal = closingBal !== null ? Math.round((closingBal + totalOut - totalIn) * 100) / 100 : null;
+    let statementTotals: { moneyIn: number; moneyOut: number; openingBalance: number; closingBalance: number } | undefined;
 
-    const statementTotals = closingBal !== null && openingBal !== null ? {
-        moneyIn:  totalIn,
-        moneyOut: totalOut,
-        openingBalance: openingBal,
-        closingBalance: closingBal,
-    } : undefined;
+    if (declared) {
+        const openingBal = Math.round((declared.closingBalance + declared.moneyOut - declared.moneyIn) * 100) / 100;
+        statementTotals = {
+            moneyIn:        declared.moneyIn,
+            moneyOut:       declared.moneyOut,
+            openingBalance: openingBal,
+            closingBalance: declared.closingBalance,
+        };
+    } else {
+        const closingBal = transactions.length > 0 ? parseMoney(transactions[0].balance || '') : null;
+        const openingBal = closingBal !== null ? Math.round((closingBal + totalOut - totalIn) * 100) / 100 : null;
+        if (closingBal !== null && openingBal !== null) {
+            statementTotals = { moneyIn: totalIn, moneyOut: totalOut, openingBalance: openingBal, closingBalance: closingBal };
+        }
+    }
 
     return { transactions, ascending: false, ...(statementTotals ? { statementTotals } : {}) };
 }
