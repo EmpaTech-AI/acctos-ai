@@ -276,5 +276,79 @@ export function parse(cells: Cell[]): ParseResult {
         });
     }
 
-    return { transactions, ascending: true };
+    // ── Declared totals ───────────────────────────────────────────────────────
+    const statementTotals = extractDeclaredTotals(cells, table);
+    return { transactions, ascending: true, ...(statementTotals ? { statementTotals } : {}) };
+}
+
+/**
+ * Extract bank-declared totals from the Barclays Business statement summary rows.
+ * The PDF typically contains "Start balance", "Total payments/receipts", "End balance"
+ * rows in the cell grid that are skipped during transaction parsing.
+ * Falls back to content string if cell extraction yields nothing.
+ */
+function extractDeclaredTotals(cells: Cell[], table: string[][]): ParseResult['statementTotals'] | undefined {
+    let moneyIn: number | undefined;
+    let moneyOut: number | undefined;
+    let openingBalance: number | undefined;
+    let closingBalance: number | undefined;
+
+    // Pass 1: cell grid (5-col layout: date | desc | moneyIn | moneyOut | balance)
+    for (const row of table) {
+        // Label is usually in col1 (desc); fall back to col0
+        const label = (row[1] || row[0] || '').toLowerCase().trim();
+
+        if (/start\s+balance|opening\s+balance/.test(label)) {
+            // Balance value lives in col4 (balance col); fall back to whichever money col has it
+            const v = parseMoney(row[4]) ?? parseMoney(row[2]) ?? parseMoney(row[3]);
+            if (v !== null) openingBalance = Math.abs(v);
+        } else if (/end\s+balance|closing\s+balance/.test(label)) {
+            const raw = row[4] || row[2] || row[3] || '';
+            const v = parseMoney(raw);
+            if (v !== null) closingBalance = /\bOD\b/i.test(raw) ? -Math.abs(v) : v;
+        } else if (/total\s+payments?\s*[\/\\]\s*receipts?/i.test(label)) {
+            // Combined "Total payments / receipts" row: col2 = receipts (in), col3 = payments (out)
+            const vIn  = parseMoney(row[2]);
+            const vOut = parseMoney(row[3]);
+            if (vIn  !== null) moneyIn  = Math.abs(vIn);
+            if (vOut !== null) moneyOut = Math.abs(vOut);
+        } else if (/total\s+payments?/i.test(label) && !/receipts?/i.test(label)) {
+            const v = parseMoney(row[3]) ?? parseMoney(row[2]);
+            if (v !== null) moneyOut = Math.abs(v);
+        } else if (/total\s+receipts?/i.test(label)) {
+            const v = parseMoney(row[2]) ?? parseMoney(row[3]);
+            if (v !== null) moneyIn = Math.abs(v);
+        }
+    }
+
+    // Pass 2: content string fallback (label\n£amount format)
+    if (moneyIn === undefined || moneyOut === undefined || openingBalance === undefined || closingBalance === undefined) {
+        const content = cells.find(c => c.rowIndex < 0)?.content ?? '';
+        const pick = (re: RegExp): number | undefined => {
+            const m = re.exec(content);
+            if (!m) return undefined;
+            const v = parseMoney(m[1]);
+            return v !== null ? Math.abs(v) : undefined;
+        };
+        if (moneyIn === undefined)
+            moneyIn = pick(/\bMoney\s+in\s*[\r\n]+£?([\d,]+\.?\d*)/i)
+                   ?? pick(/\bTotal\s+receipts?\s*[\r\n]+£?([\d,]+\.?\d*)/i);
+        if (moneyOut === undefined)
+            moneyOut = pick(/\bMoney\s+out\s*[\r\n]+£?([\d,]+\.?\d*)/i)
+                    ?? pick(/\bTotal\s+payments?\s*[\r\n]+£?([\d,]+\.?\d*)/i);
+        if (openingBalance === undefined)
+            openingBalance = pick(/\bStart\s+balance\s*[\r\n]+£?([\d,]+\.?\d*)/i)
+                          ?? pick(/\bOpening\s+balance\s*[\r\n]+£?([\d,]+\.?\d*)/i);
+        if (closingBalance === undefined) {
+            const ecm = /\bEnd\s+balance\s*[\r\n]+£?([\d,]+\.?\d*)(\s*OD)?/i.exec(content)
+                     ?? /\bClosing\s+balance\s*[\r\n]+£?([\d,]+\.?\d*)(\s*OD)?/i.exec(content);
+            if (ecm) {
+                const v = parseMoney(ecm[1]);
+                if (v !== null) closingBalance = ecm[2]?.trim() ? -Math.abs(v) : v;
+            }
+        }
+    }
+
+    if (moneyIn === undefined || moneyOut === undefined) return undefined;
+    return { moneyIn, moneyOut, openingBalance, closingBalance };
 }
