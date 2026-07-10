@@ -54,8 +54,10 @@ router.get('/:jobId', async (req: AuthenticatedRequest, res: Response, next: Nex
  * Download the processed Excel file. Serves from memory or Supabase Storage.
  */
 router.get('/:jobId/download', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
-    const job = jobStore.get(req.params.jobId);
+    const jobId = req.params.jobId;
+    const job = jobStore.get(jobId);
     if (job) {
+        console.log(`[Download] ${jobId}: found in memory — status=${job.status} bufferBytes=${job.outputBuffer?.length ?? 'null'}`);
         if (job.status !== 'completed') return next(createError('Processing not yet complete', 400, 'NOT_READY'));
         if (!job.outputBuffer) return next(createError('Output file unavailable', 500, 'NO_OUTPUT'));
         const baseName = job.filename.replace(/\.[^.]+$/, '');
@@ -63,6 +65,7 @@ router.get('/:jobId/download', async (req: AuthenticatedRequest, res: Response, 
         res.setHeader('Content-Disposition', `attachment; filename="${baseName}_processed.xlsx"`);
         return res.send(job.outputBuffer);
     }
+    console.log(`[Download] ${jobId}: NOT in memory — falling back to Supabase`);
     // Fallback to Supabase Storage
     const record = await getJobRecord(req.params.jobId);
     if (!record) return next(createError('Job not found', 404, 'NOT_FOUND'));
