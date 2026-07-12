@@ -560,6 +560,19 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
             combinedStatementTotals.closingBalance  = fileTotals[0].closingBalance;
         }
 
+        // If some files have no statementTotals at all, the combined declared in/out is
+        // partial — comparing it against the full actual total would always show a false
+        // mismatch.  Likewise the opening/closing chain only covers a subset of files, so
+        // the chain balance check would also be wrong.  Clear both so that computeVerification
+        // falls back to the transaction-derived balance and skips the declared-totals check.
+        if (combinedStatementTotals && fileTotals.length < files.length) {
+            console.log(`[Orchestrator] ${files.length - fileTotals.length} of ${files.length} files have no declared totals — suppressing partial declared/chain checks`);
+            combinedStatementTotals.moneyIn        = undefined;
+            combinedStatementTotals.moneyOut       = undefined;
+            combinedStatementTotals.openingBalance = undefined;
+            combinedStatementTotals.closingBalance = undefined;
+        }
+
         if (allTransactions.length === 0) throw new Error('No transactions found in any of the uploaded files');
 
         // Sort by date, preserving the bank's natural order (ascending for Mettle, descending for all others)
