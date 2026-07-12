@@ -8,6 +8,13 @@ import { createError } from '../middleware/errorHandler.js';
 
 const router = Router();
 
+// JWT_EXPIRES_IN='none' → tokens never expire; otherwise use the value (e.g. '30d', '1y')
+function jwtOptions(): jwt.SignOptions {
+    const exp = process.env.JWT_EXPIRES_IN;
+    if (!exp || exp === 'none') return {};
+    return { expiresIn: exp } as jwt.SignOptions;
+}
+
 // Validation schemas
 const registerSchema = z.object({
     email: z.string().email(),
@@ -117,7 +124,7 @@ router.post('/login', async (req: Request, res: Response, next: NextFunction) =>
                 tenantId: defaultMembership?.tenantId,
             },
             process.env.JWT_SECRET || 'secret',
-            { expiresIn: process.env.JWT_EXPIRES_IN || '24h' } as jwt.SignOptions
+            jwtOptions()
         );
 
         // Audit log
@@ -248,7 +255,7 @@ router.post('/switch-tenant', authenticateToken, async (req: AuthenticatedReques
                 tenantId,
             },
             process.env.JWT_SECRET || 'secret',
-            { expiresIn: process.env.JWT_EXPIRES_IN || '24h' } as jwt.SignOptions
+            jwtOptions()
         );
 
         res.json({
