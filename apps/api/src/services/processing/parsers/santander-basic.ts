@@ -448,8 +448,8 @@ export function parse(cells: Cell[]): ParseResult {
         declared.moneyIn !== undefined || declared.moneyOut !== undefined ||
         declared.openingBalance !== undefined || declared.closingBalance !== undefined
             ? {
-                moneyIn:        declared.moneyIn        ?? 0,
-                moneyOut:       declared.moneyOut       ?? 0,
+                moneyIn:        declared.moneyIn,
+                moneyOut:       declared.moneyOut,
                 openingBalance: declared.openingBalance,
                 closingBalance: declared.closingBalance,
               }

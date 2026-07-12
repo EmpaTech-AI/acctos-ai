@@ -522,8 +522,8 @@ export function parse(cells: Cell[]): ParseResult {
             statementTotals = {
                 openingBalance: summaryOpen  ?? undefined,
                 closingBalance: summaryClose ?? undefined,
-                moneyIn:        summaryCred  ?? 0,
-                moneyOut:       summaryDeb   ?? 0,
+                moneyIn:        summaryCred  ?? undefined,
+                moneyOut:       summaryDeb   ?? undefined,
             } as any;
         }
     }
