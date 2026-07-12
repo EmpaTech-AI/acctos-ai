@@ -91,7 +91,35 @@ export function parse(cells: Cell[]): ParseResult {
         break;
     }
 
-    if (!headerFound) return { transactions: [] };
+    // Pre-scan: extract declared totals from Tide summary block (before transaction table).
+    // Labels after fixGbp: "Balance (£) on <date>", "Total paid in (£)", "Total paid out (£)".
+    let declaredOpen:     number | undefined;
+    let declaredClose:    number | undefined;
+    let declaredMoneyIn:  number | undefined;
+    let declaredMoneyOut: number | undefined;
+
+    for (const row of rows) {
+        const label = normStr(row.cells.get(0) ?? '').toLowerCase();
+        const raw   = row.cells.get(1) ?? '';
+        if (label.includes('total paid in')) {
+            const v = parseMoney(raw); if (v) declaredMoneyIn  = parseFloat(v);
+        } else if (label.includes('total paid out')) {
+            const v = parseMoney(raw); if (v) declaredMoneyOut = parseFloat(v);
+        } else if (label.startsWith('balance') && label.includes(' on ')) {
+            const v = parseMoney(raw);
+            if (v) {
+                if (declaredOpen === undefined) declaredOpen  = parseFloat(v);
+                else                            declaredClose = parseFloat(v);
+            }
+        }
+    }
+
+    const statementTotals: ParseResult['statementTotals'] =
+        (declaredOpen !== undefined || declaredClose !== undefined || declaredMoneyIn !== undefined || declaredMoneyOut !== undefined)
+            ? { openingBalance: declaredOpen, closingBalance: declaredClose, moneyIn: declaredMoneyIn, moneyOut: declaredMoneyOut }
+            : undefined;
+
+    if (!headerFound) return { transactions: [], ...(statementTotals ? { statementTotals } : {}) };
 
     const transactions: ParsedTransaction[] = [];
     let lastDate = '';
@@ -173,5 +201,5 @@ export function parse(cells: Cell[]): ParseResult {
         });
     }
 
-    return { transactions };
+    return { transactions, ...(statementTotals ? { statementTotals } : {}) };
 }
