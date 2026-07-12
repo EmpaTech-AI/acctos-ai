@@ -551,10 +551,29 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
             const allOpen = new Set(
                 fileTotals.filter(t => t.openingBalance != null).map(t => Math.round(t.openingBalance! * 100))
             );
-            const firstFile = fileTotals.find(t => t.openingBalance != null && !allClose.has(Math.round(t.openingBalance * 100)));
-            const lastFile  = fileTotals.find(t => t.closingBalance != null && !allOpen.has(Math.round(t.closingBalance * 100)));
-            if (firstFile?.openingBalance != null) combinedStatementTotals.openingBalance = firstFile.openingBalance;
-            if (lastFile?.closingBalance  != null) combinedStatementTotals.closingBalance  = lastFile.closingBalance;
+
+            // When multiple chain-start candidates exist (e.g. an isolated file that was uploaded
+            // separately), find the longest connected chain rather than taking the first candidate.
+            // This prevents an isolated single-period file from overriding the true multi-period chain.
+            const chainStarts = fileTotals.filter(t => t.openingBalance != null && !allClose.has(Math.round(t.openingBalance * 100)));
+            let bestFirst: typeof fileTotals[0] | undefined;
+            let bestLast:  typeof fileTotals[0] | undefined;
+            let bestLen = 0;
+            for (const start of chainStarts) {
+                let cur = start;
+                let len = 1;
+                let tail = start;
+                while (true) {
+                    const curClose = cur.closingBalance;
+                    if (curClose == null) break;
+                    const nxt = fileTotals.find(t => t.openingBalance != null && Math.round(t.openingBalance * 100) === Math.round(curClose * 100));
+                    if (!nxt) break;
+                    cur = nxt; tail = nxt; len++;
+                }
+                if (len > bestLen) { bestLen = len; bestFirst = start; bestLast = tail; }
+            }
+            if (bestFirst?.openingBalance != null) combinedStatementTotals.openingBalance = bestFirst.openingBalance;
+            if (bestLast?.closingBalance  != null) combinedStatementTotals.closingBalance  = bestLast.closingBalance;
         } else if (combinedStatementTotals && fileTotals.length === 1) {
             combinedStatementTotals.openingBalance = fileTotals[0].openingBalance;
             combinedStatementTotals.closingBalance  = fileTotals[0].closingBalance;
