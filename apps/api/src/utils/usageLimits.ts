@@ -486,30 +486,10 @@ export async function recordOrchestratorUsage(
                 timestamp:        new Date(),
             },
         });
-        await prisma.documentUsageAggregate.upsert({
-            where: { customerId_date: { customerId: tenantId, date: today } },
-            create: {
-                customerId:       tenantId,
-                date:             today,
-                pagesSpent:       usage.pagesSpent,
-                rowsUsed:         usage.rowsUsed,
-                documentsHandled: usage.documentsHandled,
-                eventCount:       1,
-            },
-            update: {
-                pagesSpent:       { increment: usage.pagesSpent },
-                rowsUsed:         { increment: usage.rowsUsed },
-                documentsHandled: { increment: usage.documentsHandled },
-                eventCount:       { increment: 1 },
-            },
-        });
-        // Re-run limit check — sets scenariosPaused if newly exceeded.
-        // Also pauses Make.com scenarios when makeApiKey is present (transition period);
-        // after migration makeApiKey will be absent and this becomes a DB-only flag set.
-        checkAndPauseIfNeeded(prisma, tenantId).catch((e: any) =>
-            console.warn('[recordOrchestratorUsage] Limit check failed:', e?.message?.split('\n')[0])
-        );
-        console.log(`[Orchestrator] Usage recorded — pages: ${usage.pagesSpent}, rows: ${usage.rowsUsed}, docs: ${usage.documentsHandled}`);
+        // Orchestrator jobs are counted only in the event log (for audit).
+        // The aggregate — which drives the usage counter — is intentionally skipped
+        // until the Universal migration is complete and Make.com is retired.
+        console.log(`[Orchestrator] Usage logged (not counted) — pages: ${usage.pagesSpent}, rows: ${usage.rowsUsed}, docs: ${usage.documentsHandled}`);
     } catch (e: any) {
         if (e?.code !== 'P2002') {
             console.warn('[recordOrchestratorUsage] Failed to record usage:', e?.message?.split('\n')[0]);
