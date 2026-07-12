@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useLanguage } from '../context/LanguageContext';
@@ -17,6 +17,14 @@ export default function LandingPage() {
     const navigate = useNavigate();
     const { login, register } = useAuth();
     const { t, language, setLanguage } = useLanguage();
+
+    useEffect(() => {
+        const notice = sessionStorage.getItem('auth_notice');
+        if (notice) {
+            setError(notice);
+            sessionStorage.removeItem('auth_notice');
+        }
+    }, []);
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();

@@ -66,6 +66,29 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
     }, [token]);
 
+    // Global interceptor: if any API call returns 403 FORBIDDEN (invalid/expired token),
+    // clear the session and leave a message so the login page can display it.
+    useEffect(() => {
+        const id = axios.interceptors.response.use(
+            res => res,
+            err => {
+                const code = err?.response?.data?.code;
+                const status = err?.response?.status;
+                if (status === 403 && (code === 'FORBIDDEN' || code === 'UNAUTHORIZED')) {
+                    sessionStorage.setItem('auth_notice', 'Session expired — please log in again.');
+                    setToken(null);
+                    setUser(null);
+                    setTenants([]);
+                    setActiveTenant(null);
+                    setCurrentRole(null);
+                    delete axios.defaults.headers.common['Authorization'];
+                }
+                return Promise.reject(err);
+            }
+        );
+        return () => axios.interceptors.response.eject(id);
+    }, []);
+
     // Load user on mount
     const loadUser = useCallback(async () => {
         if (!token) {
