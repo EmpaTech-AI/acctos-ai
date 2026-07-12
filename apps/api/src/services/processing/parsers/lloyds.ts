@@ -132,6 +132,10 @@ export function parse(cells: Cell[]): ParseResult {
     if (!headerFound) return { transactions: [] };
 
     const transactions: ParsedTransaction[] = [];
+    let declaredOpen:     number | undefined;
+    let declaredClose:    number | undefined;
+    let declaredMoneyIn:  number | undefined;
+    let declaredMoneyOut: number | undefined;
 
     for (const row of rows) {
         const c = row.cells;
@@ -155,17 +159,32 @@ export function parse(cells: Cell[]): ParseResult {
         if (!date) continue;
 
         const rowText = normStr(`${type} ${details}`).toUpperCase();
-        if (
-            rowText.includes('BALANCE BROUGHT FORWARD') ||
-            rowText.includes('BALANCE CARRIED FORWARD') ||
-            rowText.includes('STATEMENT CLOSING BALANCE') ||
-            rowText.includes('STATEMENT OPENING BALANCE')
-        ) continue;
+        if (rowText.includes('STATEMENT OPENING BALANCE') || rowText.includes('BALANCE BROUGHT FORWARD')) {
+            if (balance) declaredOpen = parseFloat(balance);
+            continue;
+        }
+        if (rowText.includes('STATEMENT CLOSING BALANCE') || rowText.includes('BALANCE CARRIED FORWARD')) {
+            if (balance) declaredClose = parseFloat(balance);
+            // Closing row carries cumulative totals in the paid-in/out columns
+            if (paidIn)  declaredMoneyIn  = parseFloat(paidIn);
+            if (paidOut) declaredMoneyOut = parseFloat(paidOut);
+            continue;
+        }
         if (!paidIn && !paidOut) continue;
 
         transactions.push({ date, type, description: details, moneyIn: paidIn, moneyOut: paidOut, balance });
     }
 
+    const statementTotals: ParseResult['statementTotals'] =
+        (declaredOpen !== undefined || declaredClose !== undefined || declaredMoneyIn !== undefined || declaredMoneyOut !== undefined)
+            ? {
+                openingBalance: declaredOpen,
+                closingBalance: declaredClose,
+                moneyIn:        declaredMoneyIn,
+                moneyOut:       declaredMoneyOut,
+              }
+            : undefined;
+
     // Lloyds web format PDFs are oldest-first (earliest date at top of statement)
-    return { transactions, ascending: true };
+    return { transactions, ascending: true, ...(statementTotals ? { statementTotals } : {}) };
 }
