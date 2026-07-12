@@ -119,7 +119,36 @@ export function parse(cells: Cell[]): ParseResult {
         break;
     }
 
-    if (!headerFound) return { transactions: [] };
+    // Pre-scan: extract declared totals from TSB summary section (appears before transaction table).
+    // TSB places a 2-column header block: col 0 = label, col 1 = value.
+    // "Balance on <date>" appears twice — first = opening, second = closing.
+    let declaredOpen:     number | undefined;
+    let declaredClose:    number | undefined;
+    let declaredMoneyIn:  number | undefined;
+    let declaredMoneyOut: number | undefined;
+
+    for (const row of rows) {
+        const label = normStr(row.cells.get(0) ?? '').toLowerCase();
+        const raw   = row.cells.get(1) ?? '';
+        if (label === 'money in') {
+            const v = parseMoney(raw); if (v) declaredMoneyIn  = parseFloat(v);
+        } else if (label === 'money out') {
+            const v = parseMoney(raw); if (v) declaredMoneyOut = parseFloat(v);
+        } else if (label.startsWith('balance on ')) {
+            const v = parseMoney(raw);
+            if (v) {
+                if (declaredOpen === undefined) declaredOpen  = parseFloat(v);
+                else                            declaredClose = parseFloat(v);
+            }
+        }
+    }
+
+    const statementTotals: ParseResult['statementTotals'] =
+        (declaredOpen !== undefined || declaredClose !== undefined || declaredMoneyIn !== undefined || declaredMoneyOut !== undefined)
+            ? { openingBalance: declaredOpen, closingBalance: declaredClose, moneyIn: declaredMoneyIn, moneyOut: declaredMoneyOut }
+            : undefined;
+
+    if (!headerFound) return { transactions: [], ...(statementTotals ? { statementTotals } : {}) };
 
     const transactions: ParsedTransaction[] = [];
 
@@ -156,5 +185,5 @@ export function parse(cells: Cell[]): ParseResult {
     }
 
     // 'old' format (scanned, DD MMM YY dates) → oldest first; 'new' format (web, YYYY-MM-DD) → newest first
-    return { transactions, ascending: format === 'old' };
+    return { transactions, ascending: format === 'old', ...(statementTotals ? { statementTotals } : {}) };
 }
