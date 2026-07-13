@@ -23,7 +23,7 @@
  * All functions are fire-and-forget — they never throw and never delay processing.
  */
 
-import { sendGmailMessage } from '../google/GmailService.js';
+import { sendMailgunMessage } from '../MailgunService.js';
 
 const TEAM_EMAIL   = process.env.ALERT_TEAM_EMAIL || 'vasil.lozev@aiassist.bg';
 const CLIENT_EMAIL = process.env.ALERT_CLIENT_EMAIL || 'vasil.lozev@aiassist.bg';
@@ -473,7 +473,7 @@ export function notifyProcessingComplete(alert: ProcessingCompleteAlert): void {
       <p style="margin-top:24px;color:#6b7280;font-size:13px">Ако имате въпроси, моля отговорете на този имейл.</p>
     </body></html>`;
 
-    const sendTo = (to: string) => sendGmailMessage({
+    const sendTo = (to: string) => sendMailgunMessage({
         from:       FROM_EMAIL,
         to,
         subject:    replySubject,
@@ -540,7 +540,7 @@ export function notifyUnsupportedAttachment(alert: UnsupportedAttachmentAlert): 
       <p style="margin-top:24px;color:#6b7280;font-size:13px">Ако имате въпроси, моля отговорете на този имейл.</p>
     </body></html>`;
 
-    const sendTo = (to: string) => sendGmailMessage({ from: FROM_EMAIL, to, subject: replySubject, text, html })
+    const sendTo = (to: string) => sendMailgunMessage({ from: FROM_EMAIL, to, subject: replySubject, text, html })
         .then(() => console.log(`[Notifications] Unsupported-attachment reply sent to ${to}`))
         .catch(err => console.error(`[Notifications] Failed to send unsupported-attachment reply to ${to}:`, err.message));
 
@@ -551,7 +551,7 @@ export function notifyUnsupportedAttachment(alert: UnsupportedAttachmentAlert): 
 // ── Shared email sender ───────────────────────────────────────────────────────
 
 function sendEmail(to: string, subject: string, text: string): void {
-    sendGmailMessage({ from: FROM_EMAIL, to, subject, text })
+    sendMailgunMessage({ from: FROM_EMAIL, to, subject, text })
         .then(() => console.log(`[Notifications] Email sent to ${to}: "${subject}"`))
         .catch(err => console.error(`[Notifications] Failed to send email to ${to}:`, err.message));
 }
