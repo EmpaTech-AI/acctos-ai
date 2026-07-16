@@ -321,16 +321,6 @@ export function startBatchProcessingJob(files: FileInput[], tracking?: TrackingC
         console.log(`[Orchestrator] ${duplicatesRemoved.length} duplicate(s) removed. Processing ${uniqueFiles.length} unique file(s).`);
     }
 
-    if (uniqueFiles.length === 0) {
-        jobStore.update(jobId, { status: 'failed', error: 'All uploaded files are duplicates — no unique files to process.' });
-        console.warn(`[Orchestrator] All files are duplicates — no unique files to process for job ${jobId}`);
-        const allDupIssues: ClientIssueItem[] = [{ type: 'duplicates_removed', duplicatesRemoved }];
-        // No result email will follow — send both summaries immediately
-        notifyTeamIssuesSummary({ jobId, tenantId: tracking?.tenantId, emailSubject, senderEmail, processingMode, issues: allDupIssues });
-        notifyClientIssuesSummary({ jobId, emailSubject, senderEmail, processingMode, issues: allDupIssues });
-        return jobId;
-    }
-
     runBatchJob(jobId, uniqueFiles, tracking, bankHint, processingMode, emailSubject, senderEmail, duplicatesRemoved).catch(err => {
         console.error(`[Orchestrator] Batch job ${jobId} unhandled crash:`, err);
         jobStore.update(jobId, { status: 'failed', error: String(err?.message ?? err) });
