@@ -228,7 +228,6 @@ export function notifyChainGap(alert: ChainGapAlert): void {
 
     console.warn(`[ALERT:chain_gap] ${teamSubject}\n${teamText}`);
     sendEmail(TEAM_EMAIL, teamSubject, teamText);
-    sendEmail(alert.senderEmail ?? CLIENT_EMAIL, clientSubject, clientText);
 }
 
 // ── Team + Client: not enough files for a complete period ─────────────────────
@@ -276,7 +275,6 @@ export function notifyInsufficientFiles(alert: InsufficientFilesAlert): void {
 
     console.warn(`[ALERT:insufficient_files] ${teamSubject}`);
     sendEmail(TEAM_EMAIL, teamSubject, teamText);
-    sendEmail(alert.senderEmail ?? CLIENT_EMAIL, clientSubject, clientText);
 }
 
 export interface DuplicatesRemovedAlert {
@@ -312,7 +310,88 @@ export function notifyDuplicatesRemoved(alert: DuplicatesRemovedAlert): void {
 
     console.warn(`[ALERT:duplicates_removed] ${subject}`);
     sendEmail(TEAM_EMAIL, subject, teamText);
-    sendEmail(alert.senderEmail ?? CLIENT_EMAIL, clientSubject, clientText);
+}
+
+// ── Client: consolidated issues summary (sent once, after processing completes) ─
+
+export interface ClientIssueItem {
+    type: 'insufficient_files' | 'duplicates_removed' | 'chain_gap';
+    fileCount?: number;
+    minimumRequired?: number;
+    processingMode?: 'bank_statement' | 'vat';
+    duplicatesRemoved?: string[];
+    diff?: number;
+}
+
+export interface ClientIssuesSummaryAlert {
+    jobId: string;
+    emailSubject?: string;
+    senderEmail?: string;
+    processingMode?: 'bank_statement' | 'vat';
+    issues: ClientIssueItem[];
+}
+
+export function notifyClientIssuesSummary(alert: ClientIssuesSummaryAlert): void {
+    if (!alert.issues.length || !alert.senderEmail) return;
+
+    const isVat = alert.processingMode === 'vat';
+    const replySubject = alert.emailSubject
+        ? (/^re:/i.test(alert.emailSubject) ? alert.emailSubject : `Re: ${alert.emailSubject}`)
+        : `Issues with your submission`;
+
+    const sections: string[] = [];
+
+    for (const issue of alert.issues) {
+        if (issue.type === 'insufficient_files') {
+            const modeLabel  = issue.processingMode === 'vat' ? 'VAT' : 'Bank Statement';
+            const periodDesc = issue.processingMode === 'vat'
+                ? 'quarterly report (minimum 3 files — one per quarter)'
+                : 'annual report (minimum 12 files — one per month)';
+            const missing = (issue.minimumRequired ?? 0) - (issue.fileCount ?? 0);
+            const dups = issue.duplicatesRemoved ?? [];
+            const dupNote = dups.length > 0
+                ? `\nNote: ${dups.length} of the files you sent ${dups.length !== 1 ? 'were' : 'was'} identical to another file and ${dups.length !== 1 ? 'were' : 'was'} not counted.`
+                : '';
+            sections.push([
+                `── Not enough files for a complete report ──`,
+                `We received ${issue.fileCount} file${issue.fileCount !== 1 ? 's' : ''} for your ${modeLabel} ${periodDesc}.${dupNote}`,
+                `To produce a complete report we need at least ${issue.minimumRequired} files, so ${missing} more file${missing !== 1 ? 's are' : ' is'} needed.`,
+                `Please send the missing files in a follow-up email so we can complete the report.`,
+                `If you believe you have sent all the files, please reply to this email and we will investigate.`,
+            ].join('\n'));
+        } else if (issue.type === 'duplicates_removed') {
+            const dups = issue.duplicatesRemoved ?? [];
+            sections.push([
+                `── Duplicate files detected ──`,
+                `We noticed that ${dups.length} of the files you sent ${dups.length !== 1 ? 'were' : 'was'} an exact duplicate of another file in the same email:`,
+                ...dups.map(n => `  - ${n}`),
+                `The duplicate${dups.length !== 1 ? 's were' : ' was'} skipped and processing continued with the remaining files.`,
+                `If this was not intentional, please check you have not attached the same file twice.`,
+            ].join('\n'));
+        } else if (issue.type === 'chain_gap') {
+            const absDiff    = Math.abs(issue.diff ?? 0).toFixed(2);
+            const fileLabel  = isVat ? 'VAT bank statement files' : 'bank statement files';
+            const periodDesc = isVat ? 'monthly statements are missing from the quarter' : 'monthly statements are missing from the year';
+            sections.push([
+                `── Possible missing statements ──`,
+                `We have detected a gap of £${absDiff} across the ${issue.fileCount} ${fileLabel} received.`,
+                `This typically means one or more ${periodDesc}.`,
+                `Please check that you have uploaded the complete set of statements and re-submit.`,
+                `If you believe all files are included, please contact us so we can investigate.`,
+            ].join('\n'));
+        }
+    }
+
+    const body = [
+        `We have processed your submission and wanted to flag the following:`,
+        ``,
+        sections.join('\n\n'),
+        ``,
+        `If you have any questions, please reply to this email.`,
+    ].join('\n');
+
+    console.warn(`[ALERT:client_issues_summary] ${alert.issues.length} issue(s) sent to ${alert.senderEmail}`);
+    sendEmail(alert.senderEmail, replySubject, body);
 }
 
 // ── Accountant: processed result with Excel attachment ────────────────────────

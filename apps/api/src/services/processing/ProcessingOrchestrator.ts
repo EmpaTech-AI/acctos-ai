@@ -10,7 +10,7 @@ import { parseExcel } from './ExcelParser.js';
 import { buildPdfOutputExcel, buildExcelOutputExcel, buildVatOutputExcel, VatStats } from './ExcelOutputBuilder.js';
 import { Cell, ParsedTransaction, ParseResult } from './parsers/shared.js';
 import { computeVerification, applyCatVerification, logVerificationSummary, computeChainVerification } from './Verification.js';
-import { notifyParserError, notifyChainGap, notifyJobFailed, notifyInsufficientFiles, notifyDuplicatesRemoved, notifyProcessingComplete, BankSummary } from './NotificationService.js';
+import { notifyParserError, notifyChainGap, notifyJobFailed, notifyInsufficientFiles, notifyDuplicatesRemoved, notifyProcessingComplete, notifyClientIssuesSummary, ClientIssueItem, BankSummary } from './NotificationService.js';
 import { JobSummary } from './JobStore.js';
 import {
     getAzureCache, saveAzureCache,
@@ -324,6 +324,14 @@ export function startBatchProcessingJob(files: FileInput[], tracking?: TrackingC
     if (uniqueFiles.length === 0) {
         jobStore.update(jobId, { status: 'failed', error: 'All uploaded files are duplicates — no unique files to process.' });
         notifyDuplicatesRemoved({ jobId, emailSubject, senderEmail, duplicatesRemoved });
+        // No result email will follow — notify the client immediately
+        notifyClientIssuesSummary({
+            jobId,
+            emailSubject,
+            senderEmail,
+            processingMode,
+            issues: [{ type: 'duplicates_removed', duplicatesRemoved }],
+        });
         return jobId;
     }
 
@@ -337,6 +345,7 @@ export function startBatchProcessingJob(files: FileInput[], tracking?: TrackingC
 
 async function runBatchJob(jobId: string, files: FileInput[], tracking?: TrackingContext, bankHint?: BankType, processingMode?: 'bank_statement' | 'vat', emailSubject?: string, senderEmail?: string, duplicatesRemoved: string[] = []): Promise<void> {
     const timer = makeStageTimer();
+    const clientIssues: ClientIssueItem[] = [];
     try {
         // ── Limit gate: check BEFORE any work starts — never interrupts a running job ──
         if (tracking?.tenantId && tracking?.prisma) {
@@ -366,9 +375,17 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
                 duplicatesRemoved,
                 senderEmail,
             });
+            clientIssues.push({
+                type:             'insufficient_files',
+                fileCount:        files.length,
+                minimumRequired:  minFiles,
+                processingMode:   processingMode ?? 'bank_statement',
+                duplicatesRemoved,
+            });
         } else if (duplicatesRemoved.length > 0) {
             // Enough files, but some were duplicates — still notify so client knows
             notifyDuplicatesRemoved({ jobId, emailSubject, senderEmail, duplicatesRemoved });
+            clientIssues.push({ type: 'duplicates_removed', duplicatesRemoved });
         }
 
         const allTransactions: ParsedTransaction[] = [];
@@ -693,6 +710,7 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
                     processingMode:      processingMode,
                     senderEmail:         senderEmail,
                 });
+                clientIssues.push({ type: 'chain_gap', diff: chain.diff, fileCount: files.length, processingMode });
             }
         }
         // ─────────────────────────────────────────────────────────────────────────
@@ -806,6 +824,9 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
                 const replyFilename = safeDriveFilename(emailSubject);
                 const clientName = extractClientName(emailSubject);
                 notifyProcessingComplete({ to: senderEmail, emailSubject, clientName, xlsxBuffer: outputBuffer, filename: replyFilename, driveFileUrl, vatSummary: vatStats, bankSummary: batchBankSummary });
+            }
+            if (clientIssues.length > 0) {
+                notifyClientIssuesSummary({ jobId, emailSubject, senderEmail, processingMode, issues: clientIssues });
             }
         })().catch(e => console.warn('[Orchestrator] Drive+email (batch) failed:', e?.message));
 
