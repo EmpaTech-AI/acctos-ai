@@ -81,12 +81,14 @@ export interface ChainGapAlert {
 }
 
 export interface InsufficientFilesAlert {
-    jobId:           string;
-    tenantId?:       string;
-    emailSubject?:   string;
-    fileCount:       number;
-    minimumRequired: number;
-    processingMode:  'bank_statement' | 'vat';
+    jobId:              string;
+    tenantId?:          string;
+    emailSubject?:      string;
+    fileCount:          number;
+    minimumRequired:    number;
+    processingMode:     'bank_statement' | 'vat';
+    duplicatesRemoved?: string[];
+    senderEmail?:       string;
 }
 
 // ── Team: parser verification failure ─────────────────────────────────────────
@@ -231,6 +233,13 @@ export function notifyInsufficientFiles(alert: InsufficientFilesAlert): void {
         : 'annual report (minimum 12 files — one per month)';
     const missing    = alert.minimumRequired - alert.fileCount;
     const label      = alert.emailSubject ?? `Job ${alert.jobId}`;
+    const dups       = alert.duplicatesRemoved ?? [];
+    const dupNote    = dups.length > 0
+        ? `\nNote: ${dups.length} duplicate file${dups.length !== 1 ? 's were' : ' was'} detected and skipped:\n${dups.map(n => `  - ${n}`).join('\n')}\n`
+        : '';
+    const dupNoteClient = dups.length > 0
+        ? `\nNote: ${dups.length} of the files you sent ${dups.length !== 1 ? 'were' : 'was'} identical to another file in the same email and ${dups.length !== 1 ? 'were' : 'was'} not counted. Please check you have not attached the same file twice.\n`
+        : '';
 
     const teamSubject   = `[Acctos] Insufficient files — ${label} (${alert.fileCount}/${alert.minimumRequired} ${modeLabel})`;
     const clientSubject = `Action required — missing files for ${modeLabel} report`;
@@ -242,24 +251,61 @@ export function notifyInsufficientFiles(alert: InsufficientFilesAlert): void {
         `Files received: ${alert.fileCount}`,
         `Minimum required: ${alert.minimumRequired}`,
         `Missing: ${missing}`,
-        ``,
+        dupNote,
         `Processing has started with the files received. The report may be incomplete.`,
-    ].join('\n');
+    ].filter(l => l !== '').join('\n');
 
     const clientText = [
         `We received ${alert.fileCount} file${alert.fileCount !== 1 ? 's' : ''} for your ${modeLabel} ${periodDesc}.`,
-        ``,
+        dupNoteClient,
         `To produce a complete report we need at least ${alert.minimumRequired} files, ` +
-        `so ${missing} file${missing !== 1 ? 's are' : ' is'} missing.`,
+        `so ${missing} more file${missing !== 1 ? 's are' : ' is'} needed.`,
         ``,
         `We have started processing the files already received — you will get the results shortly.`,
         `Please send the missing files in a follow-up email so we can complete the report.`,
         ``,
         `If you believe you have sent all the files, please reply to this email and we will investigate.`,
-    ].join('\n');
+    ].filter(l => l !== '').join('\n');
 
     console.warn(`[ALERT:insufficient_files] ${teamSubject}`);
     sendEmail(TEAM_EMAIL, teamSubject, teamText);
+    sendEmail(alert.senderEmail ?? CLIENT_EMAIL, clientSubject, clientText);
+}
+
+export interface DuplicatesRemovedAlert {
+    jobId:            string;
+    emailSubject?:    string;
+    senderEmail?:     string;
+    duplicatesRemoved: string[];
+}
+
+export function notifyDuplicatesRemoved(alert: DuplicatesRemovedAlert): void {
+    const label   = alert.emailSubject ?? `Job ${alert.jobId}`;
+    const dups    = alert.duplicatesRemoved;
+    const subject = `[Acctos] Duplicate files detected — ${label}`;
+
+    const teamText = [
+        `Date: ${ukTimeStr()}`,
+        `Email subject: ${alert.emailSubject ?? 'n/a'}`,
+        ``,
+        `${dups.length} duplicate file${dups.length !== 1 ? 's were' : ' was'} removed before processing:`,
+        ...dups.map(n => `  - ${n}`),
+        ``,
+        `Processing continued with the remaining unique files.`,
+    ].join('\n');
+
+    const clientSubject = `Duplicate file detected in your submission`;
+    const clientText = [
+        `We noticed that ${dups.length} of the files you sent ${dups.length !== 1 ? 'were' : 'was'} an exact duplicate of another file in the same email:`,
+        ...dups.map(n => `  - ${n}`),
+        ``,
+        `The duplicate${dups.length !== 1 ? 's were' : ' was'} skipped and processing continued with the remaining files.`,
+        `If this was not intentional, please check you have not attached the same file twice.`,
+    ].join('\n');
+
+    console.warn(`[ALERT:duplicates_removed] ${subject}`);
+    sendEmail(TEAM_EMAIL, subject, teamText);
+    sendEmail(alert.senderEmail ?? CLIENT_EMAIL, clientSubject, clientText);
 }
 
 // ── Accountant: processed result with Excel attachment ────────────────────────

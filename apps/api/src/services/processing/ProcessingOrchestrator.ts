@@ -10,7 +10,7 @@ import { parseExcel } from './ExcelParser.js';
 import { buildPdfOutputExcel, buildExcelOutputExcel, buildVatOutputExcel, VatStats } from './ExcelOutputBuilder.js';
 import { Cell, ParsedTransaction, ParseResult } from './parsers/shared.js';
 import { computeVerification, applyCatVerification, logVerificationSummary, computeChainVerification } from './Verification.js';
-import { notifyParserError, notifyChainGap, notifyJobFailed, notifyInsufficientFiles, notifyProcessingComplete, BankSummary } from './NotificationService.js';
+import { notifyParserError, notifyChainGap, notifyJobFailed, notifyInsufficientFiles, notifyDuplicatesRemoved, notifyProcessingComplete, BankSummary } from './NotificationService.js';
 import { JobSummary } from './JobStore.js';
 import {
     getAzureCache, saveAzureCache,
@@ -323,10 +323,11 @@ export function startBatchProcessingJob(files: FileInput[], tracking?: TrackingC
 
     if (uniqueFiles.length === 0) {
         jobStore.update(jobId, { status: 'failed', error: 'All uploaded files are duplicates — no unique files to process.' });
+        notifyDuplicatesRemoved({ jobId, emailSubject, senderEmail, duplicatesRemoved });
         return jobId;
     }
 
-    runBatchJob(jobId, uniqueFiles, tracking, bankHint, processingMode, emailSubject, senderEmail).catch(err => {
+    runBatchJob(jobId, uniqueFiles, tracking, bankHint, processingMode, emailSubject, senderEmail, duplicatesRemoved).catch(err => {
         console.error(`[Orchestrator] Batch job ${jobId} unhandled crash:`, err);
         jobStore.update(jobId, { status: 'failed', error: String(err?.message ?? err) });
     });
@@ -334,7 +335,7 @@ export function startBatchProcessingJob(files: FileInput[], tracking?: TrackingC
     return jobId;
 }
 
-async function runBatchJob(jobId: string, files: FileInput[], tracking?: TrackingContext, bankHint?: BankType, processingMode?: 'bank_statement' | 'vat', emailSubject?: string, senderEmail?: string): Promise<void> {
+async function runBatchJob(jobId: string, files: FileInput[], tracking?: TrackingContext, bankHint?: BankType, processingMode?: 'bank_statement' | 'vat', emailSubject?: string, senderEmail?: string, duplicatesRemoved: string[] = []): Promise<void> {
     const timer = makeStageTimer();
     try {
         // ── Limit gate: check BEFORE any work starts — never interrupts a running job ──
@@ -362,7 +363,12 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
                 fileCount:       files.length,
                 minimumRequired: minFiles,
                 processingMode:  processingMode ?? 'bank_statement',
+                duplicatesRemoved,
+                senderEmail,
             });
+        } else if (duplicatesRemoved.length > 0) {
+            // Enough files, but some were duplicates — still notify so client knows
+            notifyDuplicatesRemoved({ jobId, emailSubject, senderEmail, duplicatesRemoved });
         }
 
         const allTransactions: ParsedTransaction[] = [];
@@ -473,10 +479,12 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
                 const detected = detectBankFromContent(combinedContent);
                 if (detected !== 'generic') {
                     if (confirmedBankType && detected !== confirmedBankType) {
-                        // Content detection found a different bank — likely a false positive
-                        // (e.g. a payee named "Nationwide" inside a Barclays statement).
-                        console.log(`[Orchestrator] Ignoring content-detected bank "${detected}" — trusting confirmed "${confirmedBankType}"`);
-                        bankType = confirmedBankType;
+                        // Content detection found a different bank from what we've seen so far.
+                        // This could be a genuine multi-bank batch (client sent two bank statements)
+                        // OR a false positive (e.g. "NatWest" appearing as a payee inside a Barclays statement).
+                        // To distinguish, we try BOTH parsers and pick the one with more transactions.
+                        console.log(`[Orchestrator] Bank conflict: confirmed="${confirmedBankType}" vs content-detected="${detected}" — trying both parsers`);
+                        bankType = confirmedBankType; // default fallback
                     } else {
                         console.log(`[Orchestrator] Bank detected from content: ${detected}`);
                         bankType = detected;
@@ -492,7 +500,29 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
             }
 
             jobStore.update(jobId, { currentStage: 'parse' });
-            const { transactions: fileTransactions, statementTotals, ascending: fileAscending } = await parseAllCells(pageCells, bankType);
+
+            // When there was a bank conflict (confirmed vs content-detected), try both parsers
+            // and pick whichever yields more transactions. This handles multi-bank batches correctly
+            // while still defending against false-positive content detection.
+            let parseResult = await parseAllCells(pageCells, bankType);
+            const conflictDetected = detectBankFromContent(combinedContent);
+            if (
+                conflictDetected !== 'generic' &&
+                conflictDetected !== bankType &&
+                confirmedBankType &&
+                conflictDetected !== confirmedBankType
+            ) {
+                const altResult = await parseAllCells(pageCells, conflictDetected);
+                if (altResult.transactions.length > parseResult.transactions.length) {
+                    console.log(`[Orchestrator] Switching to content-detected bank "${conflictDetected}" (${altResult.transactions.length} tx) over confirmed "${bankType}" (${parseResult.transactions.length} tx)`);
+                    bankType = conflictDetected;
+                    parseResult = altResult;
+                    jobStore.update(jobId, { bankType });
+                } else {
+                    console.log(`[Orchestrator] Keeping confirmed bank "${bankType}" (${parseResult.transactions.length} tx ≥ ${altResult.transactions.length} tx from "${conflictDetected}")`);
+                }
+            }
+            const { transactions: fileTransactions, statementTotals, ascending: fileAscending } = parseResult;
             if (fileAscending) ascending = true;
             console.log(`[Orchestrator] File ${fi + 1}/${files.length} "${filename}": ${fileTransactions.length} transactions`);
 
