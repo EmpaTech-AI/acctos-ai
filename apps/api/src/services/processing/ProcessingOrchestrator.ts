@@ -10,7 +10,7 @@ import { parseExcel } from './ExcelParser.js';
 import { buildPdfOutputExcel, buildExcelOutputExcel, buildVatOutputExcel, VatStats } from './ExcelOutputBuilder.js';
 import { Cell, ParsedTransaction, ParseResult } from './parsers/shared.js';
 import { computeVerification, applyCatVerification, logVerificationSummary, computeChainVerification } from './Verification.js';
-import { notifyParserError, notifyChainGap, notifyJobFailed, notifyInsufficientFiles, notifyDuplicatesRemoved, notifyProcessingComplete, notifyClientIssuesSummary, ClientIssueItem, BankSummary } from './NotificationService.js';
+import { notifyParserError, notifyChainGap, notifyJobFailed, notifyInsufficientFiles, notifyDuplicatesRemoved, notifyProcessingComplete, notifyTeamIssuesSummary, notifyClientIssuesSummary, ClientIssueItem, BankSummary } from './NotificationService.js';
 import { JobSummary } from './JobStore.js';
 import {
     getAzureCache, saveAzureCache,
@@ -323,15 +323,11 @@ export function startBatchProcessingJob(files: FileInput[], tracking?: TrackingC
 
     if (uniqueFiles.length === 0) {
         jobStore.update(jobId, { status: 'failed', error: 'All uploaded files are duplicates — no unique files to process.' });
-        notifyDuplicatesRemoved({ jobId, emailSubject, senderEmail, duplicatesRemoved });
-        // No result email will follow — notify the client immediately
-        notifyClientIssuesSummary({
-            jobId,
-            emailSubject,
-            senderEmail,
-            processingMode,
-            issues: [{ type: 'duplicates_removed', duplicatesRemoved }],
-        });
+        console.warn(`[Orchestrator] All files are duplicates — no unique files to process for job ${jobId}`);
+        const allDupIssues: ClientIssueItem[] = [{ type: 'duplicates_removed', duplicatesRemoved }];
+        // No result email will follow — send both summaries immediately
+        notifyTeamIssuesSummary({ jobId, tenantId: tracking?.tenantId, emailSubject, senderEmail, processingMode, issues: allDupIssues });
+        notifyClientIssuesSummary({ jobId, emailSubject, senderEmail, processingMode, issues: allDupIssues });
         return jobId;
     }
 
@@ -710,7 +706,15 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
                     processingMode:      processingMode,
                     senderEmail:         senderEmail,
                 });
-                clientIssues.push({ type: 'chain_gap', diff: chain.diff, fileCount: files.length, processingMode });
+                clientIssues.push({
+                    type: 'chain_gap',
+                    diff:                chain.diff,
+                    fileCount:           files.length,
+                    processingMode,
+                    chainOpeningBalance: chain.chainOpeningBalance,
+                    chainClosingBalance: chain.chainClosingBalance,
+                    expectedClosing:     chain.expectedClosing,
+                });
             }
         }
         // ─────────────────────────────────────────────────────────────────────────
@@ -826,7 +830,8 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
                 notifyProcessingComplete({ to: senderEmail, emailSubject, clientName, xlsxBuffer: outputBuffer, filename: replyFilename, driveFileUrl, vatSummary: vatStats, bankSummary: batchBankSummary });
             }
             if (clientIssues.length > 0) {
-                notifyClientIssuesSummary({ jobId, emailSubject, senderEmail, processingMode, issues: clientIssues });
+                notifyTeamIssuesSummary({ jobId, tenantId: tracking?.tenantId, emailSubject, senderEmail, processingMode, issues: clientIssues });
+                notifyClientIssuesSummary({ jobId, tenantId: tracking?.tenantId, emailSubject, senderEmail, processingMode, issues: clientIssues });
             }
         })().catch(e => console.warn('[Orchestrator] Drive+email (batch) failed:', e?.message));
 

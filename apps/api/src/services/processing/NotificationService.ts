@@ -227,7 +227,7 @@ export function notifyChainGap(alert: ChainGapAlert): void {
     ].join('\n');
 
     console.warn(`[ALERT:chain_gap] ${teamSubject}\n${teamText}`);
-    sendEmail(TEAM_EMAIL, teamSubject, teamText);
+    // Email deferred — sent as part of consolidated team issues summary after processing completes
 }
 
 // ── Team + Client: not enough files for a complete period ─────────────────────
@@ -274,7 +274,7 @@ export function notifyInsufficientFiles(alert: InsufficientFilesAlert): void {
     ].filter(l => l !== '').join('\n');
 
     console.warn(`[ALERT:insufficient_files] ${teamSubject}`);
-    sendEmail(TEAM_EMAIL, teamSubject, teamText);
+    // Email deferred — sent as part of consolidated team issues summary after processing completes
 }
 
 export interface DuplicatesRemovedAlert {
@@ -309,7 +309,7 @@ export function notifyDuplicatesRemoved(alert: DuplicatesRemovedAlert): void {
     ].join('\n');
 
     console.warn(`[ALERT:duplicates_removed] ${subject}`);
-    sendEmail(TEAM_EMAIL, subject, teamText);
+    // Email deferred — sent as part of consolidated team issues summary after processing completes
 }
 
 // ── Client: consolidated issues summary (sent once, after processing completes) ─
@@ -320,15 +320,82 @@ export interface ClientIssueItem {
     minimumRequired?: number;
     processingMode?: 'bank_statement' | 'vat';
     duplicatesRemoved?: string[];
+    // chain_gap technical fields (used in team summary)
     diff?: number;
+    chainOpeningBalance?: number;
+    chainClosingBalance?: number;
+    expectedClosing?: number;
 }
 
 export interface ClientIssuesSummaryAlert {
     jobId: string;
+    tenantId?: string;
     emailSubject?: string;
     senderEmail?: string;
     processingMode?: 'bank_statement' | 'vat';
     issues: ClientIssueItem[];
+}
+
+export function notifyTeamIssuesSummary(alert: ClientIssuesSummaryAlert): void {
+    if (!alert.issues.length) return;
+
+    const submissionRef = alert.emailSubject ?? `Job ${alert.jobId}`;
+    const subject = `[Acctos] Processing issues (${alert.issues.length}) — ${submissionRef}`;
+
+    const header = [
+        `Date: ${ukTimeStr()}`,
+        `Email subject: ${alert.emailSubject ?? 'n/a'}`,
+        `Job: ${alert.jobId}`,
+        `Tenant: ${alert.tenantId ?? 'unknown'}`,
+        `Sender: ${alert.senderEmail ?? 'unknown'}`,
+    ].join('\n');
+
+    const sections: string[] = [];
+
+    for (const issue of alert.issues) {
+        if (issue.type === 'insufficient_files') {
+            const modeLabel = issue.processingMode === 'vat' ? 'VAT' : 'Bank Statement';
+            const missing = (issue.minimumRequired ?? 0) - (issue.fileCount ?? 0);
+            const dups = issue.duplicatesRemoved ?? [];
+            const dupLines = dups.length > 0
+                ? [``, `Duplicates removed (${dups.length}):`, ...dups.map(n => `  - ${n}`)]
+                : [];
+            sections.push([
+                `── Insufficient files (${modeLabel}) ──`,
+                `Received: ${issue.fileCount}  /  Required: ${issue.minimumRequired}  /  Missing: ${missing}`,
+                `Processing started with the files received — report may be incomplete.`,
+                ...dupLines,
+            ].join('\n'));
+        } else if (issue.type === 'duplicates_removed') {
+            const dups = issue.duplicatesRemoved ?? [];
+            sections.push([
+                `── Duplicates removed ──`,
+                `${dups.length} duplicate file${dups.length !== 1 ? 's were' : ' was'} removed before processing:`,
+                ...dups.map(n => `  - ${n}`),
+                `Processing continued with the remaining unique files.`,
+            ].join('\n'));
+        } else if (issue.type === 'chain_gap') {
+            const absDiff = Math.abs(issue.diff ?? 0).toFixed(2);
+            const direction = (issue.diff ?? 0) < 0 ? 'shortfall' : 'surplus';
+            const balanceLines = issue.chainOpeningBalance != null ? [
+                ``,
+                `Opening balance: £${issue.chainOpeningBalance.toFixed(2)}`,
+                `Expected closing: £${(issue.expectedClosing ?? 0).toFixed(2)}`,
+                `Actual closing:  £${(issue.chainClosingBalance ?? 0).toFixed(2)}`,
+                `Gap: £${absDiff} (${direction})`,
+            ] : [];
+            sections.push([
+                `── Chain gap ──`,
+                `Gap of £${absDiff} detected across ${issue.fileCount} file${issue.fileCount !== 1 ? 's' : ''} — likely a missing statement.`,
+                ...balanceLines,
+            ].join('\n'));
+        }
+    }
+
+    const body = [header, ``, sections.join('\n\n')].join('\n');
+
+    console.warn(`[ALERT:team_issues_summary] ${alert.issues.length} issue(s) for "${submissionRef}"`);
+    sendEmail(TEAM_EMAIL, subject, body);
 }
 
 export function notifyClientIssuesSummary(alert: ClientIssuesSummaryAlert): void {
