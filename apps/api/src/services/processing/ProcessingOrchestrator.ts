@@ -690,6 +690,8 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
                     chainClosingBalance: chain.chainClosingBalance,
                     expectedClosing:     chain.expectedClosing,
                     diff:                chain.diff,
+                    processingMode:      processingMode,
+                    senderEmail:         senderEmail,
                 });
             }
         }

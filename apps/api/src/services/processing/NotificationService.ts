@@ -78,6 +78,8 @@ export interface ChainGapAlert {
     chainClosingBalance: number;
     expectedClosing:     number;
     diff:                number;
+    processingMode?:     'bank_statement' | 'vat';
+    senderEmail?:        string;
 }
 
 export interface InsufficientFilesAlert {
@@ -188,12 +190,17 @@ export function notifyJobFailed(alert: JobFailedAlert): void {
 // ── Team + Client: missing documents in sequence ───────────────────────────────
 
 export function notifyChainGap(alert: ChainGapAlert): void {
-    const absDiff   = Math.abs(alert.diff).toFixed(2);
-    const direction = alert.diff < 0 ? 'shortfall' : 'surplus';
+    const absDiff    = Math.abs(alert.diff).toFixed(2);
+    const direction  = alert.diff < 0 ? 'shortfall' : 'surplus';
     const clientName = alert.emailSubject ?? 'unknown client';
+    const isVat      = alert.processingMode === 'vat';
+    const fileLabel  = isVat ? 'VAT bank statement files' : 'bank statement files';
+    const periodDesc = isVat ? 'monthly statements (one per month of the quarter)' : 'monthly statements';
 
     const teamSubject   = `[Acctos] Chain gap detected — ${clientName} — £${absDiff} across ${alert.fileCount} files`;
-    const clientSubject = `Missing bank statement detected — ${clientName}`;
+    const clientSubject = isVat
+        ? `Missing bank statement — ${clientName} VAT report`
+        : `Missing bank statement detected — ${clientName}`;
 
     const teamText = [
         `Client: ${clientName}`,
@@ -207,13 +214,13 @@ export function notifyChainGap(alert: ChainGapAlert): void {
         `Actual closing:  £${alert.chainClosingBalance.toFixed(2)}`,
         `Gap: £${absDiff} (${direction})`,
         ``,
-        `This usually means the client is missing one or more monthly statements.`,
+        `This usually means the client is missing one or more ${periodDesc}.`,
     ].join('\n');
 
     const clientText = [
-        `We have detected a gap of £${absDiff} across the ${alert.fileCount} bank statement files received for ${clientName}.`,
+        `We have detected a gap of £${absDiff} across the ${alert.fileCount} ${fileLabel} received for ${clientName}.`,
         ``,
-        `This typically means one or more monthly statements are missing from the sequence.`,
+        `This typically means one or more ${periodDesc} are missing from the sequence.`,
         `Please check that you have uploaded the complete set of statements and re-submit.`,
         ``,
         `If you believe all files are included, please contact us so we can investigate.`,
@@ -221,7 +228,7 @@ export function notifyChainGap(alert: ChainGapAlert): void {
 
     console.warn(`[ALERT:chain_gap] ${teamSubject}\n${teamText}`);
     sendEmail(TEAM_EMAIL, teamSubject, teamText);
-    sendEmail(CLIENT_EMAIL, clientSubject, clientText);
+    sendEmail(alert.senderEmail ?? CLIENT_EMAIL, clientSubject, clientText);
 }
 
 // ── Team + Client: not enough files for a complete period ─────────────────────
