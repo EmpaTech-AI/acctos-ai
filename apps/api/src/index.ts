@@ -45,7 +45,8 @@ import { processingRouter } from './routes/processing.js';
 import { superadminRouter } from './routes/superadmin.js';
 import { driveProcessRouter } from './routes/driveProcess.js';
 import { startDailyReportCron } from './cron/dailyReports.js';
-import { startGmailPollerCron } from './cron/gmailPoller.js';
+import { startGmailPollerCron, initGmailWatch } from './cron/gmailPoller.js';
+import { gmailWebhookRouter } from './routes/gmailWebhook.js';
 
 // API Routes
 app.use('/api/auth', authRouter);
@@ -60,10 +61,12 @@ app.use('/v1/reports', reportsRouter);
 app.use('/v1/processing', processingRouter);
 app.use('/v1/superadmin', superadminRouter);
 app.use('/v1/drive', driveProcessRouter);
+app.use('/v1/gmail', gmailWebhookRouter);
 
 // Start scheduled jobs
 startDailyReportCron(prisma);
 startGmailPollerCron();
+initGmailWatch();
 
 // Error handling
 app.use(errorHandler);

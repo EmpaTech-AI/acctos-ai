@@ -1,4 +1,13 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+
+// Supabase Realtime requires WebSocket. Node.js < 22 has no native WebSocket,
+// so we polyfill with 'ws' if available. No-ops silently if 'ws' isn't installed.
+if (typeof globalThis.WebSocket === 'undefined') {
+    try {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        (globalThis as any).WebSocket = (await import('ws')).default;
+    } catch { /* ws not installed — Realtime features will be unavailable */ }
+}
 import type { PageData } from './processing/AzureExtractor.js';
 
 let _client: SupabaseClient | null = null;

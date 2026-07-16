@@ -1,4 +1,12 @@
-import { listUnreadMessages, getSupportedAttachments, markAsRead } from '../services/google/GmailService.js';
+import {
+    listUnreadMessages,
+    getSupportedAttachments,
+    markAsRead,
+    listGmailLabels,
+    watchInbox,
+    getMessagesSince,
+    getMessageMetadata,
+} from '../services/google/GmailService.js';
 import { startBatchProcessingJob, startProcessingJob, extractClientName } from '../services/processing/ProcessingOrchestrator.js';
 import { notifyUnsupportedAttachment } from '../services/processing/NotificationService.js';
 import { uploadOriginalsToDrive } from '../services/google/GoogleService.js';
@@ -13,16 +21,199 @@ const LABEL_MAP = [
     { label: 'VAT AI',            processingMode: 'vat'            as const },
 ] as const;
 
-const POLL_INTERVAL_MS = 30_000; // 30 seconds
+// ── State shared between push handler and fallback poller ─────────────────────
 
-// Prevent overlapping runs if a poll takes longer than the interval
+// Gmail label name → Gmail label ID (e.g. "Bank Statement AI" → "Label_12345")
+const resolvedLabelIds = new Map<string, string>();
+
+// The historyId from the most recent push notification (or from watch() at startup)
+let lastHistoryId: string | null = null;
+
+// Prevent overlapping fallback poll runs
 let polling = false;
 
+// ── Core per-message logic ────────────────────────────────────────────────────
+
+/**
+ * Process a single email message. Works for both the push path and the polling
+ * fallback — the message metadata (id, subject, from) must already be resolved.
+ */
+async function processEmailMessage(
+    message: { id: string; subject: string; from: string },
+    processingMode: 'bank_statement' | 'vat',
+): Promise<void> {
+    const attachments = await getSupportedAttachments(message.id);
+    const pdfs   = attachments.filter(a => a.mimeType === 'application/pdf' || a.filename.toLowerCase().endsWith('.pdf'));
+    const excels = attachments.filter(a => /\.xlsx?$/i.test(a.filename) || a.mimeType.includes('spreadsheet') || a.mimeType.includes('ms-excel'));
+
+    if (!attachments.length) {
+        console.log(`[GmailPoller] Message ${message.id} has no supported attachments — sending error reply`);
+        notifyUnsupportedAttachment({ to: extractEmail(message.from), emailSubject: message.subject });
+        await markAsRead(message.id);
+        return;
+    }
+
+    // Save originals to Drive (non-blocking)
+    const originalsId = processingMode === 'vat'
+        ? process.env.DRIVE_VAT_ORIGINALS_FOLDER_ID
+        : process.env.DRIVE_BANK_STATEMENT_ORIGINALS_FOLDER_ID;
+    if (originalsId && message.subject) {
+        const clientFolder = extractClientName(message.subject);
+        uploadOriginalsToDrive(
+            attachments.map(a => ({ buffer: a.buffer, filename: a.filename })),
+            originalsId,
+            clientFolder,
+        ).catch(e => console.warn('[GmailPoller] Originals Drive upload failed:', e?.message));
+    }
+
+    // Mark as read BEFORE starting the job to prevent duplicate processing
+    // on re-poll or a second push notification for the same message.
+    await markAsRead(message.id);
+    console.log(`[GmailPoller] Message ${message.id} marked as read`);
+
+    if (pdfs.length > 0) {
+        console.log(`[GmailPoller] Processing ${pdfs.length} PDF(s) from "${message.subject}" as ${processingMode}`);
+        startBatchProcessingJob(
+            pdfs.map(pdf => ({ filename: pdf.filename, mimeType: pdf.mimeType, buffer: pdf.buffer })),
+            undefined,
+            undefined,
+            processingMode,
+            message.subject,
+            message.from,
+        );
+    } else if (excels.length === 1) {
+        console.log(`[GmailPoller] Processing Excel "${excels[0].filename}" from "${message.subject}" as ${processingMode}`);
+        startProcessingJob(excels[0].filename, excels[0].mimeType, excels[0].buffer, undefined, processingMode, message.subject, extractEmail(message.from));
+    } else {
+        console.log(`[GmailPoller] Message ${message.id} has ${excels.length} Excel files but no PDFs — sending error reply`);
+        notifyUnsupportedAttachment({ to: extractEmail(message.from), emailSubject: message.subject });
+    }
+}
+
+// ── Push notification handler (called by the webhook route) ───────────────────
+
+/**
+ * Called by POST /v1/gmail/push when Pub/Sub delivers a push notification.
+ * Uses the Gmail history API to find newly added messages since the last
+ * processed historyId, then processes any that have our label IDs.
+ */
+export async function handleHistoryUpdate(newHistoryId: string): Promise<void> {
+    if (!lastHistoryId) {
+        // Not yet initialised — store and wait for the next notification
+        lastHistoryId = newHistoryId;
+        console.log(`[GmailPush] Received first notification, storing historyId=${newHistoryId}`);
+        return;
+    }
+
+    let messages;
+    try {
+        messages = await getMessagesSince(lastHistoryId);
+    } catch (e: any) {
+        // historyId may be too old (> 7 days) — reset and fall back to next poll
+        console.warn(`[GmailPush] getMessagesSince failed (${e.message}) — resetting historyId`);
+        lastHistoryId = newHistoryId;
+        return;
+    }
+
+    // Always advance the cursor, even if we find nothing to process
+    lastHistoryId = newHistoryId;
+
+    if (!messages.length) return;
+
+    for (const msg of messages) {
+        // Determine which label (if any) matched
+        let matchedMode: 'bank_statement' | 'vat' | null = null;
+        for (const { label, processingMode } of LABEL_MAP) {
+            const labelId = resolvedLabelIds.get(label);
+            if (labelId && msg.labelIds.includes(labelId)) {
+                matchedMode = processingMode;
+                break;
+            }
+        }
+        if (!matchedMode) continue;
+
+        try {
+            const meta = await getMessageMetadata(msg.id);
+            console.log(`[GmailPush] Triggered by push: "${meta.subject}" (${matchedMode})`);
+            await processEmailMessage(meta, matchedMode);
+        } catch (e: any) {
+            console.error(`[GmailPush] Failed to process message ${msg.id}: ${e.message}`);
+        }
+    }
+}
+
+// ── Label resolution + Gmail watch setup ──────────────────────────────────────
+
+async function resolveLabelIds(): Promise<void> {
+    try {
+        const allLabels = await listGmailLabels();
+        for (const { label } of LABEL_MAP) {
+            const found = allLabels.find(l => l.name === label);
+            if (found) {
+                resolvedLabelIds.set(label, found.id);
+                console.log(`[GmailPush] Resolved label "${label}" → ${found.id}`);
+            } else {
+                console.warn(`[GmailPush] Label "${label}" not found in mailbox — push filtering will skip it`);
+            }
+        }
+    } catch (e: any) {
+        console.error(`[GmailPush] Failed to resolve label IDs: ${e.message}`);
+    }
+}
+
+async function callWatch(): Promise<void> {
+    const topic = process.env.PUBSUB_TOPIC;
+    if (!topic) return;
+
+    try {
+        const result = await watchInbox(topic);
+        lastHistoryId = result.historyId;
+        const expiresAt = new Date(Number(result.expiration)).toISOString();
+        console.log(`[GmailPush] watch() active — historyId=${result.historyId}, expires ${expiresAt}`);
+    } catch (e: any) {
+        console.error(`[GmailPush] watch() failed: ${e.message}`);
+    }
+}
+
+/**
+ * Set up Gmail Push Notifications on startup.
+ * Resolves label IDs, calls gmail.users.watch(), and schedules renewal every
+ * 6 days (watch() expires after 7 days).
+ *
+ * No-ops silently if PUBSUB_TOPIC is not set — the fallback poller handles
+ * everything in that case.
+ */
+export async function initGmailWatch(): Promise<void> {
+    if (!process.env.PUBSUB_TOPIC) {
+        console.log('[GmailPush] PUBSUB_TOPIC not set — push notifications disabled, polling only');
+        return;
+    }
+    if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_REFRESH_TOKEN) return;
+
+    await resolveLabelIds();
+    await callWatch();
+
+    // Renew every 6 days so the subscription never expires
+    const SIX_DAYS_MS = 6 * 24 * 60 * 60 * 1000;
+    setInterval(callWatch, SIX_DAYS_MS);
+}
+
+// ── Fallback polling (5-minute interval) ──────────────────────────────────────
+
+/**
+ * Polling-based fallback — catches any emails missed by push notifications
+ * (e.g. server restarts, Pub/Sub delivery failures). Runs every 5 minutes
+ * when PUBSUB_TOPIC is set, or every 30 seconds when running without push.
+ */
 export function startGmailPollerCron(): void {
     if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_REFRESH_TOKEN) {
         console.log('[GmailPoller] Google credentials not configured — skipping');
         return;
     }
+
+    const pushEnabled     = !!process.env.PUBSUB_TOPIC;
+    const intervalMs      = pushEnabled ? 5 * 60 * 1000 : 30_000;
+    const intervalLabel   = pushEnabled ? '5 minutes (fallback)' : '30 seconds';
 
     setInterval(async () => {
         if (polling) return;
@@ -38,9 +229,9 @@ export function startGmailPollerCron(): void {
         } finally {
             polling = false;
         }
-    }, POLL_INTERVAL_MS);
+    }, intervalMs);
 
-    console.log('[GmailPoller] Gmail polling scheduled (every 30 seconds)');
+    console.log(`[GmailPoller] Fallback polling scheduled (every ${intervalLabel})`);
 }
 
 async function pollLabel(labelName: string, processingMode: 'bank_statement' | 'vat'): Promise<void> {
@@ -51,57 +242,7 @@ async function pollLabel(labelName: string, processingMode: 'bank_statement' | '
 
     for (const message of messages) {
         try {
-            const attachments = await getSupportedAttachments(message.id);
-            const pdfs   = attachments.filter(a => a.mimeType === 'application/pdf' || a.filename.toLowerCase().endsWith('.pdf'));
-            const excels = attachments.filter(a => /\.xlsx?$/i.test(a.filename) || a.mimeType.includes('spreadsheet') || a.mimeType.includes('ms-excel'));
-
-            // No supported attachments → reply with error, do not process
-            if (!attachments.length) {
-                console.log(`[GmailPoller] Message ${message.id} has no supported attachments (PDF/Excel) — sending error reply`);
-                notifyUnsupportedAttachment({ to: extractEmail(message.from), emailSubject: message.subject });
-                await markAsRead(message.id);
-                continue;
-            }
-
-            // Save originals to Drive (non-blocking)
-            const originalsId = processingMode === 'vat'
-                ? process.env.DRIVE_VAT_ORIGINALS_FOLDER_ID
-                : process.env.DRIVE_BANK_STATEMENT_ORIGINALS_FOLDER_ID;
-            if (originalsId && message.subject) {
-                const clientFolder = extractClientName(message.subject);
-                uploadOriginalsToDrive(
-                    attachments.map(a => ({ buffer: a.buffer, filename: a.filename })),
-                    originalsId,
-                    clientFolder,
-                ).catch(e => console.warn('[GmailPoller] Originals Drive upload failed:', e?.message));
-            }
-
-            // Mark as read BEFORE starting the job — if we start the job first and
-            // markAsRead subsequently fails, the email stays unread and gets re-processed
-            // on the next poll cycle, causing duplicate jobs and duplicate reply emails.
-            await markAsRead(message.id);
-            console.log(`[GmailPoller] Message ${message.id} marked as read`);
-
-            if (pdfs.length > 0) {
-                // One or more PDFs → batch processing (Excel attachments alongside are ignored)
-                console.log(`[GmailPoller] Processing ${pdfs.length} PDF(s) from "${message.subject}" as ${processingMode}`);
-                startBatchProcessingJob(
-                    pdfs.map(pdf => ({ filename: pdf.filename, mimeType: pdf.mimeType, buffer: pdf.buffer })),
-                    undefined,
-                    undefined,
-                    processingMode,
-                    message.subject,
-                    message.from,
-                );
-            } else if (excels.length === 1) {
-                // Single Excel, no PDFs → single-file processing
-                console.log(`[GmailPoller] Processing Excel "${excels[0].filename}" from "${message.subject}" as ${processingMode}`);
-                startProcessingJob(excels[0].filename, excels[0].mimeType, excels[0].buffer, undefined, processingMode, message.subject, extractEmail(message.from));
-            } else {
-                // Multiple Excel files with no PDFs → not supported via email
-                console.log(`[GmailPoller] Message ${message.id} has ${excels.length} Excel files but no PDFs — sending error reply`);
-                notifyUnsupportedAttachment({ to: extractEmail(message.from), emailSubject: message.subject });
-            }
+            await processEmailMessage(message, processingMode);
         } catch (e: any) {
             console.error(`[GmailPoller] Failed to process message ${message.id}: ${e.message}`);
         }

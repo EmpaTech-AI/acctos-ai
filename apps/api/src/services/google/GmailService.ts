@@ -177,6 +177,96 @@ export async function sendGmailMessage(opts: SendOpts): Promise<void> {
     console.log(`[Gmail] Email sent to ${opts.to}: "${opts.subject}"`);
 }
 
+// ── Gmail Push Notifications (Pub/Sub) ───────────────────────────────────────
+
+export interface GmailLabel {
+    id:   string;
+    name: string;
+}
+
+/** List all labels in the mailbox — used to resolve label names to IDs. */
+export async function listGmailLabels(): Promise<GmailLabel[]> {
+    const gmail = buildGmailClient();
+    const res   = await gmail.users.labels.list({ userId: 'me' });
+    return (res.data.labels ?? []).map(l => ({ id: l.id!, name: l.name! }));
+}
+
+export interface WatchResult {
+    historyId:  string;
+    expiration: string; // epoch ms as string
+}
+
+/**
+ * Subscribe the mailbox to Pub/Sub push notifications.
+ * Must be called at startup and renewed every ≤7 days.
+ * topicName format: "projects/PROJECT_ID/topics/TOPIC_NAME"
+ */
+export async function watchInbox(topicName: string): Promise<WatchResult> {
+    const gmail = buildGmailClient();
+    const res   = await gmail.users.watch({
+        userId:      'me',
+        requestBody: { topicName, labelIds: ['INBOX'] },
+    });
+    return {
+        historyId:  res.data.historyId!,
+        expiration: res.data.expiration!,
+    };
+}
+
+export interface HistoryMessage {
+    id:       string;
+    labelIds: string[];
+}
+
+/**
+ * Return all messages added to the mailbox since startHistoryId.
+ * Throws with code 404 if the historyId is too old (>7 days).
+ */
+export async function getMessagesSince(startHistoryId: string): Promise<HistoryMessage[]> {
+    const gmail    = buildGmailClient();
+    const messages: HistoryMessage[] = [];
+    let pageToken: string | undefined;
+
+    do {
+        const res = await gmail.users.history.list({
+            userId:       'me',
+            startHistoryId,
+            historyTypes: ['messageAdded'],
+            pageToken,
+        });
+        for (const record of res.data.history ?? []) {
+            for (const added of record.messagesAdded ?? []) {
+                if (added.message?.id) {
+                    messages.push({
+                        id:       added.message.id,
+                        labelIds: added.message.labelIds ?? [],
+                    });
+                }
+            }
+        }
+        pageToken = res.data.nextPageToken ?? undefined;
+    } while (pageToken);
+
+    return messages;
+}
+
+/** Fetch Subject + From headers for a single message (cheaper than format=full). */
+export async function getMessageMetadata(messageId: string): Promise<GmailMessage> {
+    const gmail  = buildGmailClient();
+    const detail = await gmail.users.messages.get({
+        userId:          'me',
+        id:              messageId,
+        format:          'metadata',
+        metadataHeaders: ['Subject', 'From'],
+    });
+    const headers = detail.data.payload?.headers ?? [];
+    return {
+        id:      messageId,
+        subject: headers.find(h => h.name === 'Subject')?.value ?? '',
+        from:    headers.find(h => h.name === 'From')?.value    ?? '',
+    };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 function flattenParts(parts: any[]): any[] {
