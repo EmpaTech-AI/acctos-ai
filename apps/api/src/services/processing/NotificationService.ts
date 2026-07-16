@@ -332,12 +332,14 @@ export interface ClientIssuesSummaryAlert {
 }
 
 export function notifyClientIssuesSummary(alert: ClientIssuesSummaryAlert): void {
-    if (!alert.issues.length || !alert.senderEmail) return;
+    if (!alert.issues.length) return;
 
     const isVat = alert.processingMode === 'vat';
-    const replySubject = alert.emailSubject
+    const submissionRef = alert.emailSubject ?? 'unknown submission';
+    const clientRef = alert.senderEmail ? ` (from ${alert.senderEmail})` : '';
+    const subject = alert.emailSubject
         ? (/^re:/i.test(alert.emailSubject) ? alert.emailSubject : `Re: ${alert.emailSubject}`)
-        : `Issues with your submission`;
+        : `[Acctos] Processing issues — ${submissionRef}`;
 
     const sections: string[] = [];
 
@@ -350,48 +352,50 @@ export function notifyClientIssuesSummary(alert: ClientIssuesSummaryAlert): void
             const missing = (issue.minimumRequired ?? 0) - (issue.fileCount ?? 0);
             const dups = issue.duplicatesRemoved ?? [];
             const dupNote = dups.length > 0
-                ? `\nNote: ${dups.length} of the files you sent ${dups.length !== 1 ? 'were' : 'was'} identical to another file and ${dups.length !== 1 ? 'were' : 'was'} not counted.`
+                ? ` Note: ${dups.length} duplicate file${dups.length !== 1 ? 's were' : ' was'} detected and not counted.`
                 : '';
             sections.push([
                 `── Not enough files for a complete report ──`,
-                `We received ${issue.fileCount} file${issue.fileCount !== 1 ? 's' : ''} for your ${modeLabel} ${periodDesc}.${dupNote}`,
-                `To produce a complete report we need at least ${issue.minimumRequired} files, so ${missing} more file${missing !== 1 ? 's are' : ' is'} needed.`,
-                `Please send the missing files in a follow-up email so we can complete the report.`,
-                `If you believe you have sent all the files, please reply to this email and we will investigate.`,
+                `The client submitted ${issue.fileCount} file${issue.fileCount !== 1 ? 's' : ''} for the ${modeLabel} ${periodDesc}.${dupNote}`,
+                `A complete report requires at least ${issue.minimumRequired} files — ${missing} more file${missing !== 1 ? 's are' : ' is'} still needed.`,
+                `Please ask the client to send the missing files so we can complete the report.`,
+                `If the client believes all files were included, please contact us and we will investigate.`,
             ].join('\n'));
         } else if (issue.type === 'duplicates_removed') {
             const dups = issue.duplicatesRemoved ?? [];
             sections.push([
                 `── Duplicate files detected ──`,
-                `We noticed that ${dups.length} of the files you sent ${dups.length !== 1 ? 'were' : 'was'} an exact duplicate of another file in the same email:`,
+                `${dups.length} duplicate file${dups.length !== 1 ? 's were' : ' was'} detected in the client's submission and skipped:`,
                 ...dups.map(n => `  - ${n}`),
-                `The duplicate${dups.length !== 1 ? 's were' : ' was'} skipped and processing continued with the remaining files.`,
-                `If this was not intentional, please check you have not attached the same file twice.`,
+                `Processing continued with the remaining unique files.`,
+                `Please ask the client to check they have not attached the same file twice.`,
             ].join('\n'));
         } else if (issue.type === 'chain_gap') {
             const absDiff    = Math.abs(issue.diff ?? 0).toFixed(2);
             const fileLabel  = isVat ? 'VAT bank statement files' : 'bank statement files';
-            const periodDesc = isVat ? 'monthly statements are missing from the quarter' : 'monthly statements are missing from the year';
+            const periodDesc = isVat ? 'one or more monthly statements are missing from the quarter' : 'one or more monthly statements are missing from the year';
             sections.push([
                 `── Possible missing statements ──`,
-                `We have detected a gap of £${absDiff} across the ${issue.fileCount} ${fileLabel} received.`,
-                `This typically means one or more ${periodDesc}.`,
-                `Please check that you have uploaded the complete set of statements and re-submit.`,
-                `If you believe all files are included, please contact us so we can investigate.`,
+                `A balance gap of £${absDiff} was detected across the ${issue.fileCount} ${fileLabel} submitted.`,
+                `This typically means ${periodDesc}.`,
+                `Please ask the client to verify they have uploaded the complete set of statements and resubmit if anything is missing.`,
+                `If all files appear correct, please contact us and we will investigate.`,
             ].join('\n'));
         }
     }
 
     const body = [
-        `We have processed your submission and wanted to flag the following:`,
+        `The following issue${alert.issues.length !== 1 ? 's were' : ' was'} detected when processing the submission "${submissionRef}"${clientRef}:`,
         ``,
         sections.join('\n\n'),
+        ``,
+        `Note: if the client resends the missing files, you will receive a separate result email for that new submission. The results will need to be combined with the original report.`,
         ``,
         `If you have any questions, please reply to this email.`,
     ].join('\n');
 
-    console.warn(`[ALERT:client_issues_summary] ${alert.issues.length} issue(s) sent to ${alert.senderEmail}`);
-    sendEmail(alert.senderEmail, replySubject, body);
+    console.warn(`[ALERT:client_issues_summary] ${alert.issues.length} issue(s) for "${submissionRef}" → ${CLIENT_EMAIL}`);
+    sendEmail(CLIENT_EMAIL, subject, body);
 }
 
 // ── Accountant: processed result with Excel attachment ────────────────────────
