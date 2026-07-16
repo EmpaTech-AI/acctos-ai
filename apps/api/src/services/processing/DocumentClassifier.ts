@@ -78,6 +78,12 @@ export function detectBankFromContent(text: string): BankType {
     // Halifax: check before NatWest — Halifax statements contain "NATWEST BANK" as a payee
     // which would otherwise trigger NatWest detection. Use footer text unique to Halifax.
     if (t.includes('halifax is a division') || (/\bhalifax\b/.test(t) && t.includes('bank of scotland'))) return 'halifax';
+    // Metro Bank: check before HSBC and NatWest — Metro statements include payee bank names in payment
+    // descriptions (e.g. "HSBC UK BANK PLC", "NAT WEST BANK PLC") which would otherwise trigger false
+    // HSBC/NatWest detection. Metro signals (BIC MYMBGB2L, "Metro Bank" header, domain) are specific
+    // enough that they don't appear in genuine HSBC or NatWest PDFs.
+    // OCR often splits "Metro" as "M ETRO"; the regex handles that.
+    if (/m\s*etro\s+bank/i.test(t) || t.includes('mymbgb') || t.includes('metrobankonline')) return 'metro';
     // HSBC: check before NatWest — HSBC statements routinely contain "NATWEST" in ATM
     // transaction descriptions (e.g. "CASH NATWEST APR18"). Identify by BIC prefix or product name.
     if (t.includes('hbukgb') || t.includes('hsbc kinetic') || /\bhsbc\s+uk\b/.test(t)) return 'hsbc';
@@ -87,9 +93,6 @@ export function detectBankFromContent(text: string): BankType {
     // Mettle: require specific branding text, not just the word "mettle" which appears in other banks' FSCS disclosures.
     if (t.includes('the mettle bank account') || t.includes('mettle.co.uk')) return 'mettle';
     if (/\btide\b/.test(t))                                          return 'tide';
-    // Metro Bank — must appear before santander/monzo/rbs which can appear as payees in Metro statements.
-    // OCR often splits "Metro" as "M ETRO"; detect by BIC (MYMBGB2L) or domain as unique fallbacks.
-    if (/m\s*etro\s+bank/i.test(t) || t.includes('mymbgb') || t.includes('metrobankonline')) return 'metro';
     // Nationwide: nationwide.co.uk and flexaccount are unique to Nationwide's own header/footer,
     // so they are checked before Santander. "nationwide building society" alone is NOT sufficient —
     // Santander statements contain "CASH WITHDRAWAL AT NATIONWIDE BUILDING SOCIETY ATM ..." in
