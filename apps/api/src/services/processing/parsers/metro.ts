@@ -40,13 +40,12 @@ function hasMovement(r: PhysRow): boolean {
 
 /** Extract bank-declared totals from Metro Bank's "Your account summary" section. */
 function extractDeclaredTotals(content: string): { moneyIn: number; moneyOut: number; openingBalance: number; closingBalance: number } | null {
-    // Labels and values appear on separate lines:
-    //   Opening balance\n£2,277.06
-    //   Total money in\n£2,615.99
-    //   Total money out\n£3,826.21
-    //   End balance\n£1,066.84
-    const sep = /\s*[\r\n]+\s*/;
-    const pound = /£\s*([\d,]+(?:\.\d{1,2})?)/;
+    // Labels and values may be on the same line (space-separated) or on separate lines,
+    // depending on how Azure DI lays out the summary table.
+    //   "Opening balance £2,277.06"  OR  "Opening balance\n£-20.83"
+    // The £ value may be negative (e.g. £-20.83 for an overdraft closing balance).
+    const sep = /\s+/;
+    const pound = /£\s*(-?[\d,]+(?:\.\d{1,2})?)/;
     function after(label: RegExp): number | null {
         const m = content.match(new RegExp(label.source + sep.source + pound.source, 'i'));
         if (!m) return null;
