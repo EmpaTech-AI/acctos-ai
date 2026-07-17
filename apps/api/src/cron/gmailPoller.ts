@@ -10,6 +10,15 @@ import {
 import { startBatchProcessingJob, startProcessingJob, extractClientName } from '../services/processing/ProcessingOrchestrator.js';
 import { notifyUnsupportedAttachment } from '../services/processing/NotificationService.js';
 import { uploadOriginalsToDrive } from '../services/google/GoogleService.js';
+import prisma from '../lib/prisma.js';
+
+// Build a tracking context from env vars — used to record usage for Gmail-triggered jobs.
+// Returns undefined if DEFAULT_TENANT_ID is not set (usage tracking disabled).
+function getGmailTracking() {
+    const tenantId = process.env.DEFAULT_TENANT_ID;
+    if (!tenantId) return undefined;
+    return { prisma, tenantId };
+}
 
 function extractEmail(from: string): string {
     const m = from.match(/<([^>]+)>/);
@@ -75,7 +84,7 @@ async function processEmailMessage(
         console.log(`[GmailPoller] Processing ${pdfs.length} PDF(s) from "${message.subject}" as ${processingMode}`);
         startBatchProcessingJob(
             pdfs.map(pdf => ({ filename: pdf.filename, mimeType: pdf.mimeType, buffer: pdf.buffer })),
-            undefined,
+            getGmailTracking(),
             undefined,
             processingMode,
             message.subject,
@@ -83,7 +92,7 @@ async function processEmailMessage(
         );
     } else if (excels.length === 1) {
         console.log(`[GmailPoller] Processing Excel "${excels[0].filename}" from "${message.subject}" as ${processingMode}`);
-        startProcessingJob(excels[0].filename, excels[0].mimeType, excels[0].buffer, undefined, processingMode, message.subject, extractEmail(message.from));
+        startProcessingJob(excels[0].filename, excels[0].mimeType, excels[0].buffer, getGmailTracking(), processingMode, message.subject, extractEmail(message.from));
     } else {
         console.log(`[GmailPoller] Message ${message.id} has ${excels.length} Excel files but no PDFs — sending error reply`);
         notifyUnsupportedAttachment({ to: extractEmail(message.from), emailSubject: message.subject });
@@ -105,18 +114,20 @@ export async function handleHistoryUpdate(newHistoryId: string): Promise<void> {
         return;
     }
 
+    // Advance the cursor BEFORE the async API call so that concurrent push
+    // notifications that arrive while this one is awaiting getMessagesSince
+    // will query from a later historyId and won't return the same messages.
+    const fromHistoryId = lastHistoryId;
+    lastHistoryId = newHistoryId;
+
     let messages;
     try {
-        messages = await getMessagesSince(lastHistoryId);
+        messages = await getMessagesSince(fromHistoryId);
     } catch (e: any) {
-        // historyId may be too old (> 7 days) — reset and fall back to next poll
-        console.warn(`[GmailPush] getMessagesSince failed (${e.message}) — resetting historyId`);
-        lastHistoryId = newHistoryId;
+        // historyId may be too old (> 7 days) — cursor already advanced, no reset needed
+        console.warn(`[GmailPush] getMessagesSince failed (${e.message}) — historyId advanced to ${newHistoryId}`);
         return;
     }
-
-    // Always advance the cursor, even if we find nothing to process
-    lastHistoryId = newHistoryId;
 
     if (!messages.length) return;
 

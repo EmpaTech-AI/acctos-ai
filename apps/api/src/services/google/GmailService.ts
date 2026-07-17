@@ -224,6 +224,7 @@ export interface HistoryMessage {
  */
 export async function getMessagesSince(startHistoryId: string): Promise<HistoryMessage[]> {
     const gmail    = buildGmailClient();
+    const seen     = new Set<string>();
     const messages: HistoryMessage[] = [];
     let pageToken: string | undefined;
 
@@ -236,11 +237,10 @@ export async function getMessagesSince(startHistoryId: string): Promise<HistoryM
         });
         for (const record of res.data.history ?? []) {
             for (const added of record.messagesAdded ?? []) {
-                if (added.message?.id) {
-                    messages.push({
-                        id:       added.message.id,
-                        labelIds: added.message.labelIds ?? [],
-                    });
+                const id = added.message?.id;
+                if (id && !seen.has(id)) {
+                    seen.add(id);
+                    messages.push({ id, labelIds: added.message!.labelIds ?? [] });
                 }
             }
         }
