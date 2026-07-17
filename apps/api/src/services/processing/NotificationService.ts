@@ -751,6 +751,45 @@ export function notifyUnsupportedAttachment(alert: UnsupportedAttachmentAlert): 
     if (alert.to && alert.to !== TEAM_EMAIL) sendTo(alert.to);
 }
 
+// ── Team: unknown bank — AI fallback was used ─────────────────────────────────
+
+export interface UnknownBankAlert {
+    jobId:          string;
+    tenantId?:      string;
+    emailSubject?:  string;
+    filename:       string;
+    txCount:        number;
+    ocrExcerpt?:    string;
+}
+
+export function notifyUnknownBank(alert: UnknownBankAlert): void {
+    const clientName = alert.emailSubject ?? alert.filename;
+    const excerpt = alert.ocrExcerpt
+        ? alert.ocrExcerpt.slice(0, 400).replace(/\s+/g, ' ').trim()
+        : '(unavailable)';
+
+    const subject = `[Acctos] Unknown bank — AI fallback used — ${clientName}`;
+    const text = [
+        `Client: ${clientName}`,
+        `Date: ${ukTimeStr()}`,
+        ``,
+        `File: ${alert.filename}`,
+        `Transactions extracted by AI fallback: ${alert.txCount}`,
+        `Tenant: ${alert.tenantId ?? 'unknown'}`,
+        `Job ID: ${alert.jobId}`,
+        ``,
+        `OCR excerpt (first 400 chars):`,
+        `  ${excerpt}`,
+        ``,
+        `What to do:`,
+        `  Review the file to identify the bank and build a dedicated parser`,
+        `  if this bank is likely to appear regularly.`,
+    ].join('\n');
+
+    console.warn(`[ALERT:unknown_bank] ${subject}`);
+    sendEmail(TEAM_EMAIL, subject, text);
+}
+
 // ── Shared email sender ───────────────────────────────────────────────────────
 
 function sendEmail(to: string, subject: string, text: string): void {

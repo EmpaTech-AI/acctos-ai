@@ -10,7 +10,7 @@ import { parseExcel } from './ExcelParser.js';
 import { buildPdfOutputExcel, buildExcelOutputExcel, buildVatOutputExcel, VatStats } from './ExcelOutputBuilder.js';
 import { Cell, ParsedTransaction, ParseResult } from './parsers/shared.js';
 import { computeVerification, applyCatVerification, logVerificationSummary, computeChainVerification } from './Verification.js';
-import { notifyParserError, notifyChainGap, notifyJobFailed, notifyInsufficientFiles, notifyDuplicatesRemoved, notifyProcessingComplete, notifyTeamIssuesSummary, notifyClientIssuesSummary, ClientIssueItem, BankSummary } from './NotificationService.js';
+import { notifyParserError, notifyChainGap, notifyJobFailed, notifyInsufficientFiles, notifyDuplicatesRemoved, notifyProcessingComplete, notifyTeamIssuesSummary, notifyClientIssuesSummary, notifyUnknownBank, ClientIssueItem, BankSummary } from './NotificationService.js';
 import { JobSummary } from './JobStore.js';
 import {
     getAzureCache, saveAzureCache,
@@ -530,6 +530,17 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
             const { transactions: fileTransactions, statementTotals, ascending: fileAscending } = parseResult;
             if (fileAscending) ascending = true;
             console.log(`[Orchestrator] File ${fi + 1}/${files.length} "${filename}": ${fileTransactions.length} transactions`);
+
+            if (bankType === 'generic') {
+                notifyUnknownBank({
+                    jobId,
+                    tenantId:     tracking?.tenantId,
+                    emailSubject: emailSubject ?? filename,
+                    filename,
+                    txCount:      fileTransactions.length,
+                    ocrExcerpt:   combinedContent,
+                });
+            }
 
             // Statement-level duplicate detection: catches the same statement downloaded twice
             // with different PDF metadata (e.g. different Barclays download-session IDs in
