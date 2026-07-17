@@ -48,8 +48,10 @@ function parseAnyDate(s: string): string {
     return parseDateToDDMMYYYY(s) || parseBgDate(s);
 }
 
-// Extract GBP statement totals from Bulgarian balance summary section
+// Extract GBP statement totals from the "Balance summary" section.
+// Handles both Bulgarian and English Revolut Business statements.
 // Rows look like: col0="Начален баланс" col1="£114.70"
+//             or: col0="Opening balance" col1="£320.71"
 function extractBgStatementTotals(grid: Map<number, Map<number, string>>): ParseResult['statementTotals'] | undefined {
     let openingBalance: number | undefined;
     let closingBalance: number | undefined;
@@ -62,10 +64,10 @@ function extractBgStatementTotals(grid: Map<number, Map<number, string>>): Parse
         // Extract first £ amount, ignoring leading "- "
         const poundM = val.replace(/^-\s*/, '').match(/£\s*([\d\s,]+\.\d{2})/);
         const n = poundM ? parseFloat(poundM[1].replace(/[\s,]/g, '')) : null;
-        if (label === 'начален баланс' && n !== null) openingBalance = n;
-        if (label === 'входяща сума'   && n !== null) moneyIn        = n;
-        if (label === 'изходяща сума'  && n !== null) moneyOut       = n;
-        if (label === 'краен баланс'   && n !== null) closingBalance = n;
+        if ((label === 'начален баланс' || label === 'opening balance') && n !== null) openingBalance = n;
+        if ((label === 'входяща сума'   || label === 'money in')        && n !== null) moneyIn        = n;
+        if ((label === 'изходяща сума'  || label === 'money out')       && n !== null) moneyOut       = n;
+        if ((label === 'краен баланс'   || label === 'closing balance')  && n !== null) closingBalance = n;
     }
     if (moneyIn === undefined && moneyOut === undefined) return undefined;
     return { moneyIn: moneyIn ?? 0, moneyOut: moneyOut ?? 0, openingBalance, closingBalance };

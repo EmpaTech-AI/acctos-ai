@@ -73,6 +73,7 @@ import { parse as parseMetro } from './parsers/metro.js';
 import { parse as parseLloyds } from './parsers/lloyds.js';
 import { parse as parseTsb } from './parsers/tsb.js';
 import { parse as parseTide } from './parsers/tide.js';
+import { parse as parseHalifax } from './parsers/halifax.js';
 import { parse as parseRbs } from './parsers/rbs.js';
 import { parse as parseVirginMoney } from './parsers/virginmoney.js';
 import { parse as parsePockit } from './parsers/pockit.js';
@@ -159,6 +160,7 @@ function getParser(bankType: BankType): StandardParser {
         case 'lloyds':     return parseLloyds;
         case 'tsb':        return parseTsb;
         case 'tide':       return parseTide;
+        case 'halifax':    return parseHalifax;
         case 'anna':       return parseAnna;
         default:           return parseGeneric;
     }
