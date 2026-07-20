@@ -97,11 +97,27 @@ function extractDeclaredTotals(content: string): ParseResult['statementTotals'] 
     }
 
     if (balances.length === 0 && nonBalance.length === 0) return undefined;
+
+    const openingBalance = balances[0];
+    const closingBalance = balances.length >= 2 ? balances[balances.length - 1] : undefined;
+    const moneyIn  = nonBalance[0];
+    const moneyOut = nonBalance[1];
+
+    // Validate the balance chain. If it doesn't hold, the OCR has mis-read the
+    // layout (typically picking up a running balance from the table instead of the
+    // true opening balance). In that case, drop opening/closing to avoid showing
+    // a spurious mismatch — Money In/Out are still reliable.
+    let balanceOk = false;
+    if (openingBalance !== undefined && closingBalance !== undefined &&
+        moneyIn !== undefined && moneyOut !== undefined) {
+        balanceOk = Math.abs(openingBalance + moneyIn - moneyOut - closingBalance) < 0.02;
+    }
+
     return {
-        openingBalance: balances[0],
-        closingBalance: balances.length >= 2 ? balances[balances.length - 1] : undefined,
-        moneyIn:  nonBalance[0],
-        moneyOut: nonBalance[1],
+        openingBalance: balanceOk ? openingBalance : undefined,
+        closingBalance: balanceOk ? closingBalance : undefined,
+        moneyIn,
+        moneyOut,
     };
 }
 
