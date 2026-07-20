@@ -397,8 +397,8 @@ function SummaryPanel({ summary: s }: { summary: JobSummary }) {
     if (s.closingBalance != null) rows.push(['Closing balance', <span style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(s.closingBalance)}</span>]);
     if (s.balanceOk != null) rows.push(['Balance check', <span style={s.balanceOk ? ok : err}>{s.balanceOk ? '✓ OK' : '⚠ Mismatch'}</span>]);
     if (s.declaredIn != null) {
-        rows.push(['Declared in',  <span style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(s.declaredIn)}</span>]);
-        rows.push(['Declared out', <span style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(s.declaredOut ?? 0)}</span>]);
+        rows.push(['Declared in (by Bank)',  <span style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(s.declaredIn)}</span>]);
+        rows.push(['Declared out (by Bank)', <span style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(s.declaredOut ?? 0)}</span>]);
         rows.push(['Declared totals', <span style={s.declaredOk ? ok : err}>{s.declaredOk ? '✓ Match' : '⚠ Mismatch'}</span>]);
     }
     const isVat = s.vatSalesCount != null || s.vatExpensesCount != null;
