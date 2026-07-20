@@ -398,9 +398,8 @@ export function notifyClientIssuesSummary(alert: ClientIssuesSummaryAlert): void
     const isVat = alert.processingMode === 'vat';
     const submissionRef = alert.emailSubject ?? 'unknown submission';
     const clientRef = alert.senderEmail ? ` (from ${alert.senderEmail})` : '';
-    const subject = alert.emailSubject
-        ? (/^re:/i.test(alert.emailSubject) ? alert.emailSubject : `Re: ${alert.emailSubject}`)
-        : `[Acctos] Processing issues — ${submissionRef}`;
+    // Use a distinct subject so this doesn't thread with the result email in Gmail.
+    const subject = `[Action required] Processing issue — ${submissionRef}`;
 
     const sections: string[] = [];
 
@@ -455,7 +454,10 @@ export function notifyClientIssuesSummary(alert: ClientIssuesSummaryAlert): void
         `If you have any questions, please reply to this email.`,
     ].join('\n');
 
-    const clientTarget = alert.senderEmail || CLIENT_EMAIL;
+    // Extract plain email address from senderEmail (may be "Name <email>" format from Gmail headers).
+    const rawTarget = alert.senderEmail || CLIENT_EMAIL;
+    const emailMatch = rawTarget.match(/<([^>]+)>/);
+    const clientTarget = emailMatch ? emailMatch[1] : rawTarget;
     console.warn(`[ALERT:client_issues_summary] ${alert.issues.length} issue(s) for "${submissionRef}" → ${clientTarget}`);
     sendEmail(clientTarget, subject, body);
 }
