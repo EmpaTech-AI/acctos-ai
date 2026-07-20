@@ -562,6 +562,21 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
             // Per-file summary for the output Excel "Files" sheet
             const parsedInFile  = Math.round(fileTransactions.reduce((s, t) => s + (parseFloat((t.moneyIn  || '0').replace(/,/g, '')) || 0), 0) * 100) / 100;
             const parsedOutFile = Math.round(fileTransactions.reduce((s, t) => s + (parseFloat((t.moneyOut || '0').replace(/,/g, '')) || 0), 0) * 100) / 100;
+
+            // If the parser didn't provide opening/closing (e.g. Lloyds OCR misread the
+            // two-column header), derive them per-file from transactions so that the chain
+            // gap check can still run. Without this, allFilesHaveBalances would be false
+            // and the gap check would be silently skipped for the whole batch.
+            let fileOpeningBalance = statementTotals?.openingBalance;
+            let fileClosingBalance = statementTotals?.closingBalance;
+            if ((fileOpeningBalance == null || fileClosingBalance == null) && fileTransactions.length > 0) {
+                const fileVerif = computeVerification(fileTransactions, statementTotals, fileAscending ?? ascending);
+                if (fileVerif?.openingBalance != null && fileVerif?.closingBalance != null) {
+                    fileOpeningBalance = fileVerif.openingBalance;
+                    fileClosingBalance = fileVerif.closingBalance;
+                }
+            }
+
             fileSummaries.push({
                 filename,
                 transactions: fileTransactions.length,
@@ -569,8 +584,8 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
                 parsedOut: parsedOutFile,
                 declaredIn:     statementTotals?.moneyIn,
                 declaredOut:    statementTotals?.moneyOut,
-                openingBalance: statementTotals?.openingBalance,
-                closingBalance: statementTotals?.closingBalance,
+                openingBalance: fileOpeningBalance,
+                closingBalance: fileClosingBalance,
             });
             if (statementTotals) {
                 fileTotals.push(statementTotals);
