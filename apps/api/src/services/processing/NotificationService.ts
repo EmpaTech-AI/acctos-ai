@@ -109,8 +109,6 @@ export function notifyParserError(alert: ParserErrorAlert): void {
     const text = [
         `Client: ${clientName}`,
         `Date: ${ukTimeStr()}`,
-        `Job: ${alert.jobId}`,
-        `Tenant: ${alert.tenantId ?? 'unknown'}`,
         ``,
         `Failed files:`,
         ...lines,
@@ -171,16 +169,12 @@ export function notifyJobFailed(alert: JobFailedAlert): void {
         `File: ${alert.filename}`,
         `Stage: ${stageLabel}`,
         `Time in stage: ${elapsed}`,
-        `Tenant: ${alert.tenantId ?? 'unknown'}`,
         ``,
         `Error message:`,
         `  ${alert.error}`,
         ``,
         `What to do:`,
         `  ${action}`,
-        ``,
-        `──────────────────────────`,
-        `Job ID: ${alert.jobId}`,
     ].join('\n');
 
     console.error(`[ALERT:job_failed] ${subject}\n${text}`);
