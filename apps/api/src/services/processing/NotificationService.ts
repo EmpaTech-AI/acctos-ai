@@ -455,8 +455,10 @@ export function notifyClientIssuesSummary(alert: ClientIssuesSummaryAlert): void
         `If you have any questions, please reply to this email.`,
     ].join('\n');
 
-    console.warn(`[ALERT:client_issues_summary] ${alert.issues.length} issue(s) for "${submissionRef}" → ${CLIENT_EMAIL}`);
-    sendEmail(CLIENT_EMAIL, subject, body);
+    const clientTarget = alert.senderEmail || CLIENT_EMAIL;
+    console.warn(`[ALERT:client_issues_summary] ${alert.issues.length} issue(s) for "${submissionRef}" → ${clientTarget}`);
+    sendEmail(TEAM_EMAIL, subject, body);
+    if (clientTarget !== TEAM_EMAIL) sendEmail(clientTarget, subject, body);
 }
 
 // ── Accountant: processed result with Excel attachment ────────────────────────
