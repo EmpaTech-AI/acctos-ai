@@ -60,9 +60,11 @@ export function computeVerification(
         // transaction: opening = firstBalance + firstOut - firstIn.
         // Validate before showing: if opening + totalIn - totalOut ≈ closing → reliable.
         if (closingBal !== null && oldestBal !== null) {
-            const oldestIn  = parseMoney(oldest.moneyIn)  ?? 0;
-            const oldestOut = parseMoney(oldest.moneyOut) ?? 0;
-            const derivedOpen = oldestBal - oldestIn + oldestOut;
+            const oldestIn  = parseMoney(oldest.moneyIn) ?? 0;
+            // For credits: balance shown is after the credit → opening = balance - moneyIn.
+            // For debits:  balance shown is the opening itself (before the debit) → opening = balance.
+            // Both cases reduce to: opening = balance - moneyIn (moneyIn is 0 for pure debits).
+            const derivedOpen = oldestBal - oldestIn;
             const derivedDiff = Math.round((closingBal - (derivedOpen + totalIn - totalOut)) * 100) / 100;
             if (Math.abs(derivedDiff) <= 0.02) {
                 openingBalance = derivedOpen;
