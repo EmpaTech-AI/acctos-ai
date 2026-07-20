@@ -41,6 +41,10 @@ let lastHistoryId: string | null = null;
 // Prevent overlapping fallback poll runs
 let polling = false;
 
+// Guard against push + poll race: tracks message IDs currently being processed
+// so that if both paths pick up the same message simultaneously, only one proceeds.
+const processingMessageIds = new Set<string>();
+
 // ── Core per-message logic ────────────────────────────────────────────────────
 
 /**
@@ -51,6 +55,15 @@ async function processEmailMessage(
     message: { id: string; subject: string; from: string },
     processingMode: 'bank_statement' | 'vat',
 ): Promise<void> {
+    // Deduplicate: if push and poll both pick up the same message simultaneously,
+    // only the first caller proceeds — the second skips silently.
+    if (processingMessageIds.has(message.id)) {
+        console.log(`[GmailPoller] Message ${message.id} already being processed — skipping duplicate`);
+        return;
+    }
+    processingMessageIds.add(message.id);
+
+    try {
     const attachments = await getSupportedAttachments(message.id);
     const pdfs   = attachments.filter(a => a.mimeType === 'application/pdf' || a.filename.toLowerCase().endsWith('.pdf'));
     const excels = attachments.filter(a => /\.xlsx?$/i.test(a.filename) || a.mimeType.includes('spreadsheet') || a.mimeType.includes('ms-excel'));
@@ -96,6 +109,10 @@ async function processEmailMessage(
     } else {
         console.log(`[GmailPoller] Message ${message.id} has ${excels.length} Excel files but no PDFs — sending error reply`);
         notifyUnsupportedAttachment({ to: extractEmail(message.from), emailSubject: message.subject });
+    }
+    } finally {
+        // Always release the lock so the ID doesn't stay blocked on error
+        processingMessageIds.delete(message.id);
     }
 }
 
