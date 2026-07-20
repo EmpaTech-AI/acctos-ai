@@ -457,8 +457,7 @@ export function notifyClientIssuesSummary(alert: ClientIssuesSummaryAlert): void
 
     const clientTarget = alert.senderEmail || CLIENT_EMAIL;
     console.warn(`[ALERT:client_issues_summary] ${alert.issues.length} issue(s) for "${submissionRef}" → ${clientTarget}`);
-    sendEmail(TEAM_EMAIL, subject, body);
-    if (clientTarget !== TEAM_EMAIL) sendEmail(clientTarget, subject, body);
+    sendEmail(clientTarget, subject, body);
 }
 
 // ── Accountant: processed result with Excel attachment ────────────────────────

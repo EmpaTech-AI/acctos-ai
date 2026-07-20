@@ -590,6 +590,7 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
         // Find the true first file (openingBalance not matched by any closingBalance) and
         // true last file (closingBalance not matched by any openingBalance), then set the
         // combined opening/closing accordingly instead of using upload-order values.
+        let chainBestLen = 0;
         if (combinedStatementTotals && fileTotals.length > 1) {
             const allClose = new Set(
                 fileTotals.filter(t => t.closingBalance != null).map(t => Math.round(t.closingBalance! * 100))
@@ -618,24 +619,38 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
                 }
                 if (len > bestLen) { bestLen = len; bestFirst = start; bestLast = tail; }
             }
+            chainBestLen = bestLen;
             if (bestFirst?.openingBalance != null) combinedStatementTotals.openingBalance = bestFirst.openingBalance;
             if (bestLast?.closingBalance  != null) combinedStatementTotals.closingBalance  = bestLast.closingBalance;
         } else if (combinedStatementTotals && fileTotals.length === 1) {
+            chainBestLen = (fileTotals[0].openingBalance != null && fileTotals[0].closingBalance != null) ? 1 : 0;
             combinedStatementTotals.openingBalance = fileTotals[0].openingBalance;
             combinedStatementTotals.closingBalance  = fileTotals[0].closingBalance;
         }
 
         // If some files have no statementTotals at all, the combined declared in/out is
         // partial — comparing it against the full actual total would always show a false
-        // mismatch.  Likewise the opening/closing chain only covers a subset of files, so
-        // the chain balance check would also be wrong.  Clear both so that computeVerification
-        // falls back to the transaction-derived balance and skips the declared-totals check.
+        // mismatch.  Clear both so that computeVerification skips the declared-totals check.
         if (combinedStatementTotals && fileTotals.length < files.length) {
             console.log(`[Orchestrator] ${files.length - fileTotals.length} of ${files.length} files have no declared totals — suppressing partial declared/chain checks`);
             combinedStatementTotals.moneyIn        = undefined;
             combinedStatementTotals.moneyOut       = undefined;
             combinedStatementTotals.openingBalance = undefined;
             combinedStatementTotals.closingBalance = undefined;
+        }
+
+        // Balance check (opening + totalIn - totalOut = closing) is only valid when every file
+        // contributed an opening/closing balance AND they all form one unbroken chain.
+        // If any file is missing a balance pair (e.g. OCR misread the header layout) or the
+        // chain breaks, the derived batch opening/closing would be wrong — hide it rather than
+        // show a spurious mismatch. Declared totals (moneyIn/moneyOut) remain unaffected.
+        if (combinedStatementTotals) {
+            const filesWithBothBalances = fileTotals.filter(t => t.openingBalance != null && t.closingBalance != null).length;
+            if (filesWithBothBalances < files.length || chainBestLen < filesWithBothBalances) {
+                console.log(`[Orchestrator] Incomplete balance chain (${chainBestLen} linked / ${filesWithBothBalances} with balances / ${files.length} total) — suppressing batch balance check`);
+                combinedStatementTotals.openingBalance = undefined;
+                combinedStatementTotals.closingBalance = undefined;
+            }
         }
 
         if (allTransactions.length === 0) throw new Error('No transactions found in any of the uploaded files');
