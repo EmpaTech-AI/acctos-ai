@@ -601,6 +601,9 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
             allTransactions.push(...fileTransactions);
         }
 
+        // Computed once here so the suppression check and chain gap check share the same value.
+        const allFilesHaveBalances = fileSummaries.every(f => f.openingBalance != null && f.closingBalance != null);
+
         // Chain resolution: files may be uploaded in any order (e.g. alphabetical).
         // Find the true first file (openingBalance not matched by any closingBalance) and
         // true last file (closingBalance not matched by any openingBalance), then set the
@@ -654,18 +657,15 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
             combinedStatementTotals.closingBalance = undefined;
         }
 
-        // Balance check (opening + totalIn - totalOut = closing) is only valid when every file
-        // contributed an opening/closing balance AND they all form one unbroken chain.
-        // If any file is missing a balance pair (e.g. OCR misread the header layout) or the
-        // chain breaks, the derived batch opening/closing would be wrong — hide it rather than
-        // show a spurious mismatch. Declared totals (moneyIn/moneyOut) remain unaffected.
-        if (combinedStatementTotals) {
-            const filesWithBothBalances = fileTotals.filter(t => t.openingBalance != null && t.closingBalance != null).length;
-            if (filesWithBothBalances < files.length || chainBestLen < filesWithBothBalances) {
-                console.log(`[Orchestrator] Incomplete balance chain (${chainBestLen} linked / ${filesWithBothBalances} with balances / ${files.length} total) — suppressing batch balance check`);
-                combinedStatementTotals.openingBalance = undefined;
-                combinedStatementTotals.closingBalance = undefined;
-            }
+        // Suppress the batch balance check only when some files genuinely have no usable
+        // opening/closing (even after per-file derivation). In that case the chain start/end
+        // would be wrong, producing a spurious mismatch.
+        // When all files have balances but the chain is broken (chainBestLen < files.length),
+        // a month is genuinely missing — let the mismatch show; the chain gap alert explains why.
+        if (combinedStatementTotals && !allFilesHaveBalances) {
+            console.log(`[Orchestrator] Some files have no usable balance data — suppressing batch balance check`);
+            combinedStatementTotals.openingBalance = undefined;
+            combinedStatementTotals.closingBalance = undefined;
         }
 
         if (allTransactions.length === 0) throw new Error('No transactions found in any of the uploaded files');
@@ -708,12 +708,8 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
 
         // 2. Chain gap (all individual files OK, but overall sequence doesn't close) → client alert
         if (failedFiles.length === 0 && verification) {
-            // Only run chain gap check when every file has both opening and closing balance.
-            // If any file is missing balance data (e.g. OCR couldn't read the Lloyds two-column
-            // header), the chain is inherently incomplete — rem files cause computeChainVerification
-            // to pick a wrong chain-end closing and fire a false-positive gap alert.
-            // When declared totals are available and verified, they already cover those files.
-            const allFilesHaveBalances = fileSummaries.every(f => f.openingBalance != null && f.closingBalance != null);
+            // Only run chain gap check when every file has both opening and closing balance
+            // (allFilesHaveBalances computed above after the file loop).
             // Sort fileSummaries chronologically by balance-chain matching before gap check
             const sortedForChain = (() => {
                 if (!allFilesHaveBalances || fileSummaries.length <= 1) return fileSummaries;
@@ -868,11 +864,15 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
                 const clientName = extractClientName(emailSubject);
                 notifyProcessingComplete({ to: senderEmail, emailSubject, clientName, xlsxBuffer: outputBuffer, filename: replyFilename, driveFileUrl, vatSummary: vatStats, bankSummary: batchBankSummary });
             }
-            if (clientIssues.length > 0) {
+        })().catch(e => console.warn('[Orchestrator] Drive+email (batch) failed:', e?.message));
+
+        // Issues summaries fire in a separate IIFE so a Drive/email failure above can't suppress them.
+        if (clientIssues.length > 0) {
+            void Promise.resolve().then(() => {
                 notifyTeamIssuesSummary({ jobId, tenantId: tracking?.tenantId, emailSubject, senderEmail, processingMode, issues: clientIssues });
                 notifyClientIssuesSummary({ jobId, tenantId: tracking?.tenantId, emailSubject, senderEmail, processingMode, issues: clientIssues });
-            }
-        })().catch(e => console.warn('[Orchestrator] Drive+email (batch) failed:', e?.message));
+            }).catch(e => console.warn('[Orchestrator] Issues summary email failed:', e?.message));
+        }
 
     } catch (err: any) {
         const stage = jobStore.get(jobId)?.currentStage;
