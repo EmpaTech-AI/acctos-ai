@@ -87,6 +87,8 @@ export default function Dashboard() {
     const [activeTab, setActiveTab] = useState<'infrastructure' | 'document' | 'reports'>(isAdmin ? 'infrastructure' : 'document');
     const [reports, setReports] = useState<Array<{ id: string; date: string; content: string; createdAt: string }>>([]);
     const [expandedReports, setExpandedReports] = useState<Set<string>>(new Set());
+    const [reportPage, setReportPage] = useState(1);
+    const REPORTS_PER_PAGE = 10;
     const [syncCooldown, setSyncCooldown] = useState(false);
     const [scenarioActionLoading, setScenarioActionLoading] = useState(false);
     const [scenarioActionError, setScenarioActionError] = useState<string | null>(null);
@@ -620,9 +622,11 @@ export default function Dashboard() {
                             No reports yet. The first report will appear after midnight EET tonight.
                         </div>
                     ) : (
+                        <>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                            {reports.map((report, idx) => {
+                            {reports.slice((reportPage - 1) * REPORTS_PER_PAGE, reportPage * REPORTS_PER_PAGE).map((report, idx) => {
                                 const isExpanded = expandedReports.has(report.id);
+                                const globalIdx = (reportPage - 1) * REPORTS_PER_PAGE + idx;
 
                                 // Parse structured format: "METRICS:pages=X,rows=Y,docs=Z,credits=W\n---\nNarrative"
                                 const parts = report.content.split('\n---\n');
@@ -640,7 +644,7 @@ export default function Dashboard() {
                                 const dateObj = new Date(report.date + 'T00:00:00');
                                 const dayName = dateObj.toLocaleDateString('en-GB', { weekday: 'long' });
                                 const dateFull = dateObj.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
-                                const reportNumber = reports.length - idx;
+                                const reportNumber = reports.length - globalIdx;
 
                                 const toggleExpand = () => setExpandedReports(prev => {
                                     const next = new Set(prev);
@@ -743,6 +747,28 @@ export default function Dashboard() {
                                 );
                             })}
                         </div>
+                        {reports.length > REPORTS_PER_PAGE && (
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.75rem', marginTop: '1.25rem' }}>
+                                <button
+                                    onClick={() => setReportPage(p => Math.max(1, p - 1))}
+                                    disabled={reportPage === 1}
+                                    style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', background: 'none', border: '1px solid var(--glass-border)', borderRadius: '0.5rem', padding: '0.35rem 0.85rem', cursor: reportPage === 1 ? 'default' : 'pointer', color: reportPage === 1 ? 'var(--text-muted)' : 'var(--text)', fontSize: '0.85rem', opacity: reportPage === 1 ? 0.45 : 1 }}
+                                >
+                                    <ChevronUp size={13} style={{ transform: 'rotate(-90deg)' }} /> Newer
+                                </button>
+                                <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                                    Page {reportPage} of {Math.ceil(reports.length / REPORTS_PER_PAGE)}
+                                </span>
+                                <button
+                                    onClick={() => setReportPage(p => Math.min(Math.ceil(reports.length / REPORTS_PER_PAGE), p + 1))}
+                                    disabled={reportPage === Math.ceil(reports.length / REPORTS_PER_PAGE)}
+                                    style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', background: 'none', border: '1px solid var(--glass-border)', borderRadius: '0.5rem', padding: '0.35rem 0.85rem', cursor: reportPage === Math.ceil(reports.length / REPORTS_PER_PAGE) ? 'default' : 'pointer', color: reportPage === Math.ceil(reports.length / REPORTS_PER_PAGE) ? 'var(--text-muted)' : 'var(--text)', fontSize: '0.85rem', opacity: reportPage === Math.ceil(reports.length / REPORTS_PER_PAGE) ? 0.45 : 1 }}
+                                >
+                                    Older <ChevronUp size={13} style={{ transform: 'rotate(90deg)' }} />
+                                </button>
+                            </div>
+                        )}
+                        </>
                     )}
                 </>
             ) : isAdmin && activeTab === 'infrastructure' ? (
