@@ -693,9 +693,15 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
 
         // 2. Chain gap (all individual files OK, but overall sequence doesn't close) → client alert
         if (failedFiles.length === 0 && verification) {
+            // Only run chain gap check when every file has both opening and closing balance.
+            // If any file is missing balance data (e.g. OCR couldn't read the Lloyds two-column
+            // header), the chain is inherently incomplete — rem files cause computeChainVerification
+            // to pick a wrong chain-end closing and fire a false-positive gap alert.
+            // When declared totals are available and verified, they already cover those files.
+            const allFilesHaveBalances = fileSummaries.every(f => f.openingBalance != null && f.closingBalance != null);
             // Sort fileSummaries chronologically by balance-chain matching before gap check
             const sortedForChain = (() => {
-                if (fileSummaries.length <= 1) return fileSummaries;
+                if (!allFilesHaveBalances || fileSummaries.length <= 1) return fileSummaries;
                 const allClose = new Set(fileSummaries.filter(f => f.closingBalance != null).map(f => Math.round(f.closingBalance! * 100)));
                 const first = fileSummaries.find(f => f.openingBalance != null && !allClose.has(Math.round(f.openingBalance * 100)));
                 if (!first) return fileSummaries;
@@ -710,7 +716,7 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
                 }
                 return [...out, ...rem];
             })();
-            const chain = computeChainVerification(sortedForChain, verification.totalIn, verification.totalOut);
+            const chain = allFilesHaveBalances ? computeChainVerification(sortedForChain, verification.totalIn, verification.totalOut) : undefined;
             if (chain && !chain.ok) {
                 notifyChainGap({
                     jobId,
