@@ -64,7 +64,52 @@ function mapType(code: string): string {
     return map[code.toUpperCase()] ?? code;
 }
 
+/**
+ * Extract Money In / Money Out / opening / closing balance from the OCR full-text
+ * that Azure DI puts in the page 1 header (outside the transaction table).
+ * Lloyds web-export PDFs print these as a two-column block above the table:
+ *   Money In £X    Balance on DD Month YYYY £opening
+ *   Money Out £Y   Balance on DD Month YYYY £closing
+ */
+function extractDeclaredTotals(content: string): ParseResult['statementTotals'] | undefined {
+    // Limit to page 1 header: stop at the first transaction line (DD Mon YY on its own line)
+    const txIdx = content.search(/\n\d{2}\s+[A-Za-z]{3}\s+\d{2}\n/);
+    const header = txIdx > 0 ? content.slice(0, txIdx) : content.slice(0, 2000);
+
+    // Extract "Balance on <date>" followed by £ amount (opening = first, closing = last)
+    const balPat = /Balance\s+on\s+\d+\s+\w+\s+\d{4}[^\n£]*\n[^£\n]*£([\d,]+\.\d{2})/gi;
+    const balances: number[] = [];
+    const balPoundPositions = new Set<number>();
+    let bm: RegExpExecArray | null;
+    while ((bm = balPat.exec(header)) !== null) {
+        balances.push(parseFloat(bm[1].replace(/,/g, '')));
+        balPoundPositions.add(bm.index + bm[0].lastIndexOf('£'));
+    }
+
+    // All £ amounts not belonging to a "Balance on" label → Money In / Money Out
+    const amtPat = /£([\d,]+\.\d{2})/g;
+    const nonBalance: number[] = [];
+    let am: RegExpExecArray | null;
+    while ((am = amtPat.exec(header)) !== null) {
+        if (!balPoundPositions.has(am.index)) {
+            nonBalance.push(parseFloat(am[1].replace(/,/g, '')));
+        }
+    }
+
+    if (balances.length === 0 && nonBalance.length === 0) return undefined;
+    return {
+        openingBalance: balances[0],
+        closingBalance: balances.length >= 2 ? balances[balances.length - 1] : undefined,
+        moneyIn:  nonBalance[0],
+        moneyOut: nonBalance[1],
+    };
+}
+
 export function parse(cells: Cell[]): ParseResult {
+    // Extract declared totals from the OCR context cell (page 1 header text)
+    const ctxCell = cells.find(c => c.rowIndex === -1);
+    const totalsFromContext = ctxCell?.content ? extractDeclaredTotals(ctxCell.content) : undefined;
+
     const realCells = cells.filter(c => c.rowIndex >= 0);
     if (realCells.length === 0) return { transactions: [] };
 
@@ -175,6 +220,8 @@ export function parse(cells: Cell[]): ParseResult {
         transactions.push({ date, type, description: details, moneyIn: paidIn, moneyOut: paidOut, balance });
     }
 
+    // Table-based detection (old scanned format with "Balance brought/carried forward" rows)
+    // takes precedence; context extraction covers the new web-export format.
     const statementTotals: ParseResult['statementTotals'] =
         (declaredOpen !== undefined || declaredClose !== undefined || declaredMoneyIn !== undefined || declaredMoneyOut !== undefined)
             ? {
@@ -183,7 +230,7 @@ export function parse(cells: Cell[]): ParseResult {
                 moneyIn:        declaredMoneyIn,
                 moneyOut:       declaredMoneyOut,
               }
-            : undefined;
+            : totalsFromContext;
 
     // Lloyds web format PDFs are oldest-first (earliest date at top of statement)
     return { transactions, ascending: true, ...(statementTotals ? { statementTotals } : {}) };
