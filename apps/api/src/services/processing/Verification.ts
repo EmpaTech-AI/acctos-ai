@@ -55,9 +55,23 @@ export function computeVerification(
         balanceDiff = statedClose - expected;
         balanceOk = Math.abs(balanceDiff) <= 0.02;
     } else if (declared) {
-        // Declared totals provided but opening/closing were cleared (e.g. incomplete balance
-        // chain across files). Don't show closing without opening — it would be misleading.
-        closingBalance = null;
+        // Declared totals provided but opening/closing were cleared (e.g. OCR misread the
+        // Lloyds two-column header layout). Fall back to deriving opening from the first
+        // transaction: opening = firstBalance + firstOut - firstIn.
+        // Validate before showing: if opening + totalIn - totalOut ≈ closing → reliable.
+        if (closingBal !== null && oldestBal !== null) {
+            const oldestIn  = parseMoney(oldest.moneyIn)  ?? 0;
+            const oldestOut = parseMoney(oldest.moneyOut) ?? 0;
+            const derivedOpen = oldestBal - oldestIn + oldestOut;
+            const derivedDiff = Math.round((closingBal - (derivedOpen + totalIn - totalOut)) * 100) / 100;
+            if (Math.abs(derivedDiff) <= 0.02) {
+                openingBalance = derivedOpen;
+                closingBalance = closingBal;
+                balanceDiff = derivedDiff;
+                balanceOk = true;
+            }
+            // If derivation doesn't validate either, leave both null — don't show a spurious mismatch.
+        }
     } else if (closingBal !== null && oldestBal !== null) {
         // Only derive balance from transactions when we have no declared totals.
         // When declared IN/OUT totals are available (e.g. Monese), skip this check —
