@@ -111,8 +111,11 @@ async function processEmailMessage(
         notifyUnsupportedAttachment({ to: extractEmail(message.from), emailSubject: message.subject });
     }
     } finally {
-        // Always release the lock so the ID doesn't stay blocked on error
-        processingMessageIds.delete(message.id);
+        // Keep the ID in the set for 10 minutes so that a second push notification
+        // for the same email (Gmail fires one for INBOX arrival and one for the
+        // Bank Statement AI / VAT AI filter label being applied) doesn't trigger
+        // a second processing run after the first has already completed.
+        setTimeout(() => processingMessageIds.delete(message.id), 10 * 60 * 1000);
     }
 }
 
