@@ -539,8 +539,8 @@ export function notifyProcessingComplete(alert: ProcessingCompleteAlert): void {
         if (b.balanceDiff != null) lines.push(b.balanceOk ? '✓ Balance check OK' : `⚠ Balance mismatch: ${(b.balanceDiff >= 0 ? '+' : '') + b.balanceDiff.toFixed(2)}`);
         if (b.declaredIn != null) {
             lines.push('');
-            lines.push(`Declared in:      £${fmt(b.declaredIn)}`);
-            lines.push(`Declared out:     £${fmt(b.declaredOut ?? 0)}`);
+            lines.push(`Declared in (by Bank):  £${fmt(b.declaredIn)}`);
+            lines.push(`Declared out (by Bank): £${fmt(b.declaredOut ?? 0)}`);
             lines.push(b.declaredOk ? '✓ Declared totals match' : '⚠ Declared totals mismatch');
         }
         if (b.catTotalIn != null) {
@@ -637,8 +637,8 @@ export function notifyProcessingComplete(alert: ProcessingCompleteAlert): void {
         }
         if (b.declaredIn != null) {
             rows += sep;
-            rows += row('Declared in (by bank)',  `£${fmt(b.declaredIn)}`);
-            rows += row('Declared out (by bank)', `£${fmt(b.declaredOut ?? 0)}`);
+            rows += row('Declared in (by Bank)',  `£${fmt(b.declaredIn)}`);
+            rows += row('Declared out (by Bank)', `£${fmt(b.declaredOut ?? 0)}`);
             rows += row('Declared totals', b.declaredOk ? '✓ Match' : '⚠ Mismatch', b.declaredOk ? ok : err);
         }
         if (b.catTotalIn != null) {
