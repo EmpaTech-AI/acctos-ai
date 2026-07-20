@@ -55,9 +55,12 @@ export function computeVerification(
         balanceDiff = statedClose - expected;
         balanceOk = Math.abs(balanceDiff) <= 0.02;
     } else if (declared) {
+        // closingBalance was initialised to closingBal above — reset it here so that
+        // the "both or neither" invariant holds even when derivation below fails.
+        closingBalance = null;
         // Declared totals provided but opening/closing were cleared (e.g. OCR misread the
         // Lloyds two-column header layout). Fall back to deriving opening from the first
-        // transaction: opening = firstBalance + firstOut - firstIn.
+        // transaction: opening = firstBalance - firstIn.
         // Validate before showing: if opening + totalIn - totalOut ≈ closing → reliable.
         if (closingBal !== null && oldestBal !== null) {
             const oldestIn  = parseMoney(oldest.moneyIn) ?? 0;
