@@ -54,7 +54,11 @@ export function computeVerification(
         const expected = openingBalance + totalIn - totalOut;
         balanceDiff = statedClose - expected;
         balanceOk = Math.abs(balanceDiff) <= 0.02;
-    } else if (!declared && closingBal !== null && oldestBal !== null) {
+    } else if (declared) {
+        // Declared totals provided but opening/closing were cleared (e.g. incomplete balance
+        // chain across files). Don't show closing without opening — it would be misleading.
+        closingBalance = null;
+    } else if (closingBal !== null && oldestBal !== null) {
         // Only derive balance from transactions when we have no declared totals.
         // When declared IN/OUT totals are available (e.g. Monese), skip this check —
         // payment-date sorting reorders transactions, making first/last balance unreliable.
