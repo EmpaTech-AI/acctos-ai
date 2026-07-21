@@ -686,8 +686,11 @@ export function notifyProcessingComplete(alert: ProcessingCompleteAlert): void {
         console.error(`[Notifications] Failed to send reply email to ${to}:`, err.message);
     });
 
+    // Extract plain address to compare — alert.to may be "Name <email>" from Gmail headers.
+    const toAddrRaw = alert.to ?? '';
+    const toAddr = toAddrRaw.match(/<([^>]+)>/)?.[1] ?? toAddrRaw;
     sendTo(TEAM_EMAIL);
-    if (alert.to && alert.to !== TEAM_EMAIL) sendTo(alert.to);
+    if (toAddr && toAddr.toLowerCase() !== TEAM_EMAIL.toLowerCase()) sendTo(toAddr);
 }
 
 // ── Unsupported attachment reply ──────────────────────────────────────────────
