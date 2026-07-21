@@ -331,6 +331,28 @@ export default function Billing() {
         }
     };
 
+    // Stripe Customer Portal
+    const [openingPortal, setOpeningPortal] = useState(false);
+    const [portalError, setPortalError] = useState<string | null>(null);
+    const [stripeManaged, setStripeManaged] = useState(false); // true when tenant has a Stripe subscription ID
+
+    const handleManageSubscription = async () => {
+        setOpeningPortal(true);
+        setPortalError(null);
+        try {
+            const res = await axios.get('/v1/billing/portal');
+            if (res.data.portalUrl) {
+                window.open(res.data.portalUrl, '_blank', 'noopener,noreferrer');
+            } else {
+                setPortalError(res.data.message || 'Stripe portal not available');
+            }
+        } catch (err: any) {
+            setPortalError(err.response?.data?.error?.message || 'Failed to open billing portal');
+        } finally {
+            setOpeningPortal(false);
+        }
+    };
+
     const [resettingAddon, setResettingAddon] = useState(false);
     const [resetAddonMsg, setResetAddonMsg] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
 
@@ -390,6 +412,10 @@ export default function Billing() {
                 if (planStatus && STATUS_TO_TIER[planStatus]) {
                     setCurrentTier(STATUS_TO_TIER[planStatus]);
                 }
+            }
+
+            if (subRes.status === 'fulfilled') {
+                setStripeManaged(!!(subRes.value.data as any)?.stripeSubscriptionId);
             }
         } catch (err) {
             console.error('Failed to load billing data:', err);
@@ -570,6 +596,29 @@ export default function Billing() {
                                 )}
                             </form>
                         )}
+                    {/* Stripe portal: manage plan / payment method / cancellation */}
+                    {stripeManaged && (
+                        <div style={{ marginTop: '0.75rem' }}>
+                            <button
+                                onClick={handleManageSubscription}
+                                disabled={openingPortal}
+                                style={{
+                                    display: 'inline-flex', alignItems: 'center', gap: '0.4rem',
+                                    padding: '0.4rem 1rem', fontSize: '0.82rem', fontWeight: 600,
+                                    background: 'rgba(99,102,241,0.12)', border: '1px solid rgba(99,102,241,0.35)',
+                                    borderRadius: '0.5rem', color: '#818cf8', cursor: 'pointer',
+                                    opacity: openingPortal ? 0.6 : 1,
+                                }}
+                            >
+                                {openingPortal ? 'Opening…' : 'Manage Subscription →'}
+                            </button>
+                            {portalError && (
+                                <span style={{ marginLeft: '0.75rem', fontSize: '0.78rem', color: '#ef4444' }}>
+                                    {portalError}
+                                </span>
+                            )}
+                        </div>
+                    )}
                     </div>
                     <CreditCard size={32} color="var(--primary)" />
                 </div>
@@ -659,23 +708,52 @@ export default function Billing() {
                                 </button>
                             )}
                             {!isCurrentPlan && isLowerTier && (
-                                <button
-                                    className="btn-secondary btn-plan"
-                                    onClick={() => { setDowngradeTarget(plan); setDowngradeError(null); }}
-                                >
-                                    {t.downgradeTo(plan.name)}
-                                </button>
+                                stripeManaged ? (
+                                    // Stripe-managed subscription: use the portal so Stripe
+                                    // handles the plan switch, prorations, and billing correctly.
+                                    <button
+                                        className="btn-secondary btn-plan"
+                                        onClick={handleManageSubscription}
+                                        disabled={openingPortal}
+                                        style={{ opacity: openingPortal ? 0.6 : 1 }}
+                                    >
+                                        {openingPortal ? 'Opening…' : t.downgradeTo(plan.name)}
+                                    </button>
+                                ) : (
+                                    // Manual / non-Stripe subscription: DB-only plan change.
+                                    <button
+                                        className="btn-secondary btn-plan"
+                                        onClick={() => { setDowngradeTarget(plan); setDowngradeError(null); }}
+                                    >
+                                        {t.downgradeTo(plan.name)}
+                                    </button>
+                                )
                             )}
                             {!isCurrentPlan && !isLowerTier && (
-                                <a
-                                    href={`${plan.stripeLink}${activeTenant?.id ? `?client_reference_id=${activeTenant.id}` : ''}`}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="btn-primary btn-plan"
-                                >
-                                    <ExternalLink size={16} />
-                                    {isSubscribed ? t.upgradeTo(plan.name) : t.subscribeTo(plan.priceLabel)}
-                                </a>
+                                stripeManaged ? (
+                                    // Existing Stripe subscriber upgrading: use the portal so
+                                    // Stripe handles proration and no duplicate subscription is created.
+                                    <button
+                                        className="btn-primary btn-plan"
+                                        onClick={handleManageSubscription}
+                                        disabled={openingPortal}
+                                        style={{ opacity: openingPortal ? 0.6 : 1 }}
+                                    >
+                                        <ExternalLink size={16} />
+                                        {openingPortal ? 'Opening…' : t.upgradeTo(plan.name)}
+                                    </button>
+                                ) : (
+                                    // New subscriber or manually-set plan: open payment link.
+                                    <a
+                                        href={`${plan.stripeLink}${activeTenant?.id ? `?client_reference_id=${activeTenant.id}` : ''}`}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="btn-primary btn-plan"
+                                    >
+                                        <ExternalLink size={16} />
+                                        {isSubscribed ? t.upgradeTo(plan.name) : t.subscribeTo(plan.priceLabel)}
+                                    </a>
+                                )
                             )}
                         </div>
                     );

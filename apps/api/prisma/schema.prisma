@@ -160,15 +160,16 @@ model DailyReport {
 }
 
 model Subscription {
-  id               String    @id @default(cuid())
-  tenantId         String    @unique
-  stripeCustomerId String?
-  stripePriceId    String?
-  status           String    @default("trialing")
-  currentPeriodEnd DateTime?
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
-  tenant           Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  id                   String    @id @default(cuid())
+  tenantId             String    @unique
+  stripeCustomerId     String?
+  stripePriceId        String?
+  stripeSubscriptionId String?
+  status               String    @default("trialing")
+  currentPeriodEnd     DateTime?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+  tenant               Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 }
 
 model Plan {

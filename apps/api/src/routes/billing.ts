@@ -133,21 +133,40 @@ router.post('/checkout', async (req: AuthenticatedRequest, res: Response, next: 
 
 /**
  * GET /v1/billing/portal
- * Get Stripe customer portal URL (placeholder)
+ * Create a Stripe Billing Portal session and return the URL.
+ * Requires the tenant to have a stripeCustomerId stored from a previous purchase.
  */
 router.get('/portal', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
+        const prisma: PrismaClient = req.app.locals.prisma;
         const tenantId = req.user!.tenantId;
 
         if (!tenantId) {
             return next(createError('No tenant selected', 400, 'NO_TENANT'));
         }
 
-        // Stripe integration placeholder
-        res.json({
-            message: 'Stripe portal not yet implemented',
-            portalUrl: null,
+        if (!process.env.STRIPE_SECRET_KEY) {
+            return res.json({ portalUrl: null, message: 'Stripe not configured' });
+        }
+
+        const subscription = await prisma.subscription.findUnique({ where: { tenantId } });
+        if (!(subscription as any)?.stripeCustomerId) {
+            return res.json({
+                portalUrl: null,
+                message: 'No Stripe customer found — please purchase a plan first',
+            });
+        }
+
+        const Stripe = (await import('stripe')).default;
+        const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: '2025-01-27.acacia' as any });
+
+        const returnUrl = (req.headers.origin as string | undefined) ?? process.env.APP_URL ?? 'https://acctos.ai';
+        const session = await stripe.billingPortal.sessions.create({
+            customer: (subscription as any).stripeCustomerId,
+            return_url: `${returnUrl}/billing`,
         });
+
+        res.json({ portalUrl: session.url });
     } catch (error) {
         next(error);
     }
@@ -366,42 +385,44 @@ router.get('/usage-status', async (req: AuthenticatedRequest, res: Response, nex
 /**
  * POST /v1/billing/stripe-webhook
  *
- * Handles Stripe checkout.session.completed events for add-on purchases.
+ * Handles Stripe webhook events:
+ *   - checkout.session.completed      → plan purchase / add-on purchase
+ *   - customer.subscription.updated   → sync status + period end (e.g. portal plan change)
+ *   - customer.subscription.deleted   → mark subscription as cancelled
  *
  * Expected metadata on the Stripe payment link / checkout session:
- *   - tenantId:       tenant CUID
+ *   - tenantId:       tenant CUID  (OR pass via client_reference_id query param)
  *   - addonType:      "pages" | "rows"
  *   - addonQuantity:  number (e.g. 1000)
- *
- * Configure this in the Stripe Dashboard under the payment link's metadata,
- * and point the webhook to this endpoint with the STRIPE_WEBHOOK_SECRET.
  */
 router.post('/stripe-webhook', async (req: Request, res: Response, next: NextFunction) => {
     try {
         const prisma: PrismaClient = req.app.locals.prisma;
-        const sig  = req.headers['stripe-signature'] as string;
+        const sig    = req.headers['stripe-signature'] as string;
         const secret = process.env.STRIPE_WEBHOOK_SECRET;
 
         let event: any = req.body;
+        let stripe: any = null;
 
-        // Verify signature when configured
-        if (secret && sig) {
-            try {
-                // Dynamic import so the app starts even if stripe package is absent
-                const Stripe = (await import('stripe')).default;
-                const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || '', { apiVersion: '2025-01-27.acacia' as any });
-                event = stripe.webhooks.constructEvent(
-                    (req as any).rawBody ?? req.body,
-                    sig,
-                    secret
-                );
-            } catch (err: any) {
-                console.warn('[Stripe Webhook] Signature verification failed:', err.message);
-                return res.status(400).json({ error: 'Invalid signature' });
+        // Verify signature and keep the stripe instance for later API calls
+        if (process.env.STRIPE_SECRET_KEY) {
+            const Stripe = (await import('stripe')).default;
+            stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: '2025-01-27.acacia' as any });
+            if (secret && sig) {
+                try {
+                    event = stripe.webhooks.constructEvent(
+                        (req as any).rawBody ?? req.body,
+                        sig,
+                        secret
+                    );
+                } catch (err: any) {
+                    console.warn('[Stripe Webhook] Signature verification failed:', err.message);
+                    return res.status(400).json({ error: 'Invalid signature' });
+                }
             }
         }
 
-        // ── Plan limits map (shared across event handlers) ───────────────────────
+        // ── Plan limits map ──────────────────────────────────────────────────────
         const PLAN_LIMITS: Record<string, { pagesLimit: number; rowsLimit: number }> = {
             starter:      { pagesLimit: 1000,  rowsLimit: 1000  },
             professional: { pagesLimit: 5000,  rowsLimit: 5000  },
@@ -409,8 +430,7 @@ router.post('/stripe-webhook', async (req: Request, res: Response, next: NextFun
             enterprise:   { pagesLimit: 15000, rowsLimit: 15000 },
         };
 
-        // Map known Stripe payment link IDs → planId (extracted from URL path segment)
-        // e.g. https://buy.stripe.com/7sYdRa2dM25YfqydQgaZi0h → '7sYdRa2dM25YfqydQgaZi0h'
+        // Map known Stripe payment link IDs → planId
         const PAYMENT_LINK_TO_PLAN: Record<string, string> = {
             '7sYdRa2dM25YfqydQgaZi0h': 'starter',
             '3cI4gA2dM4e60vE4fGaZi0j': 'professional',
@@ -418,23 +438,54 @@ router.post('/stripe-webhook', async (req: Request, res: Response, next: NextFun
             'aFabJ22dM8umdiqcMcaZi0i': 'enterprise',
         };
 
-        /** Apply a plan change to the DB for a given tenant. */
-        const applyPlanChange = async (tenantId: string, planId: string) => {
+        /**
+         * Apply a plan change: cancel any pre-existing Stripe subscription for this
+         * tenant, then update the DB with the new plan limits and Stripe IDs.
+         */
+        const applyPlanChange = async (
+            tenantId: string,
+            planId: string,
+            newStripeCustomerId?: string,
+            newStripeSubscriptionId?: string,
+            newCurrentPeriodEnd?: Date,
+        ) => {
             const limits = PLAN_LIMITS[planId];
             if (!limits) {
                 console.warn(`[Stripe Webhook] Unknown planId: ${planId}`);
                 return;
             }
+
+            // Cancel the previous Stripe subscription to prevent duplicate charges.
+            // Only attempt this when we have both a Stripe client and a new subscription ID.
+            if (stripe && newStripeSubscriptionId) {
+                const existing = await prisma.subscription.findUnique({
+                    where: { tenantId },
+                    select: { stripeSubscriptionId: true } as any,
+                });
+                const oldSubId = (existing as any)?.stripeSubscriptionId;
+                if (oldSubId && oldSubId !== newStripeSubscriptionId) {
+                    try {
+                        await stripe.subscriptions.cancel(oldSubId);
+                        console.log(`[Stripe Webhook] Cancelled old subscription ${oldSubId} for tenant ${tenantId}`);
+                    } catch (e: any) {
+                        // Log but don't abort — the new plan should still be applied.
+                        console.warn(`[Stripe Webhook] Failed to cancel old subscription ${oldSubId}:`, e.message);
+                    }
+                }
+            }
+
+            const updateData: any = { status: planId };
+            if (newStripeCustomerId)     updateData.stripeCustomerId     = newStripeCustomerId;
+            if (newStripeSubscriptionId) updateData.stripeSubscriptionId = newStripeSubscriptionId;
+            if (newCurrentPeriodEnd)     updateData.currentPeriodEnd     = newCurrentPeriodEnd;
+
             await prisma.subscription.upsert({
-                where: { tenantId },
-                create: { tenantId, status: planId },
-                update: { status: planId },
+                where:  { tenantId },
+                create: { tenantId, ...updateData },
+                update: updateData,
             });
-            await (prisma.tenant as any).update({
-                where: { id: tenantId },
-                data: limits,
-            });
-            // Resume scenarios if the new limits bring usage back within range
+            await (prisma.tenant as any).update({ where: { id: tenantId }, data: limits });
+
             try {
                 await checkAndResumeIfPossible(prisma, tenantId);
             } catch (e) {
@@ -443,49 +494,144 @@ router.post('/stripe-webhook', async (req: Request, res: Response, next: NextFun
             console.log(`[Stripe Webhook] Plan updated: tenant=${tenantId}, plan=${planId}, limits=${JSON.stringify(limits)}`);
         };
 
+        // ── checkout.session.completed ───────────────────────────────────────────
         if (event.type === 'checkout.session.completed') {
             const session = event.data.object;
             const meta    = session.metadata || {};
-            // tenantId can come from metadata (payment links) or client_reference_id (dynamic links)
-            const tenantId      = (meta.tenantId || (session as any).client_reference_id) as string | undefined;
+
+            const tenantId      = (meta.tenantId || session.client_reference_id) as string | undefined;
             const addonType     = meta.addonType as 'pages' | 'rows' | undefined;
             const addonQuantity = meta.addonQuantity ? parseInt(meta.addonQuantity) : 0;
 
-            // Resolve planId: prefer explicit metadata, fall back to payment link URL mapping
-            const paymentLinkUrl: string | undefined = (session as any).payment_link_url || (session as any).payment_link;
+            const newStripeCustomerId     = session.customer     as string | undefined;
+            const newStripeSubscriptionId = session.subscription as string | undefined;
+
+            // Resolve planId from metadata or payment-link URL
+            const paymentLinkUrl: string | undefined = session.payment_link_url || session.payment_link;
             const linkKey = paymentLinkUrl ? paymentLinkUrl.split('/').pop()?.split('?')[0] : undefined;
             const planId  = (meta.planId as string | undefined) || (linkKey ? PAYMENT_LINK_TO_PLAN[linkKey] : undefined);
 
+            // Fetch current_period_end from the subscription object when available
+            let newCurrentPeriodEnd: Date | undefined;
+            if (stripe && newStripeSubscriptionId) {
+                try {
+                    const sub = await stripe.subscriptions.retrieve(newStripeSubscriptionId);
+                    if (sub.current_period_end) {
+                        newCurrentPeriodEnd = new Date(sub.current_period_end * 1000);
+                    }
+                } catch (e: any) {
+                    console.warn('[Stripe Webhook] Could not retrieve subscription for period end:', e.message);
+                }
+            }
+
             if (tenantId && planId) {
-                // ── Subscription plan purchase / upgrade / downgrade ──────────────────
-                console.log(`[Stripe Webhook] Plan purchase: tenant=${tenantId}, plan=${planId}`);
-                await applyPlanChange(tenantId, planId);
+                console.log(`[Stripe Webhook] Plan purchase: tenant=${tenantId}, plan=${planId}, sub=${newStripeSubscriptionId}`);
+                await applyPlanChange(tenantId, planId, newStripeCustomerId, newStripeSubscriptionId, newCurrentPeriodEnd);
             } else if (tenantId && addonType && addonQuantity > 0) {
-                // ── Add-on purchase ───────────────────────────────────────────────────
                 console.log(`[Stripe Webhook] Add-on purchase: tenant=${tenantId}, type=${addonType}, qty=${addonQuantity}`);
 
-                const updateData: any = {};
-                if (addonType === 'pages') {
-                    const current = await (prisma.tenant as any).findUnique({
-                        where: { id: tenantId }, select: { addonPagesLimit: true },
+                const field = addonType === 'pages' ? 'addonPagesLimit' : 'addonRowsLimit';
+                const current = await (prisma.tenant as any).findUnique({
+                    where: { id: tenantId }, select: { [field]: true },
+                });
+                await (prisma.tenant as any).update({
+                    where: { id: tenantId },
+                    data:  { [field]: (current?.[field] ?? 0) + addonQuantity },
+                });
+                // Save customer ID even for add-on purchases (enables portal later)
+                if (newStripeCustomerId) {
+                    await prisma.subscription.upsert({
+                        where:  { tenantId },
+                        create: { tenantId, status: 'trialing', stripeCustomerId: newStripeCustomerId } as any,
+                        update: { stripeCustomerId: newStripeCustomerId } as any,
                     });
-                    updateData.addonPagesLimit = (current?.addonPagesLimit ?? 0) + addonQuantity;
-                } else {
-                    const current = await (prisma.tenant as any).findUnique({
-                        where: { id: tenantId }, select: { addonRowsLimit: true },
-                    });
-                    updateData.addonRowsLimit = (current?.addonRowsLimit ?? 0) + addonQuantity;
                 }
-
-                await (prisma.tenant as any).update({ where: { id: tenantId }, data: updateData });
-
                 try {
                     await checkAndResumeIfPossible(prisma, tenantId);
                 } catch (e) {
                     console.warn('[Stripe Webhook] Auto-resume check failed:', e);
                 }
             } else {
-                console.warn('[Stripe Webhook] checkout.session.completed — could not determine action from metadata', { tenantId, planId, addonType, addonQuantity });
+                console.warn('[Stripe Webhook] checkout.session.completed — could not determine action', { tenantId, planId, addonType, addonQuantity });
+            }
+        }
+
+        // ── customer.subscription.updated ───────────────────────────────────────
+        // Fired when the customer changes plan via the Billing Portal, or when
+        // Stripe renews / updates the subscription. Keeps our DB in sync.
+        else if (event.type === 'customer.subscription.updated') {
+            const sub = event.data.object;
+            const stripeSubscriptionId = sub.id as string;
+            const stripeCustomerId     = sub.customer as string;
+            const newStatus            = sub.status as string; // 'active' | 'past_due' | 'canceled' | etc.
+            const currentPeriodEnd     = sub.current_period_end ? new Date(sub.current_period_end * 1000) : undefined;
+
+            // Find tenant by stripeCustomerId
+            const existing = await prisma.subscription.findFirst({
+                where: { stripeCustomerId } as any,
+            } as any) as any;
+
+            if (existing) {
+                const updateData: any = {
+                    stripeSubscriptionId,
+                    currentPeriodEnd,
+                };
+
+                // Map Stripe status to our plan status.
+                // If status is 'active' and we already have a plan name, keep it.
+                // If Stripe says 'canceled' or 'unpaid', reflect that.
+                if (['canceled', 'unpaid', 'past_due'].includes(newStatus)) {
+                    updateData.status = newStatus;
+                }
+                // If the price changed (plan switch via portal), update plan + limits
+                const newPriceId = sub.items?.data?.[0]?.price?.id as string | undefined;
+                if (newPriceId) {
+                    // Map Stripe Price IDs → our plan names (fill these in once live)
+                    const PRICE_TO_PLAN: Record<string, string> = {
+                        // e.g. 'price_xxxxx': 'professional',
+                    };
+                    const newPlan = PRICE_TO_PLAN[newPriceId];
+                    if (newPlan && PLAN_LIMITS[newPlan]) {
+                        updateData.status = newPlan;
+                        await (prisma.tenant as any).update({
+                            where: { id: existing.tenantId },
+                            data:  PLAN_LIMITS[newPlan],
+                        });
+                        console.log(`[Stripe Webhook] subscription.updated: plan changed to ${newPlan} for tenant ${existing.tenantId}`);
+                    }
+                }
+
+                await prisma.subscription.update({
+                    where: { id: existing.id },
+                    data:  updateData,
+                } as any);
+
+                if (['canceled', 'unpaid'].includes(newStatus)) {
+                    console.log(`[Stripe Webhook] subscription.updated: status=${newStatus} for tenant ${existing.tenantId}`);
+                }
+            } else {
+                console.warn(`[Stripe Webhook] subscription.updated — no tenant found for customer ${stripeCustomerId}`);
+            }
+        }
+
+        // ── customer.subscription.deleted ───────────────────────────────────────
+        // Fired when a subscription is fully cancelled (at period end or immediately).
+        else if (event.type === 'customer.subscription.deleted') {
+            const sub = event.data.object;
+            const stripeCustomerId = sub.customer as string;
+
+            const existing = await prisma.subscription.findFirst({
+                where: { stripeCustomerId } as any,
+            } as any) as any;
+
+            if (existing) {
+                await prisma.subscription.update({
+                    where: { id: existing.id },
+                    data:  { status: 'canceled', currentPeriodEnd: sub.current_period_end ? new Date(sub.current_period_end * 1000) : undefined } as any,
+                } as any);
+                console.log(`[Stripe Webhook] subscription.deleted: tenant ${existing.tenantId} marked as canceled`);
+            } else {
+                console.warn(`[Stripe Webhook] subscription.deleted — no tenant found for customer ${stripeCustomerId}`);
             }
         }
 
