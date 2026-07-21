@@ -63,6 +63,16 @@ async function processEmailMessage(
     }
     processingMessageIds.add(message.id);
 
+    // Mark as read immediately — before downloading attachments — so that a server
+    // restart during the (potentially slow) download doesn't cause the fallback poller
+    // to re-discover and double-process the same email.
+    try {
+        await markAsRead(message.id);
+        console.log(`[GmailPoller] Message ${message.id} marked as read`);
+    } catch (e: any) {
+        console.warn(`[GmailPoller] markAsRead failed for ${message.id} — continuing anyway:`, e?.message);
+    }
+
     try {
     const attachments = await getSupportedAttachments(message.id);
     const pdfs   = attachments.filter(a => a.mimeType === 'application/pdf' || a.filename.toLowerCase().endsWith('.pdf'));
@@ -71,7 +81,6 @@ async function processEmailMessage(
     if (!attachments.length) {
         console.log(`[GmailPoller] Message ${message.id} has no supported attachments — sending error reply`);
         notifyUnsupportedAttachment({ to: extractEmail(message.from), emailSubject: message.subject });
-        await markAsRead(message.id);
         return;
     }
 
@@ -87,11 +96,6 @@ async function processEmailMessage(
             clientFolder,
         ).catch(e => console.warn('[GmailPoller] Originals Drive upload failed:', e?.message));
     }
-
-    // Mark as read BEFORE starting the job to prevent duplicate processing
-    // on re-poll or a second push notification for the same message.
-    await markAsRead(message.id);
-    console.log(`[GmailPoller] Message ${message.id} marked as read`);
 
     if (pdfs.length > 0) {
         console.log(`[GmailPoller] Processing ${pdfs.length} PDF(s) from "${message.subject}" as ${processingMode}`);
