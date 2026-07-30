@@ -464,9 +464,12 @@ export function notifyClientIssuesSummary(alert: ClientIssuesSummaryAlert): void
         `If you have any questions, please reply to this email.`,
     ].join('\n');
 
-    // Always send to the configured CLIENT_EMAIL — never to the original sender.
-    console.warn(`[ALERT:client_issues_summary] ${alert.issues.length} issue(s) for "${submissionRef}" → ${CLIENT_EMAIL}`);
+    // Send to client + primary team contact.
+    console.warn(`[ALERT:client_issues_summary] ${alert.issues.length} issue(s) for "${submissionRef}" → ${CLIENT_EMAIL}, ${TEAM_EMAIL}`);
     sendEmail(CLIENT_EMAIL, subject, body);
+    if (TEAM_EMAIL.toLowerCase() !== CLIENT_EMAIL.toLowerCase()) {
+        sendEmail(TEAM_EMAIL, subject, body);
+    }
 }
 
 // ── Accountant: processed result with Excel attachment ────────────────────────
@@ -757,6 +760,7 @@ export function notifyUnsupportedAttachment(alert: UnsupportedAttachmentAlert): 
         .catch(err => console.error(`[Notifications] Failed to send unsupported-attachment reply to ${to}:`, err.message));
 
     sendTo(TEAM_EMAIL);
+    if (CLIENT_EMAIL.toLowerCase() !== TEAM_EMAIL.toLowerCase()) sendTo(CLIENT_EMAIL);
 }
 
 // ── Team: unknown bank — AI fallback was used ─────────────────────────────────
