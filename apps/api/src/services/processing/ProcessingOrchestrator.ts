@@ -265,6 +265,7 @@ function parseMoney(s: string | undefined | null): number | null {
 }
 
 function verifyBalances(transactions: ParsedTransaction[]): void {
+    let mismatches = 0;
     for (let i = 0; i < transactions.length - 1; i++) {
         const cur  = transactions[i];
         const next = transactions[i + 1];
@@ -274,13 +275,10 @@ function verifyBalances(transactions: ParsedTransaction[]): void {
         const moneyIn  = parseMoney(cur.moneyIn)  ?? 0;
         const moneyOut = parseMoney(cur.moneyOut) ?? 0;
         const expected = nextBal + moneyIn - moneyOut;
-        if (Math.abs(expected - curBal) > 0.02) {
-            console.warn(
-                `[BalanceCheck] ${cur.date} "${cur.description}": ` +
-                `expected ${expected.toFixed(2)}, got ${curBal.toFixed(2)} ` +
-                `(diff=${(curBal - expected).toFixed(2)})`
-            );
-        }
+        if (Math.abs(expected - curBal) > 0.02) mismatches++;
+    }
+    if (mismatches > 0) {
+        console.warn(`[BalanceCheck] ${mismatches} balance continuity mismatch(es) across ${transactions.length} transactions`);
     }
 }
 
@@ -351,28 +349,7 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
 
         jobStore.update(jobId, { status: 'processing', totalFiles: files.length });
 
-        // Warn when the client hasn't sent enough files for a complete period
-        const minFiles = processingMode === 'vat' ? 3 : 12;
-        if (files.length < minFiles) {
-            notifyInsufficientFiles({
-                jobId,
-                tenantId:        tracking?.tenantId,
-                emailSubject,
-                fileCount:       files.length,
-                minimumRequired: minFiles,
-                processingMode:  processingMode ?? 'bank_statement',
-                duplicatesRemoved,
-                senderEmail,
-            });
-            clientIssues.push({
-                type:             'insufficient_files',
-                fileCount:        files.length,
-                minimumRequired:  minFiles,
-                processingMode:   processingMode ?? 'bank_statement',
-                duplicatesRemoved,
-            });
-        } else if (duplicatesRemoved.length > 0) {
-            // Enough files, but some were duplicates — still notify so client knows
+        if (duplicatesRemoved.length > 0) {
             notifyDuplicatesRemoved({ jobId, emailSubject, senderEmail, duplicatesRemoved });
             clientIssues.push({ type: 'duplicates_removed', duplicatesRemoved });
         }
@@ -414,7 +391,7 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
                 pageData = await analyzePages(pageBuffers);
                 usedAzure = true;
                 totalPagesSpent += pageData.filter(p => p !== null).length;
-                console.log(`[Orchestrator] File ${fi + 1}/${files.length} Azure DI:`, pageData.map((p, i) => `page${i+1}:${p?.cells?.length ?? 'null'}cells`));
+                console.log(`[Orchestrator] File ${fi + 1}/${files.length} Azure DI: ${pageData.filter(p => p !== null).length}/${pageData.length} page(s) extracted`);
 
                 // If every page returned null Azure DI may have had a transient
                 // failure (or the split produced bad chunks). Wait 5 minutes and
@@ -425,7 +402,7 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
                     await new Promise(r => setTimeout(r, RETRY_DELAY_MS));
                     const retryBuffers = await splitPdf(buffer);
                     pageData = await analyzePages(retryBuffers);
-                    console.log(`[Orchestrator] Retry result for "${filename}":`, pageData.map((p, i) => `page${i+1}:${p?.cells?.length ?? 'null'}cells`));
+                    console.log(`[Orchestrator] Retry result for "${filename}": ${pageData.filter(p => p !== null).length}/${pageData.length} page(s) extracted`);
                 }
 
                 if (pageData.some(p => p !== null)) {
@@ -705,6 +682,19 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
                     outDiff: f.declaredOut != null ? Math.round((f.parsedOut - f.declaredOut) * 100) / 100 : undefined,
                 })),
             });
+            // Queue parser error for the consolidated client email so the client gets
+            // ONE email covering all issues rather than a separate parser error email.
+            clientIssues.push({
+                type: 'parser_error',
+                failedFiles: failedFiles.map(f => ({
+                    filename:    f.filename,
+                    inDiff:  f.declaredIn  != null ? Math.round((f.parsedIn  - f.declaredIn)  * 100) / 100 : undefined,
+                    outDiff: f.declaredOut != null ? Math.round((f.parsedOut - f.declaredOut) * 100) / 100 : undefined,
+                    balanceDiff: (f.openingBalance != null && f.closingBalance != null && f.declaredIn == null)
+                        ? Math.round((f.openingBalance + f.parsedIn - f.parsedOut - f.closingBalance) * 100) / 100
+                        : undefined,
+                })),
+            });
         }
 
         // 2. Chain gap (all individual files OK, but overall sequence doesn't close) → client alert
@@ -870,7 +860,12 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
         // Issues summaries fire in a separate IIFE so a Drive/email failure above can't suppress them.
         if (clientIssues.length > 0) {
             void Promise.resolve().then(() => {
-                notifyTeamIssuesSummary({ jobId, tenantId: tracking?.tenantId, emailSubject, senderEmail, processingMode, issues: clientIssues });
+                // Team already received an immediate email for parser_error — exclude it from the
+                // team summary to avoid a duplicate. Client gets the consolidated email with all issues.
+                const teamOnlyIssues = clientIssues.filter(i => i.type !== 'parser_error');
+                if (teamOnlyIssues.length > 0) {
+                    notifyTeamIssuesSummary({ jobId, tenantId: tracking?.tenantId, emailSubject, senderEmail, processingMode, issues: teamOnlyIssues });
+                }
                 notifyClientIssuesSummary({ jobId, tenantId: tracking?.tenantId, emailSubject, senderEmail, processingMode, issues: clientIssues });
             }).catch(e => console.warn('[Orchestrator] Issues summary email failed:', e?.message));
         }
@@ -1162,12 +1157,13 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
             const verification = computeVerification(transactions, statementTotals, ascending);
             if (verification) logVerificationSummary(verification);
 
-            // Parser verification failure → team alert
+            // Parser verification failure → team alert only (client sees ⚠ in the result email)
             if (verification && (verification.declaredOk === false || (verification.balanceDiff !== null && !verification.balanceOk))) {
                 notifyParserError({
                     jobId,
-                    tenantId: tracking?.tenantId,
-                    label:    filename,
+                    tenantId:     tracking?.tenantId,
+                    emailSubject: emailSubject,
+                    label:        filename,
                     failedFiles: [{
                         filename,
                         parsedIn:    verification.totalIn,
