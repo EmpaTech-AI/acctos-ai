@@ -41,6 +41,7 @@ function driveFilename(name: string): string {
  */
 export function extractClientName(subject: string): string {
     return subject
+        .replace(/^(re|fwd?)\s*:\s*/gi, '')
         .replace(/bank\s+statement\s+ai/gi, '')
         .replace(/vat\s+ai/gi, '')
         .replace(/^\s*[-–—]\s*|\s*[-–—]\s*$/g, '')
@@ -956,6 +957,9 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
 
         if (classification.fileFormat === 'excel') {
             // ── Stage: extract (OpenAI two-pass for Excel) ───────────────────────
+            if (filename.toLowerCase().endsWith('_processed.xlsx')) {
+                throw new Error('This file appears to be an already-processed output. Please send the original bank statement or VAT source file.');
+            }
             timer.start('extract');
             const excelTransactions = await parseExcel(fileBuffer);
             if (excelTransactions.length === 0) throw new Error('No transactions found in spreadsheet');
