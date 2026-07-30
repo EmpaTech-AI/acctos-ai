@@ -63,6 +63,17 @@ async function processEmailMessage(
     }
     processingMessageIds.add(message.id);
 
+    // Skip emails sent from our own system — these are result-delivery emails that
+    // land in the monitored inbox and must never be re-processed.
+    const senderEmail = extractEmail(message.from).toLowerCase();
+    const OWN_SENDER  = (process.env.FROM_EMAIL || 'info@support.acctos.ai').toLowerCase();
+    if (senderEmail === OWN_SENDER) {
+        console.log(`[GmailPoller] Message ${message.id} is from our own system (${senderEmail}) — marking read and skipping`);
+        await markAsRead(message.id).catch(() => {});
+        setTimeout(() => processingMessageIds.delete(message.id), 10 * 60 * 1000);
+        return;
+    }
+
     // Mark as read immediately — before downloading attachments — so that a server
     // restart during the (potentially slow) download doesn't cause the fallback poller
     // to re-discover and double-process the same email.
@@ -76,7 +87,14 @@ async function processEmailMessage(
     try {
     const attachments = await getSupportedAttachments(message.id);
     const pdfs   = attachments.filter(a => a.mimeType === 'application/pdf' || a.filename.toLowerCase().endsWith('.pdf'));
-    const excels = attachments.filter(a => /\.xlsx?$/i.test(a.filename) || a.mimeType.includes('spreadsheet') || a.mimeType.includes('ms-excel'));
+    // Exclude already-processed output files (e.g. *_processed.xlsx sent back by the client)
+    const isProcessedOutput = (a: { filename: string }) => a.filename.toLowerCase().endsWith('_processed.xlsx');
+    const excels = attachments.filter(a =>
+        (/\.xlsx?$/i.test(a.filename) || a.mimeType.includes('spreadsheet') || a.mimeType.includes('ms-excel'))
+        && !isProcessedOutput(a)
+    );
+    // Source attachments = everything except our own processed outputs
+    const sourceAttachments = attachments.filter(a => !isProcessedOutput(a));
 
     if (!attachments.length) {
         console.log(`[GmailPoller] Message ${message.id} has no supported attachments — sending error reply`);
@@ -84,14 +102,21 @@ async function processEmailMessage(
         return;
     }
 
-    // Save originals to Drive (non-blocking)
+    // If every attachment is a processed output file, this is a result email that
+    // bounced back or was forwarded — skip silently without sending an error.
+    if (sourceAttachments.length === 0) {
+        console.log(`[GmailPoller] Message ${message.id} contains only processed output files — skipping silently`);
+        return;
+    }
+
+    // Save originals to Drive — only source files, never processed outputs (non-blocking)
     const originalsId = processingMode === 'vat'
         ? process.env.DRIVE_VAT_ORIGINALS_FOLDER_ID
         : process.env.DRIVE_BANK_STATEMENT_ORIGINALS_FOLDER_ID;
     if (originalsId && message.subject) {
         const clientFolder = extractClientName(message.subject);
         uploadOriginalsToDrive(
-            attachments.map(a => ({ buffer: a.buffer, filename: a.filename })),
+            sourceAttachments.map(a => ({ buffer: a.buffer, filename: a.filename })),
             originalsId,
             clientFolder,
         ).catch(e => console.warn('[GmailPoller] Originals Drive upload failed:', e?.message));
