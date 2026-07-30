@@ -119,30 +119,15 @@ export function notifyParserError(alert: ParserErrorAlert): void {
     const text = [
         `Client: ${clientName}`,
         `Date: ${ukTimeStr()}`,
-        `Job ID: ${alert.jobId}`,
         ``,
         `Failed files:`,
         ...lines,
-    ].join('\n');
-
-    const clientSubject = `[Action required] Balance verification issue — ${clientName}`;
-    const clientText = [
-        `We processed the files you submitted for ${clientName}, but detected a balance discrepancy in one or more statements.`,
-        ``,
-        `This usually means one of the following:`,
-        `  • A statement file is missing from the sequence`,
-        `  • A file was submitted for the wrong period`,
-        `  • The bank statement contains an internal error`,
-        ``,
-        `Failed files:`,
-        ...lines,
-        ``,
-        `Please review the files listed above and re-submit the correct version, or contact us if you believe all files are correct.`,
     ].join('\n');
 
     console.error(`[ALERT:parser_error] ${subject}\n${text}`);
     sendToAllTeam(subject, text);
-    sendEmail(CLIENT_EMAIL, clientSubject, clientText);
+    // Client notification is sent via the consolidated notifyClientIssuesSummary —
+    // parser_error is pushed to clientIssues in the orchestrator so it's included there.
 }
 
 // ── Team: job crashed ─────────────────────────────────────────────────────────
@@ -337,7 +322,7 @@ export function notifyDuplicatesRemoved(alert: DuplicatesRemovedAlert): void {
 // ── Client: consolidated issues summary (sent once, after processing completes) ─
 
 export interface ClientIssueItem {
-    type: 'insufficient_files' | 'duplicates_removed' | 'chain_gap';
+    type: 'insufficient_files' | 'duplicates_removed' | 'chain_gap' | 'parser_error';
     fileCount?: number;
     minimumRequired?: number;
     processingMode?: 'bank_statement' | 'vat';
@@ -347,6 +332,13 @@ export interface ClientIssueItem {
     chainOpeningBalance?: number;
     chainClosingBalance?: number;
     expectedClosing?: number;
+    // parser_error fields (client summary only — team gets the immediate alert email)
+    failedFiles?: Array<{
+        filename:     string;
+        inDiff?:      number;
+        outDiff?:     number;
+        balanceDiff?: number;
+    }>;
 }
 
 export interface ClientIssuesSummaryAlert {
@@ -468,6 +460,22 @@ export function notifyClientIssuesSummary(alert: ClientIssuesSummaryAlert): void
                 `This typically means ${periodDesc}.`,
                 `Please ask the client to verify they have uploaded the complete set of statements and resubmit if anything is missing.`,
                 `If all files appear correct, please contact us and we will investigate.`,
+            ].join('\n'));
+        } else if (issue.type === 'parser_error') {
+            const files = issue.failedFiles ?? [];
+            const fileLines = files.map(f => {
+                const parts: string[] = [`  • ${f.filename}`];
+                if (f.inDiff      != null) parts.push(`In diff: ${f.inDiff      >= 0 ? '+' : ''}${f.inDiff.toFixed(2)}`);
+                if (f.outDiff     != null) parts.push(`Out diff: ${f.outDiff    >= 0 ? '+' : ''}${f.outDiff.toFixed(2)}`);
+                if (f.balanceDiff != null) parts.push(`Balance diff: ${f.balanceDiff >= 0 ? '+' : ''}${f.balanceDiff.toFixed(2)}`);
+                return parts.join(' | ');
+            });
+            sections.push([
+                `── Balance discrepancy detected ──`,
+                `The following statement${files.length !== 1 ? 's' : ''} failed balance verification:`,
+                ...fileLines,
+                `This usually means a statement is missing, a wrong-period file was submitted, or the bank statement contains an internal error.`,
+                `Please review the files listed above and re-submit if needed, or contact us if you believe all files are correct.`,
             ].join('\n'));
         }
     }
