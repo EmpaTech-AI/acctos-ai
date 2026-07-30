@@ -696,13 +696,13 @@ export function notifyProcessingComplete(alert: ProcessingCompleteAlert): void {
         console.error(`[Notifications] Failed to send reply email to ${to}:`, err.message);
     });
 
-    // Extract plain address to compare — alert.to may be "Name <email>" from Gmail headers.
-    const toAddrRaw = alert.to ?? '';
-    const toAddr = toAddrRaw.match(/<([^>]+)>/)?.[1] ?? toAddrRaw;
-    // Send to all team recipients.
-    for (const teamEmail of TEAM_EMAILS) sendTo(teamEmail);
-    // Also send to the original sender if they are not already a team recipient.
-    if (toAddr && !TEAM_EMAILS.some(e => e.toLowerCase() === toAddr.toLowerCase())) sendTo(toAddr);
+    // Result email goes to fixed recipients only — never to the original sender.
+    // Primary team contact (index 0) gets the Excel.
+    sendTo(TEAM_EMAIL);
+    // Client email gets the Excel if different from the primary team contact.
+    if (CLIENT_EMAIL && CLIENT_EMAIL.toLowerCase() !== TEAM_EMAIL.toLowerCase()) {
+        sendTo(CLIENT_EMAIL);
+    }
 }
 
 // ── Unsupported attachment reply ──────────────────────────────────────────────
