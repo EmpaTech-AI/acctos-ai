@@ -453,6 +453,12 @@ export function parse(cells: Cell[]): ParseResult {
 
             if (descIsAmountOnly && moneyInVal === null && moneyOutVal === null && balanceVal !== null) {
                 moneyIn = numberToAmountString(amountToNumber(descCell));
+            } else if (moneyInVal !== null && moneyOutVal !== null && Math.abs(moneyInVal - moneyOutVal) < 0.01) {
+                // Same amount in both columns — Azure DI OCR artefact where one cell's value
+                // leaked into the adjacent column. Use the running balance to resolve direction.
+                const cls = classifyAmount(moneyInVal, balanceVal, prevBalance, descCell, direction);
+                moneyIn  = cls.moneyIn;
+                moneyOut = cls.moneyOut;
             } else if (moneyInVal !== null || moneyOutVal !== null) {
                 moneyIn  = moneyInVal  !== null ? numberToAmountString(moneyInVal)  : '';
                 moneyOut = moneyOutVal !== null ? numberToAmountString(moneyOutVal) : '';
