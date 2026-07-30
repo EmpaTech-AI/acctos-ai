@@ -31,7 +31,7 @@ export function authenticateToken(
         req.user = decoded;
         next();
     } catch (err) {
-        return next(createError('Invalid token', 403, 'FORBIDDEN'));
+        return next(createError('Invalid token', 401, 'UNAUTHORIZED'));
     }
 }
 

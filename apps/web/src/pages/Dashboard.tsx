@@ -247,7 +247,7 @@ export default function Dashboard() {
             } else {
                 // Trigger backend sync then refresh all data including OpenAI costs
                 await axios.post('/v1/integrations/make/sync');
-                await Promise.all([fetchData(activeDays), fetchOpenAICosts(activeDays), fetchMonthlyHistory()]);
+                await Promise.all([fetchData(activeDays), fetchOpenAICosts(activeDays), ...(isAdmin ? [fetchMonthlyHistory()] : [])]);
             }
         } catch (error) {
             console.error('Sync failed:', error);
@@ -439,7 +439,7 @@ export default function Dashboard() {
         }
     }, [activeDays, activeTab]);
 
-    useEffect(() => { fetchMonthlyHistory(); }, []);
+    useEffect(() => { if (isAdmin) fetchMonthlyHistory(); }, [isAdmin]);
 
     // Fetch integration config when settings open
     useEffect(() => {
@@ -506,18 +506,18 @@ export default function Dashboard() {
                     </p>
                 </div>
                 <div style={{ display: 'flex', gap: '1rem' }}>
-                    <button className="btn-secondary" onClick={handleExport}>
+                    {isAdmin && <button className="btn-secondary" onClick={handleExport}>
                         <Download size={16} />
                         {t.export}
-                    </button>
+                    </button>}
                     <button className="btn-secondary" onClick={handleSync} disabled={syncCooldown || loading}>
                         <RefreshCw size={16} />
                         {syncCooldown ? t.wait : t.refreshSync}
                     </button>
-                    <button className="btn-secondary" onClick={() => setShowSettings(true)}>
+                    {isAdmin && <button className="btn-secondary" onClick={() => setShowSettings(true)}>
                         <Settings size={16} />
                         {t.settings}
-                    </button>
+                    </button>}
                 </div>
             </div>
 

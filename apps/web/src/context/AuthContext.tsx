@@ -66,15 +66,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
     }, [token]);
 
-    // Global interceptor: if any API call returns 403 FORBIDDEN (invalid/expired token),
-    // clear the session and leave a message so the login page can display it.
+    // Global interceptor: logout only on true auth failures (401 or 403 UNAUTHORIZED).
+    // 403 FORBIDDEN (role mismatch) must NOT trigger logout — it only means insufficient role.
     useEffect(() => {
         const id = axios.interceptors.response.use(
             res => res,
             err => {
                 const code = err?.response?.data?.code;
                 const status = err?.response?.status;
-                if (status === 403 && (code === 'FORBIDDEN' || code === 'UNAUTHORIZED')) {
+                if (status === 401 || (status === 403 && code === 'UNAUTHORIZED')) {
                     sessionStorage.setItem('auth_notice', 'Session expired — please log in again.');
                     setToken(null);
                     setUser(null);
