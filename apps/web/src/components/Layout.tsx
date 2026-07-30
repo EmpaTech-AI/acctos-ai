@@ -170,12 +170,10 @@ export default function Layout({ children }: LayoutProps) {
                             <span>{t.navUsers}</span>
                         </NavLink>
                     )}
-                    {isAdmin && (
-                        <NavLink to="/import" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-                            <Upload size={20} />
-                            <span>{t.navImport}</span>
-                        </NavLink>
-                    )}
+                    <NavLink to="/import" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
+                        <Upload size={20} />
+                        <span>{t.navImport}</span>
+                    </NavLink>
                     {isSuperAdmin && (
                         <NavLink to="/superadmin" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`} style={{ marginTop: 'auto' }}>
                             <ShieldCheck size={20} />

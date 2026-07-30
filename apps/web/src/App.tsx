@@ -139,11 +139,9 @@ function AppRoutes() {
                 path="/import"
                 element={
                     <ProtectedRoute>
-                        <AdminRoute>
-                            <Layout>
-                                <ImportFile />
-                            </Layout>
-                        </AdminRoute>
+                        <Layout>
+                            <ImportFile />
+                        </Layout>
                     </ProtectedRoute>
                 }
             />

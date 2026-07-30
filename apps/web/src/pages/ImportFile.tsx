@@ -5,6 +5,7 @@ import {
     Loader2, CheckCircle2, XCircle, Download, FileUp, Eye, X, Clock,
 } from 'lucide-react';
 import { useLanguage } from '../context/LanguageContext';
+import { useAuth } from '../context/AuthContext';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -450,6 +451,7 @@ function SummaryInline({ summary: s }: { summary: JobSummary }) {
 
 export default function ImportFile() {
     const { t } = useLanguage();
+    const { isAdmin } = useAuth();
     const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
     const [uploadProgress, setUploadProgress] = useState(0);
     const [isUploading, setIsUploading] = useState(false);
@@ -741,7 +743,7 @@ export default function ImportFile() {
                 <h2>{t.navImport}</h2>
             </div>
 
-            <div className="card" style={{ maxWidth: 620 }}>
+            {isAdmin && <div className="card" style={{ maxWidth: 620 }}>
 
                 {/* ── Header ── */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1.25rem' }}>
@@ -965,7 +967,7 @@ export default function ImportFile() {
                         </button>
                     )}
                 </div>
-            </div>
+            </div>}
 
             {/* ── Recent jobs list ── */}
             {recentJobs.length > 0 && (() => {

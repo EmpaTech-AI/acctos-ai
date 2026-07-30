@@ -48,7 +48,7 @@ const en = {
     navBilling: 'Billing',
     navSupport: 'Support',
     navUsers: 'Users',
-    navImport: 'Import file',
+    navImport: 'Files History',
 
     // Usage limit banner
     bannerTitle: "You've reached your current usage limit, and your agent has been temporarily paused.",
@@ -270,7 +270,7 @@ const bg: typeof en = {
     navBilling: 'Фактуриране',
     navSupport: 'Поддръжка',
     navUsers: 'Потребители',
-    navImport: 'Импорт на файл',
+    navImport: 'История на файловете',
 
     // Usage limit banner
     bannerTitle: 'Достигнахте текущия лимит за употреба и вашият агент беше временно спрян.',
