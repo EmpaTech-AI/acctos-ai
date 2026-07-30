@@ -574,7 +574,7 @@ export function notifyProcessingComplete(alert: ProcessingCompleteAlert): void {
         lines.push(`Money in:         £${fmt(b.moneyIn)}`);
         lines.push(`Money out:        £${fmt(b.moneyOut)}`);
         if (b.closingBalance != null) lines.push(`Closing balance:  £${fmt(b.closingBalance)}`);
-        if (b.balanceDiff != null) lines.push(b.balanceOk ? '✓ Balance check OK' : `⚠ Balance mismatch: ${(b.balanceDiff >= 0 ? '+' : '') + b.balanceDiff.toFixed(2)}`);
+        if (b.balanceDiff != null && !b.declaredOk) lines.push(b.balanceOk ? '✓ Balance check OK' : `⚠ Balance mismatch: ${(b.balanceDiff >= 0 ? '+' : '') + b.balanceDiff.toFixed(2)}`);
         if (b.declaredIn != null) {
             lines.push('');
             lines.push(`Declared in (by Bank):  £${fmt(b.declaredIn)}`);
@@ -669,7 +669,7 @@ export function notifyProcessingComplete(alert: ProcessingCompleteAlert): void {
         rows += row('Money in',  `£${fmt(b.moneyIn)}`,  ok);
         rows += row('Money out', `£${fmt(b.moneyOut)}`, err);
         if (b.closingBalance != null) rows += row('Closing balance', `£${fmt(b.closingBalance)}`);
-        if (b.balanceDiff != null) {
+        if (b.balanceDiff != null && !b.declaredOk) {
             const balVal = b.balanceOk ? '✓ OK' : `⚠ ${(b.balanceDiff >= 0 ? '+' : '') + b.balanceDiff.toFixed(2)}`;
             rows += row('Balance check', balVal, b.balanceOk ? ok : err);
         }

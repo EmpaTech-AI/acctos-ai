@@ -396,7 +396,7 @@ function SummaryPanel({ summary: s }: { summary: JobSummary }) {
     if (s.moneyIn  != null) rows.push(['Money in',  <span style={ok}>{fmt(s.moneyIn)}</span>]);
     if (s.moneyOut != null) rows.push(['Money out', <span style={{ color: '#f97316' }}>{fmt(s.moneyOut)}</span>]);
     if (s.closingBalance != null) rows.push(['Closing balance', <span style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(s.closingBalance)}</span>]);
-    if (s.balanceOk != null) rows.push(['Balance check', <span style={s.balanceOk ? ok : err}>{s.balanceOk ? '✓ OK' : '⚠ Mismatch'}</span>]);
+    if (s.balanceOk != null && !s.declaredOk) rows.push(['Balance check', <span style={s.balanceOk ? ok : err}>{s.balanceOk ? '✓ OK' : '⚠ Mismatch'}</span>]);
     if (s.declaredIn != null) {
         rows.push(['Declared in (by Bank)',  <span style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(s.declaredIn)}</span>]);
         rows.push(['Declared out (by Bank)', <span style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(s.declaredOut ?? 0)}</span>]);
@@ -436,7 +436,9 @@ function SummaryInline({ summary: s }: { summary: JobSummary }) {
     if (s.moneyIn  != null) parts.push(`In ${fmt(s.moneyIn)}`);
     if (s.moneyOut != null) parts.push(`Out ${fmt(s.moneyOut)}`);
     if (s.vatSalesCount != null) parts.push(`${s.vatSalesCount} sales · ${s.vatExpensesCount} expenses`);
-    const allOk = [s.balanceOk, s.declaredOk, s.catOk].filter(v => v != null);
+    // When declared totals exist they supersede the balance check
+    const balanceSignal = s.declaredOk != null ? null : s.balanceOk;
+    const allOk = [balanceSignal, s.declaredOk, s.catOk].filter(v => v != null);
     const anyFail = allOk.some(v => !v);
     const checkStr = allOk.length ? (anyFail ? '⚠ Check mismatch' : '✓ Verified') : null;
     return (
