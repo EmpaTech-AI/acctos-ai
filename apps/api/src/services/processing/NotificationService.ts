@@ -25,9 +25,19 @@
 
 import { sendMailgunMessage } from '../MailgunService.js';
 
-const TEAM_EMAIL   = process.env.ALERT_TEAM_EMAIL || 'vasil.lozev@aiassist.bg';
+// ALERT_TEAM_EMAIL supports comma-separated addresses: "a@x.com,b@x.com,c@x.com"
+const TEAM_EMAILS: string[] = (process.env.ALERT_TEAM_EMAIL || 'vasil.lozev@aiassist.bg')
+    .split(',').map(e => e.trim()).filter(Boolean);
+const TEAM_EMAIL   = TEAM_EMAILS[0]; // primary — used for dedup comparisons
 const CLIENT_EMAIL = process.env.ALERT_CLIENT_EMAIL || 'vasil.lozev@aiassist.bg';
 const FROM_EMAIL   = 'info@support.acctos.ai';
+
+/** Send to all configured team recipients. */
+function sendToAllTeam(subject: string, body: string): void {
+    for (const email of TEAM_EMAILS) {
+        sendEmail(email, subject, body);
+    }
+}
 
 function ukTimeStr(): string {
     const parts = new Intl.DateTimeFormat('en-GB', {
@@ -115,7 +125,7 @@ export function notifyParserError(alert: ParserErrorAlert): void {
     ].join('\n');
 
     console.error(`[ALERT:parser_error] ${subject}\n${text}`);
-    sendEmail(TEAM_EMAIL, subject, text);
+    sendToAllTeam(subject, text);
 }
 
 // ── Team: job crashed ─────────────────────────────────────────────────────────
@@ -178,7 +188,7 @@ export function notifyJobFailed(alert: JobFailedAlert): void {
     ].join('\n');
 
     console.error(`[ALERT:job_failed] ${subject}\n${text}`);
-    sendEmail(TEAM_EMAIL, subject, text);
+    sendToAllTeam(subject, text);
 }
 
 // ── Team + Client: missing documents in sequence ───────────────────────────────
@@ -689,8 +699,10 @@ export function notifyProcessingComplete(alert: ProcessingCompleteAlert): void {
     // Extract plain address to compare — alert.to may be "Name <email>" from Gmail headers.
     const toAddrRaw = alert.to ?? '';
     const toAddr = toAddrRaw.match(/<([^>]+)>/)?.[1] ?? toAddrRaw;
-    sendTo(TEAM_EMAIL);
-    if (toAddr && toAddr.toLowerCase() !== TEAM_EMAIL.toLowerCase()) sendTo(toAddr);
+    // Send to all team recipients.
+    for (const teamEmail of TEAM_EMAILS) sendTo(teamEmail);
+    // Also send to the original sender if they are not already a team recipient.
+    if (toAddr && !TEAM_EMAILS.some(e => e.toLowerCase() === toAddr.toLowerCase())) sendTo(toAddr);
 }
 
 // ── Unsupported attachment reply ──────────────────────────────────────────────
@@ -787,7 +799,7 @@ export function notifyUnknownBank(alert: UnknownBankAlert): void {
     ].join('\n');
 
     console.warn(`[ALERT:unknown_bank] ${subject}`);
-    sendEmail(TEAM_EMAIL, subject, text);
+    sendToAllTeam(subject, text);
 }
 
 // ── Shared email sender ───────────────────────────────────────────────────────
