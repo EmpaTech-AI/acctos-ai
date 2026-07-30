@@ -119,13 +119,30 @@ export function notifyParserError(alert: ParserErrorAlert): void {
     const text = [
         `Client: ${clientName}`,
         `Date: ${ukTimeStr()}`,
+        `Job ID: ${alert.jobId}`,
         ``,
         `Failed files:`,
         ...lines,
     ].join('\n');
 
+    const clientSubject = `[Action required] Balance verification issue — ${clientName}`;
+    const clientText = [
+        `We processed the files you submitted for ${clientName}, but detected a balance discrepancy in one or more statements.`,
+        ``,
+        `This usually means one of the following:`,
+        `  • A statement file is missing from the sequence`,
+        `  • A file was submitted for the wrong period`,
+        `  • The bank statement contains an internal error`,
+        ``,
+        `Failed files:`,
+        ...lines,
+        ``,
+        `Please review the files listed above and re-submit the correct version, or contact us if you believe all files are correct.`,
+    ].join('\n');
+
     console.error(`[ALERT:parser_error] ${subject}\n${text}`);
     sendToAllTeam(subject, text);
+    sendEmail(CLIENT_EMAIL, clientSubject, clientText);
 }
 
 // ── Team: job crashed ─────────────────────────────────────────────────────────
@@ -175,6 +192,7 @@ export function notifyJobFailed(alert: JobFailedAlert): void {
         `Client: ${clientName}`,
         `Type: ${errorTypeLabel}`,
         `Date: ${ukTimeStr()}`,
+        `Job ID: ${alert.jobId}`,
         ``,
         `File: ${alert.filename}`,
         `Stage: ${stageLabel}`,
