@@ -328,6 +328,60 @@ function extractDeclaredTotals(rows: Row[]): {
     return result;
 }
 
+// Fallback: Azure DI sometimes extracts the account summary block only in the raw
+// page content text (not as table cells). Parse the known Santander summary keywords
+// directly from the OCR text when grid extraction returns nothing.
+function extractDeclaredTotalsFromText(text: string): {
+    openingBalance?: number;
+    closingBalance?: number;
+    moneyIn?: number;
+    moneyOut?: number;
+} {
+    const result: { openingBalance?: number; closingBalance?: number; moneyIn?: number; moneyOut?: number } = {};
+    // Â£ is a Windows-1252 decode artefact for £ (UTF-8 0xC2 0xA3)
+    const t = text.replace(/Â£/g, '£');
+
+    const parseAmt = (m: RegExpMatchArray | null): number | null => {
+        if (!m || !m[1]) return null;
+        const n = parseFloat(m[1].replace(/,/g, ''));
+        return Number.isFinite(n) ? n : null;
+    };
+
+    // Try "keyword on one line, amount on next line" first (Santander OCR layout),
+    // then fall back to "keyword and amount on the same line".
+    const findAmt = (nextLine: RegExp, sameLine: RegExp): number | null => {
+        let m = t.match(nextLine);
+        if (!m) m = t.match(sameLine);
+        return parseAmt(m);
+    };
+
+    const ob = findAmt(
+        /balance\s+brought\s+forward[^\n]*\n\s*(?:-\s*)?£?\s*([\d,]+\.?\d*)/i,
+        /balance\s+brought\s+forward[^\n]*£\s*([\d,]+\.?\d*)/i,
+    );
+    if (ob !== null) result.openingBalance = ob;
+
+    const mi = findAmt(
+        /total\s+money\s+in\s*:?\s*\n\s*(?:-\s*)?£?\s*([\d,]+\.?\d*)/i,
+        /total\s+money\s+in\s*:?\s*£?\s*([\d,]+\.?\d*)/i,
+    );
+    if (mi !== null) result.moneyIn = mi;
+
+    const mo = findAmt(
+        /total\s+money\s+out\s*:?\s*\n\s*(?:-\s*)?£?\s*([\d,]+\.?\d*)/i,
+        /total\s+money\s+out\s*:?\s*-?\s*£?\s*([\d,]+\.?\d*)/i,
+    );
+    if (mo !== null) result.moneyOut = mo;
+
+    const cb = findAmt(
+        /(?:your\s+)?balance\s+at\s+close\s+of\s+business[^\n]*\n\s*(?:-\s*)?£?\s*([\d,]+\.?\d*)/i,
+        /(?:your\s+)?balance\s+at\s+close\s+of\s+business[^\n]*£\s*([\d,]+\.?\d*)/i,
+    );
+    if (cb !== null) result.closingBalance = cb;
+
+    return result;
+}
+
 export function parse(cells: Cell[]): ParseResult {
     const defaultYear = extractDefaultYear(cells);
     const rows = buildGrid(cells);
@@ -443,7 +497,20 @@ export function parse(cells: Cell[]): ParseResult {
     }
 
     flush();
-    const declared = extractDeclaredTotals(rows);
+    let declared = extractDeclaredTotals(rows);
+    const gridHit = declared.moneyIn !== undefined || declared.moneyOut !== undefined ||
+        declared.openingBalance !== undefined || declared.closingBalance !== undefined;
+    if (!gridHit) {
+        // Grid extraction found nothing — Azure DI may have only captured the summary
+        // block in the raw OCR text, not as table cells. Try the text-based fallback.
+        const contextCell = cells.find(c => c.rowIndex < 0);
+        if (contextCell?.content) {
+            const fromText = extractDeclaredTotalsFromText(contextCell.content);
+            const textHit = fromText.moneyIn !== undefined || fromText.moneyOut !== undefined ||
+                fromText.openingBalance !== undefined || fromText.closingBalance !== undefined;
+            if (textHit) declared = fromText;
+        }
+    }
     const statementTotals =
         declared.moneyIn !== undefined || declared.moneyOut !== undefined ||
         declared.openingBalance !== undefined || declared.closingBalance !== undefined
