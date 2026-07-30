@@ -743,7 +743,7 @@ export default function ImportFile() {
                 <h2>{t.navImport}</h2>
             </div>
 
-            {isAdmin && <div className="card" style={{ maxWidth: 620 }}>
+            <div className="card" style={{ maxWidth: 620 }}>
 
                 {/* ── Header ── */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1.25rem' }}>
@@ -767,7 +767,7 @@ export default function ImportFile() {
                 </div>
 
                 {/* ── Mode selector ── */}
-                {!isProcessing && !isCompleted && (
+                {isAdmin && !isProcessing && !isCompleted && (
                     <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1.5rem' }}>
                         {([
                             { key: 'bank_statement', label: 'Bank Statement' },
@@ -820,7 +820,7 @@ export default function ImportFile() {
                     <div style={{ marginTop: '1rem', textAlign: 'center', minHeight: 20 }}>
                         {!job && !isUploading && (
                             <span style={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.2)' }}>
-                                Select a file below to begin
+                                {isAdmin ? 'Select a file below to begin' : 'Waiting for next file…'}
                             </span>
                         )}
                         {isUploading && (
@@ -870,7 +870,7 @@ export default function ImportFile() {
                 </div>
 
                 {/* ── Drop zone ── */}
-                {!isProcessing && !isCompleted && (
+                {isAdmin && !isProcessing && !isCompleted && (
                     <div
                         className={`drop-zone${isDragging ? ' dragging' : ''}${selectedFiles.length > 0 ? ' has-file' : ''}`}
                         onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
@@ -907,7 +907,7 @@ export default function ImportFile() {
                 )}
 
                 {/* ── Upload progress bar ── */}
-                {isUploading && (
+                {isAdmin && isUploading && (
                     <div style={{ marginTop: '1rem' }}>
                         <div className="progress-track">
                             <div className="progress-fill" style={{ width: `${uploadProgress}%` }} />
@@ -916,7 +916,7 @@ export default function ImportFile() {
                 )}
 
                 {/* ── Upload error ── */}
-                {uploadError && (
+                {isAdmin && uploadError && (
                     <div style={{
                         marginTop: '1rem', padding: '0.75rem 1rem',
                         background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.25)',
@@ -928,7 +928,7 @@ export default function ImportFile() {
 
                 {/* ── Action buttons ── */}
                 <div style={{ marginTop: '1.25rem', display: 'flex', gap: '0.75rem' }}>
-                    {(isCompleted || isFailed) && (
+                    {isAdmin && (isCompleted || isFailed) && (
                         <button className="btn-secondary" onClick={() => { reset(); }} style={{ flex: 1, justifyContent: 'center' }}>
                             Upload another file
                         </button>
@@ -953,7 +953,7 @@ export default function ImportFile() {
                         </>
                     )}
 
-                    {!isCompleted && !isFailed && (
+                    {isAdmin && !isCompleted && !isFailed && (
                         <button
                             className="btn-primary"
                             onClick={handleUpload}
@@ -967,7 +967,7 @@ export default function ImportFile() {
                         </button>
                     )}
                 </div>
-            </div>}
+            </div>
 
             {/* ── Recent jobs list ── */}
             {recentJobs.length > 0 && (() => {
