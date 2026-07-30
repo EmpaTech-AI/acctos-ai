@@ -1,15 +1,13 @@
 import { Router, Response, NextFunction } from 'express';
 import * as XLSX from 'xlsx';
-import { authenticateToken, requireRole, AuthenticatedRequest } from '../middleware/auth.js';
+import { authenticateToken, AuthenticatedRequest } from '../middleware/auth.js';
 import { createError } from '../middleware/errorHandler.js';
 import { jobStore } from '../services/processing/JobStore.js';
 import { getJobRecord, listJobRecords, downloadOutputFile } from '../services/SupabaseService.js';
 import { downloadDriveFile } from '../services/google/GoogleService.js';
-import { ADMIN_ROLES } from '../utils/roles.js';
 
 const router = Router();
 router.use(authenticateToken);
-router.use(requireRole(...ADMIN_ROLES));
 
 /** Build a safe Content-Disposition header that handles non-ASCII filenames (RFC 6266). */
 function contentDisposition(filename: string): string {
