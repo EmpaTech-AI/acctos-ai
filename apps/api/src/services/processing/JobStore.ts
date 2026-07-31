@@ -1,6 +1,12 @@
 export type JobStatus = 'queued' | 'processing' | 'completed' | 'failed';
 export type ProcessingStage = 'classify' | 'extract' | 'parse' | 'categorize' | 'output';
 
+export interface AdminIssue {
+    level: 'warning' | 'error';
+    title: string;
+    details?: string;
+}
+
 export interface JobSummary {
     moneyIn?:          number;
     moneyOut?:         number;
@@ -51,6 +57,10 @@ export interface ProcessingJob {
     stageTiming?: Partial<Record<ProcessingStage, number>>;
     outputBuffer?: Buffer;
     summary?: JobSummary;
+    /** true when triggered via the admin Import Files UI — skips emails, Supabase, Drive */
+    adminImport?: boolean;
+    /** collected issues for admin-import jobs (replaces email notifications) */
+    adminIssues?: AdminIssue[];
     createdAt: Date;
     completedAt?: Date;
 }

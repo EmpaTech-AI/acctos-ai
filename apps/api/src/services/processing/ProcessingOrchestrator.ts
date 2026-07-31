@@ -11,7 +11,7 @@ import { buildPdfOutputExcel, buildExcelOutputExcel, buildVatOutputExcel, VatSta
 import { Cell, ParsedTransaction, ParseResult } from './parsers/shared.js';
 import { computeVerification, applyCatVerification, logVerificationSummary, computeChainVerification } from './Verification.js';
 import { notifyParserError, notifyChainGap, notifyJobFailed, notifyInsufficientFiles, notifyDuplicatesRemoved, notifyProcessingComplete, notifyTeamIssuesSummary, notifyClientIssuesSummary, notifyUnknownBank, ClientIssueItem, BankSummary } from './NotificationService.js';
-import { JobSummary } from './JobStore.js';
+import { JobSummary, AdminIssue } from './JobStore.js';
 import {
     getAzureCache, saveAzureCache,
     createJobRecord, updateJobRecord, saveOutputFile,
@@ -294,7 +294,7 @@ export interface FileInput {
  * @param bankHint  Optional bank type override — use when files are named-page splits of a known
  *                  bank's statement and filename/content detection would be unreliable.
  */
-export function startBatchProcessingJob(files: FileInput[], tracking?: TrackingContext, bankHint?: BankType, processingMode?: 'bank_statement' | 'vat', emailSubject?: string, senderEmail?: string): string {
+export function startBatchProcessingJob(files: FileInput[], tracking?: TrackingContext, bankHint?: BankType, processingMode?: 'bank_statement' | 'vat', emailSubject?: string, senderEmail?: string, adminImport?: boolean): string {
     const jobId = randomUUID();
 
     // Deduplicate by content hash — identical bytes across differently-named files get dropped
@@ -315,14 +315,18 @@ export function startBatchProcessingJob(files: FileInput[], tracking?: TrackingC
     const batchName = emailSubject
         ?? (uniqueFiles.length === 1 ? uniqueFiles[0].filename : `${uniqueFiles.length} files`);
     jobStore.create(jobId, batchName);
-    createJobRecord({ id: jobId, filename: batchName, processingMode }).catch(() => {});
+    if (adminImport) {
+        jobStore.update(jobId, { adminImport: true });
+    } else {
+        createJobRecord({ id: jobId, filename: batchName, processingMode }).catch(() => {});
+    }
 
     if (duplicatesRemoved.length > 0) {
         jobStore.update(jobId, { duplicatesRemoved });
         console.log(`[Orchestrator] ${duplicatesRemoved.length} duplicate(s) removed. Processing ${uniqueFiles.length} unique file(s).`);
     }
 
-    runBatchJob(jobId, uniqueFiles, tracking, bankHint, processingMode, emailSubject, senderEmail, duplicatesRemoved).catch(err => {
+    runBatchJob(jobId, uniqueFiles, tracking, bankHint, processingMode, emailSubject, senderEmail, duplicatesRemoved, adminImport).catch(err => {
         console.error(`[Orchestrator] Batch job ${jobId} unhandled crash:`, err);
         jobStore.update(jobId, { status: 'failed', error: String(err?.message ?? err) });
     });
@@ -330,9 +334,10 @@ export function startBatchProcessingJob(files: FileInput[], tracking?: TrackingC
     return jobId;
 }
 
-async function runBatchJob(jobId: string, files: FileInput[], tracking?: TrackingContext, bankHint?: BankType, processingMode?: 'bank_statement' | 'vat', emailSubject?: string, senderEmail?: string, duplicatesRemoved: string[] = []): Promise<void> {
+async function runBatchJob(jobId: string, files: FileInput[], tracking?: TrackingContext, bankHint?: BankType, processingMode?: 'bank_statement' | 'vat', emailSubject?: string, senderEmail?: string, duplicatesRemoved: string[] = [], adminImport?: boolean): Promise<void> {
     const timer = makeStageTimer();
     const clientIssues: ClientIssueItem[] = [];
+    const adminIssues: AdminIssue[] = [];
     try {
         // ── Limit gate: check BEFORE any work starts — never interrupts a running job ──
         if (tracking?.tenantId && tracking?.prisma) {
@@ -350,7 +355,11 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
         jobStore.update(jobId, { status: 'processing', totalFiles: files.length });
 
         if (duplicatesRemoved.length > 0) {
-            notifyDuplicatesRemoved({ jobId, emailSubject, senderEmail, duplicatesRemoved });
+            if (!adminImport) {
+                notifyDuplicatesRemoved({ jobId, emailSubject, senderEmail, duplicatesRemoved });
+            } else {
+                adminIssues.push({ level: 'warning', title: `${duplicatesRemoved.length} duplicate file(s) removed`, details: duplicatesRemoved.join(', ') });
+            }
             clientIssues.push({ type: 'duplicates_removed', duplicatesRemoved });
         }
 
@@ -410,7 +419,7 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
                 }
             }
 
-            if (usedAzure && tracking) {
+            if (usedAzure && tracking && !adminImport) {
                 const pageCount = pageData.filter(p => p !== null).length;
                 if (pageCount > 0) {
                     const today = new Date(); today.setHours(0, 0, 0, 0);
@@ -510,14 +519,18 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
             console.log(`[Orchestrator] File ${fi + 1}/${files.length} "${filename}": ${fileTransactions.length} transactions`);
 
             if (bankType === 'generic') {
-                notifyUnknownBank({
-                    jobId,
-                    tenantId:     tracking?.tenantId,
-                    emailSubject: emailSubject ?? filename,
-                    filename,
-                    txCount:      fileTransactions.length,
-                    ocrExcerpt:   combinedContent,
-                });
+                if (!adminImport) {
+                    notifyUnknownBank({
+                        jobId,
+                        tenantId:     tracking?.tenantId,
+                        emailSubject: emailSubject ?? filename,
+                        filename,
+                        txCount:      fileTransactions.length,
+                        ocrExcerpt:   combinedContent,
+                    });
+                } else {
+                    adminIssues.push({ level: 'warning', title: `Unknown bank: "${filename}"`, details: `${fileTransactions.length} transactions extracted using generic parser` });
+                }
             }
 
             // Statement-level duplicate detection: catches the same statement downloaded twice
@@ -667,21 +680,35 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
             return false;
         });
         if (failedFiles.length > 0) {
-            notifyParserError({
-                jobId,
-                tenantId:     tracking?.tenantId,
-                emailSubject: emailSubject,
-                label: `batch (${files.length} files)`,
-                failedFiles: failedFiles.map(f => ({
-                    filename:    f.filename,
-                    parsedIn:    f.parsedIn,
-                    parsedOut:   f.parsedOut,
-                    declaredIn:  f.declaredIn,
-                    declaredOut: f.declaredOut,
-                    inDiff:  f.declaredIn  != null ? Math.round((f.parsedIn  - f.declaredIn)  * 100) / 100 : undefined,
-                    outDiff: f.declaredOut != null ? Math.round((f.parsedOut - f.declaredOut) * 100) / 100 : undefined,
-                })),
-            });
+            if (!adminImport) {
+                notifyParserError({
+                    jobId,
+                    tenantId:     tracking?.tenantId,
+                    emailSubject: emailSubject,
+                    label: `batch (${files.length} files)`,
+                    failedFiles: failedFiles.map(f => ({
+                        filename:    f.filename,
+                        parsedIn:    f.parsedIn,
+                        parsedOut:   f.parsedOut,
+                        declaredIn:  f.declaredIn,
+                        declaredOut: f.declaredOut,
+                        inDiff:  f.declaredIn  != null ? Math.round((f.parsedIn  - f.declaredIn)  * 100) / 100 : undefined,
+                        outDiff: f.declaredOut != null ? Math.round((f.parsedOut - f.declaredOut) * 100) / 100 : undefined,
+                    })),
+                });
+            } else {
+                for (const f of failedFiles) {
+                    const parts: string[] = [];
+                    if (f.declaredIn != null) {
+                        parts.push(`In parsed £${f.parsedIn.toFixed(2)} vs declared £${f.declaredIn.toFixed(2)} (diff ${(f.parsedIn - f.declaredIn).toFixed(2)})`);
+                        parts.push(`Out parsed £${f.parsedOut.toFixed(2)} vs declared £${f.declaredOut!.toFixed(2)} (diff ${(f.parsedOut - f.declaredOut!).toFixed(2)})`);
+                    } else if (f.openingBalance != null && f.closingBalance != null) {
+                        const balDiff = Math.round((f.openingBalance + f.parsedIn - f.parsedOut - f.closingBalance) * 100) / 100;
+                        parts.push(`Balance diff: £${balDiff.toFixed(2)}`);
+                    }
+                    adminIssues.push({ level: 'warning', title: `Parser mismatch: ${f.filename}`, details: parts.join(' · ') || undefined });
+                }
+            }
             // Queue parser error for the consolidated client email so the client gets
             // ONE email covering all issues rather than a separate parser error email.
             clientIssues.push({
@@ -720,18 +747,25 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
             })();
             const chain = allFilesHaveBalances ? computeChainVerification(sortedForChain, verification.totalIn, verification.totalOut) : undefined;
             if (chain && !chain.ok) {
-                notifyChainGap({
-                    jobId,
-                    tenantId:            tracking?.tenantId,
-                    emailSubject:        emailSubject,
-                    fileCount:           files.length,
-                    chainOpeningBalance: chain.chainOpeningBalance,
-                    chainClosingBalance: chain.chainClosingBalance,
-                    expectedClosing:     chain.expectedClosing,
-                    diff:                chain.diff,
-                    processingMode:      processingMode,
-                    senderEmail:         senderEmail,
-                });
+                if (!adminImport) {
+                    notifyChainGap({
+                        jobId,
+                        tenantId:            tracking?.tenantId,
+                        emailSubject:        emailSubject,
+                        fileCount:           files.length,
+                        chainOpeningBalance: chain.chainOpeningBalance,
+                        chainClosingBalance: chain.chainClosingBalance,
+                        expectedClosing:     chain.expectedClosing,
+                        diff:                chain.diff,
+                        processingMode:      processingMode,
+                        senderEmail:         senderEmail,
+                    });
+                } else {
+                    const gapDetails = chain.gaps.length > 0
+                        ? chain.gaps.map(g => `${g.afterFile} closes £${g.expectedOpen.toFixed(2)} but ${g.beforeFile} opens £${g.actualOpen.toFixed(2)}`).join('; ')
+                        : `Expected closing £${chain.expectedClosing.toFixed(2)}, got £${chain.chainClosingBalance.toFixed(2)} (diff £${chain.diff.toFixed(2)})`;
+                    adminIssues.push({ level: 'warning', title: 'Missing statement detected', details: gapDetails });
+                }
                 clientIssues.push({
                     type: 'chain_gap',
                     diff:                chain.diff,
@@ -790,8 +824,11 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
             catOk:           processingMode !== 'vat' ? verification.catOk       : undefined,
         } : undefined;
         const batchSummary = buildJobSummary(batchBankSummary, vatStats);
-        jobStore.update(jobId, { status: 'completed', outputBuffer, completedAt: new Date(), summary: batchSummary });
+        jobStore.update(jobId, { status: 'completed', outputBuffer, completedAt: new Date(), summary: batchSummary, ...(adminImport && adminIssues.length > 0 ? { adminIssues } : {}) });
         console.log(`[Orchestrator] Batch job ${jobId} completed — ${allTransactions.length} transactions from ${files.length} file(s)`);
+
+        // Admin imports skip usage tracking, Supabase, Drive, and all emails — results stay in memory only.
+        if (adminImport) return;
 
         if (tracking) {
             void recordOrchestratorUsage(tracking.prisma, tracking.tenantId, {
@@ -875,23 +912,25 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
         const errorType = classifyError(err);
         const elapsed = stage ? timer.elapsed(stage) : 0;
         console.error(`[Orchestrator][${errorType.toUpperCase()}] Batch job ${jobId} failed at stage "${stage}" (${elapsed}s):`, err.message);
-        jobStore.update(jobId, { status: 'failed', error: err.message || String(err), errorType, completedAt: new Date() });
-        updateJobRecord(jobId, {
-            status: 'failed',
-            error: (err.message || String(err)).slice(0, 2000),
-            error_type: errorType,
-            completed_at: new Date().toISOString(),
-        }).catch(() => {});
-        notifyJobFailed({
-            jobId,
-            tenantId:     tracking?.tenantId,
-            emailSubject: emailSubject,
-            filename:     `batch (${files.length} files)`,
-            stage,
-            stageElapsedSec: elapsed,
-            error:    err.message || String(err),
-            errorType,
-        });
+        jobStore.update(jobId, { status: 'failed', error: err.message || String(err), errorType, completedAt: new Date(), ...(adminImport && adminIssues.length > 0 ? { adminIssues } : {}) });
+        if (!adminImport) {
+            updateJobRecord(jobId, {
+                status: 'failed',
+                error: (err.message || String(err)).slice(0, 2000),
+                error_type: errorType,
+                completed_at: new Date().toISOString(),
+            }).catch(() => {});
+            notifyJobFailed({
+                jobId,
+                tenantId:     tracking?.tenantId,
+                emailSubject: emailSubject,
+                filename:     `batch (${files.length} files)`,
+                stage,
+                stageElapsedSec: elapsed,
+                error:    err.message || String(err),
+                errorType,
+            });
+        }
     }
 }
 
@@ -903,13 +942,18 @@ export function startProcessingJob(
     processingMode?: 'bank_statement' | 'vat',
     emailSubject?: string,
     senderEmail?: string,
+    adminImport?: boolean,
 ): string {
     const jobId = randomUUID();
     const displayName = emailSubject ?? filename;
     jobStore.create(jobId, displayName);
-    createJobRecord({ id: jobId, filename: displayName, processingMode }).catch(() => {});
+    if (adminImport) {
+        jobStore.update(jobId, { adminImport: true });
+    } else {
+        createJobRecord({ id: jobId, filename: displayName, processingMode }).catch(() => {});
+    }
 
-    runJob(jobId, filename, mimeType, fileBuffer, tracking, processingMode, emailSubject, senderEmail).catch(err => {
+    runJob(jobId, filename, mimeType, fileBuffer, tracking, processingMode, emailSubject, senderEmail, adminImport).catch(err => {
         console.error(`[Orchestrator] Job ${jobId} unhandled crash:`, err);
         jobStore.update(jobId, { status: 'failed', error: String(err?.message ?? err) });
     });
@@ -917,8 +961,9 @@ export function startProcessingJob(
     return jobId;
 }
 
-async function runJob(jobId: string, filename: string, mimeType: string, fileBuffer: Buffer, tracking?: TrackingContext, processingMode?: 'bank_statement' | 'vat', emailSubject?: string, senderEmail?: string): Promise<void> {
+async function runJob(jobId: string, filename: string, mimeType: string, fileBuffer: Buffer, tracking?: TrackingContext, processingMode?: 'bank_statement' | 'vat', emailSubject?: string, senderEmail?: string, adminImport?: boolean): Promise<void> {
     const timer = makeStageTimer();
+    const adminIssues: AdminIssue[] = [];
     try {
         // ── Limit gate: check BEFORE any work starts — never interrupts a running job ──
         if (tracking?.tenantId && tracking?.prisma) {
@@ -1059,8 +1104,8 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
                 saveAzureCache(fileHash, filename, pageData).catch(() => {});
             }
 
-            // Track Azure Document Intelligence usage (only when we actually called Azure)
-            if (usedAzure && tracking) {
+            // Track Azure Document Intelligence usage (only when we actually called Azure, and not for admin imports)
+            if (usedAzure && tracking && !adminImport) {
                 const pageCount = pageData.filter(p => p !== null).length;
                 if (pageCount > 0) {
                     const today = new Date(); today.setHours(0, 0, 0, 0);
@@ -1147,6 +1192,10 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
                     console.log(`[Orchestrator] Bank detected from content: ${detected} (filename gave generic)`);
                     bankType = detected;
                     jobStore.update(jobId, { bankType: detected });
+                } else if (adminImport) {
+                    adminIssues.push({ level: 'warning', title: `Unknown bank: "${filename}"`, details: 'Transactions extracted using generic parser' });
+                } else {
+                    // notifyUnknownBank is called after parse (needs txCount) — handled below
                 }
             }
 
@@ -1154,27 +1203,54 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
             if (transactions.length === 0) throw new Error('No transactions could be extracted from the document');
 
             console.log(`[Orchestrator] Parsed ${transactions.length} transactions from "${filename}"`);
+
+            if (bankType === 'generic' && !adminImport) {
+                notifyUnknownBank({
+                    jobId,
+                    tenantId:     tracking?.tenantId,
+                    emailSubject: emailSubject ?? filename,
+                    filename,
+                    txCount:      transactions.length,
+                    ocrExcerpt:   combinedContent,
+                });
+            } else if (bankType === 'generic' && adminImport) {
+                // Update the already-pushed issue with the actual transaction count
+                const unk = adminIssues.findLast(i => i.title.startsWith('Unknown bank'));
+                if (unk) unk.details = `${transactions.length} transactions extracted using generic parser`;
+            }
+
             const verification = computeVerification(transactions, statementTotals, ascending);
             if (verification) logVerificationSummary(verification);
 
-            // Parser verification failure → team alert only (client sees ⚠ in the result email)
+            // Parser verification failure → team alert (or admin issue for admin imports)
             if (verification && (verification.declaredOk === false || (verification.balanceDiff !== null && !verification.balanceOk))) {
-                notifyParserError({
-                    jobId,
-                    tenantId:     tracking?.tenantId,
-                    emailSubject: emailSubject,
-                    label:        filename,
-                    failedFiles: [{
-                        filename,
-                        parsedIn:    verification.totalIn,
-                        parsedOut:   verification.totalOut,
-                        declaredIn:  verification.declaredIn,
-                        declaredOut: verification.declaredOut,
-                        inDiff:      verification.declaredIn  != null ? Math.round((verification.totalIn  - verification.declaredIn)  * 100) / 100 : undefined,
-                        outDiff:     verification.declaredOut != null ? Math.round((verification.totalOut - verification.declaredOut) * 100) / 100 : undefined,
-                        balanceDiff: verification.balanceDiff ?? undefined,
-                    }],
-                });
+                if (!adminImport) {
+                    notifyParserError({
+                        jobId,
+                        tenantId:     tracking?.tenantId,
+                        emailSubject: emailSubject,
+                        label:        filename,
+                        failedFiles: [{
+                            filename,
+                            parsedIn:    verification.totalIn,
+                            parsedOut:   verification.totalOut,
+                            declaredIn:  verification.declaredIn,
+                            declaredOut: verification.declaredOut,
+                            inDiff:      verification.declaredIn  != null ? Math.round((verification.totalIn  - verification.declaredIn)  * 100) / 100 : undefined,
+                            outDiff:     verification.declaredOut != null ? Math.round((verification.totalOut - verification.declaredOut) * 100) / 100 : undefined,
+                            balanceDiff: verification.balanceDiff ?? undefined,
+                        }],
+                    });
+                } else {
+                    const parts: string[] = [];
+                    if (verification.declaredIn != null) {
+                        parts.push(`In parsed £${verification.totalIn.toFixed(2)} vs declared £${verification.declaredIn.toFixed(2)} (diff ${(verification.totalIn - verification.declaredIn).toFixed(2)})`);
+                        parts.push(`Out parsed £${verification.totalOut.toFixed(2)} vs declared £${verification.declaredOut!.toFixed(2)} (diff ${(verification.totalOut - verification.declaredOut!).toFixed(2)})`);
+                    } else if (verification.balanceDiff != null) {
+                        parts.push(`Balance diff: £${verification.balanceDiff.toFixed(2)}`);
+                    }
+                    adminIssues.push({ level: 'warning', title: `Parser mismatch: ${filename}`, details: parts.join(' · ') || undefined });
+                }
             }
 
             // ── Stage: categorize (OpenAI Assistant, 50 transactions per batch) ──
@@ -1213,8 +1289,11 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
         }
 
         const singleSummary = buildJobSummary(emailBankSummary, vatStats);
-        jobStore.update(jobId, { status: 'completed', outputBuffer, completedAt: new Date(), summary: singleSummary });
+        jobStore.update(jobId, { status: 'completed', outputBuffer, completedAt: new Date(), summary: singleSummary, ...(adminImport && adminIssues.length > 0 ? { adminIssues } : {}) });
         console.log(`[Orchestrator] Job ${jobId} completed — ${filename}`);
+
+        // Admin imports skip usage tracking, Supabase, Drive, and all emails — results stay in memory only.
+        if (adminImport) return;
 
         if (tracking) {
             void recordOrchestratorUsage(tracking.prisma, tracking.tenantId, {
@@ -1287,21 +1366,24 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
             error: err.message || String(err),
             errorType,
             completedAt: new Date(),
+            ...(adminImport && adminIssues.length > 0 ? { adminIssues } : {}),
         });
-        updateJobRecord(jobId, {
-            status: 'failed',
-            error: (err.message || String(err)).slice(0, 2000),
-            error_type: errorType,
-            completed_at: new Date().toISOString(),
-        }).catch(() => {});
-        notifyJobFailed({
-            jobId,
-            tenantId: tracking?.tenantId,
-            filename,
-            stage,
-            stageElapsedSec: elapsed,
-            error: err.message || String(err),
-            errorType,
-        });
+        if (!adminImport) {
+            updateJobRecord(jobId, {
+                status: 'failed',
+                error: (err.message || String(err)).slice(0, 2000),
+                error_type: errorType,
+                completed_at: new Date().toISOString(),
+            }).catch(() => {});
+            notifyJobFailed({
+                jobId,
+                tenantId: tracking?.tenantId,
+                filename,
+                stage,
+                stageElapsedSec: elapsed,
+                error: err.message || String(err),
+                errorType,
+            });
+        }
     }
 }
