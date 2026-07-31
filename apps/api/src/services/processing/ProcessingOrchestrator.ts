@@ -1215,7 +1215,7 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
                 });
             } else if (bankType === 'generic' && adminImport) {
                 // Update the already-pushed issue with the actual transaction count
-                const unk = adminIssues.findLast(i => i.title.startsWith('Unknown bank'));
+                const unk = [...adminIssues].reverse().find(i => i.title.startsWith('Unknown bank'));
                 if (unk) unk.details = `${transactions.length} transactions extracted using generic parser`;
             }
 
