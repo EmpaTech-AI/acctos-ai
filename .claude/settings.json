@@ -9,7 +9,17 @@
       "Bash(Get-ChildItem -Path \"d:\\\\Shiz\\\\Acctos AI\" -Force)",
       "Bash(Select-Object Name, PSIsContainer)",
       "Bash(git log *)",
-      "Bash(git remote *)"
+      "Bash(git remote *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Bash(railway link *)",
+      "Bash(git rm *)",
+      "Bash(git show *)",
+      "Bash(cat /tmp/gmailPoller_old.ts)",
+      "Read(//tmp/**)",
+      "Bash(python3 -)",
+      "Bash(git pull *)"
     ]
   }
 }

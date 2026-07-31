@@ -159,7 +159,7 @@ export function parse(cells: Cell[]): ParseResult {
     const hasHeader = headerIdx >= 0;
     const startAt   = hasHeader ? headerIdx + 1 : 0;
     const headerRow = hasHeader ? table[headerIdx].cols : table[0].cols;
-    console.log(`[RevolutParser] cols=${cols} headerIdx=${headerIdx} table[0]=${JSON.stringify(table[0]?.cols?.slice(0,4))} header=${JSON.stringify(headerRow.slice(0,4))}`);
+
     const isSixCols  = cols === 5;
     const isFiveCols = cols === 4;
 

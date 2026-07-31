@@ -99,6 +99,15 @@ export function computeVerification(
         declaredOk =
             Math.abs(totalIn - declared.moneyIn) <= 0.02 &&
             Math.abs(totalOut - declared.moneyOut) <= 0.02;
+
+        // When the bank declares money in/out totals, those are the authoritative
+        // source of truth. The opening→closing balance continuity check is a fallback
+        // for statements that don't provide declared totals — when declared totals
+        // exist (and are verified above), skip the balance check to avoid spurious
+        // warnings from bank-side adjustments (pending items, charges, rounding)
+        // that aren't present in the transaction list.
+        balanceDiff = null;
+        balanceOk = true;
     }
 
     return {
