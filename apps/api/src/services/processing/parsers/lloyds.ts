@@ -150,10 +150,10 @@ export function parse(cells: Cell[]): ParseResult {
 
         const isOldHeader =
             vals.includes('date') &&
-            vals.some(v => v.includes('payment type')) &&
+            vals.some(v => v.includes('payment type') || v.includes('pmnt type')) &&
             vals.some(v => v === 'details') &&
-            vals.some(v => v.includes('paid out')) &&
-            vals.some(v => v.includes('paid in')) &&
+            vals.some(v => v.includes('paid out') || v.includes('money out')) &&
+            vals.some(v => v.includes('paid in') || v.includes('money in')) &&
             vals.some(v => v.startsWith('balance'));
 
         const isNewHeader =
@@ -172,11 +172,11 @@ export function parse(cells: Cell[]): ParseResult {
             const vl = v.toLowerCase();
             if (vl === 'date') { COL_DATE = col; continue; }
             if (format === 'old') {
-                if (vl === 'payment type')       COL_TYPE    = col;
-                else if (vl === 'details')        COL_DETAILS = col;
-                else if (vl.includes('paid out')) COL_OUT     = col;
-                else if (vl.includes('paid in'))  COL_IN      = col;
-                else if (vl.startsWith('balance'))COL_BAL     = col;
+                if (vl === 'payment type' || vl === 'pmnt type')              COL_TYPE    = col;
+                else if (vl === 'details')                                     COL_DETAILS = col;
+                else if (vl.includes('paid out') || vl.includes('money out')) COL_OUT     = col;
+                else if (vl.includes('paid in')  || vl.includes('money in'))  COL_IN      = col;
+                else if (vl.startsWith('balance'))                             COL_BAL     = col;
             } else {
                 if (vl === 'description')                     COL_DETAILS = col;
                 else if (vl === 'type')                       COL_TYPE    = col;
