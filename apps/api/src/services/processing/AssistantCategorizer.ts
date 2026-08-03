@@ -185,8 +185,8 @@ const PRE_RULES: Array<{ pattern: RegExp; category: string }> = [
     { pattern: /\bHMRC\b/,                                                                          category: 'HMRC'   },
     // PHONE — UK mobile operators (exact brand names)
     { pattern: /\b(EE LIMITED|EE LTD|EE MOBILE|VODAFONE|O2 UK|O2 MOBILE|THREE UK|THREE MOBILE|LYCAMOBILE|LEBARA MOBILE|GIFFGAFF|TALKMOBILE|SKY MOBILE|BT MOBILE|VIRGIN MOBILE|SMARTY)\b/i, category: 'PHONE' },
-    // TRAVEL — transport brands + fuel stations
-    { pattern: /\b(UBER|BOLT(?:\.EU| RIDESHARING)?|TFL |TRANSPORT FOR LONDON|TRAINLINE|NATIONAL RAIL|EASYJET|RYANAIR|WIZZ ?AIR|WIZZAIR|KIWI\.COM|EUROSTAR|NATIONAL EXPRESS|STAGECOACH|MEGABUS|HEATHROW EXPRESS|GATWICK EXPRESS|SHELL|BP |BP PLC|ESSO|TEXACO|TOTAL ENERGIES|GULF OIL)\b/i, category: 'TRAVEL' },
+    // TRAVEL — transport brands + fuel stations (BP/BP PLC removed — handled by DB vendor rules)
+    { pattern: /\b(UBER|BOLT(?:\.EU| RIDESHARING)?|TFL |TRANSPORT FOR LONDON|TRAINLINE|NATIONAL RAIL|EASYJET|RYANAIR|WIZZ ?AIR|WIZZAIR|KIWI\.COM|EUROSTAR|NATIONAL EXPRESS|STAGECOACH|MEGABUS|HEATHROW EXPRESS|GATWICK EXPRESS|SHELL|ESSO|TEXACO|TOTAL ENERGIES|GULF OIL)\b/i, category: 'TRAVEL' },
     // SALARY — outgoing salary/wage payments (before Bank_Transfer — salary keyword wins)
     { pattern: /\bsalar(?:y|ies)\b/i, category: 'SALARY' },
     // Bank_Transfer — inter-account transfers

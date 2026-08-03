@@ -130,7 +130,7 @@ function categorize(desc: string, amount: number | null): Category | null {
 
     // TRAVEL — transport, fuel, parking, flights, airports, ride-hailing
     if (
-        /\b(shell|esso|texaco|british petroleum|tfl|trainline|national rail|dvla|vehicle|bus|car\b|metro|subway|travel|petrol|parking|ringgo|easyjet|wizz\s*air|ryanair|british airways|ncp|q-?park|apcoa|stansted|gatwick|luton|uber|bolt|carpark|eaglemovers)\b/i.test(desc) ||
+        /\b(shell|esso|texaco|british petroleum|bp connect|bp plc|tfl|trainline|national rail|dvla|vehicle|bus|car\b|metro|subway|travel|petrol|parking|ringgo|easyjet|wizz\s*air|ryanair|british airways|ncp|q-?park|apcoa|stansted|gatwick|luton|uber|bolt|carpark|eaglemovers)\b/i.test(desc) ||
         /\bnott\s*emr\b/i.test(desc)
     ) return 'TRAVEL';
 
@@ -143,7 +143,8 @@ function categorize(desc: string, amount: number | null): Category | null {
     // BANK TRANSFER — explicit codes and keywords
     if (/\bTRF\b/.test(desc)) return 'Bank_Transfer';                                          // TRF = internal HSBC transfer
     if (/^SO\b/i.test(desc)) return 'Bank_Transfer';                                           // SO (Standing Order) with no category match
-    if (/^BP\b/i.test(desc) && looksLikePersonalTransfer(desc)) return 'Bank_Transfer';        // BP + personal name
+    if (/^BP\s/i.test(desc)) return 'Bank_Transfer';                                           // BP prefix = HSBC bill payment
+    if (/^FT\s/i.test(desc)) return 'Bank_Transfer';                                           // FT prefix = faster transfer code
     if (/\b(transfer|transfer to acc|bank transfer|faster payments.*to|bill payment to|to savings|to isa|monzo|revolut|divident|devident)\b/i.test(desc)) return 'Bank_Transfer';
 
     return 'OTHER';
