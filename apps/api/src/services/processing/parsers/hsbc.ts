@@ -727,9 +727,13 @@ export function parse(cells: Cell[]): ParseResult {
         // HSBC/Azure DI — typically the very first entry after "BALANCE BROUGHT FORWARD"
         // where the ))) contactless marker is absent. Start an implicit transaction so
         // the description and the amount on the next continuation row are captured.
+        // HSBC Basic format merges type+description into c1 (e.g. "SAI 108"), leaving c2
+        // empty — fall back to c1 as the description candidate in that case.
         if (!currentTxn && !codeHit) {
             const descInC2 = (row.c2 || '').trim();
-            if (dateMatch && descInC2 && !isAmount(descInC2) && !SKIP_DESC_EXACT_RE.test(descInC2) && !CARRIED_FORWARD_RE.test(descInC2)) {
+            const descInC1 = (row.c1 || '').trim();
+            const descCand = descInC2 || (!CODES.includes(descInC1) ? descInC1 : '');
+            if (dateMatch && descCand && !isAmount(descCand) && !SKIP_DESC_EXACT_RE.test(descCand) && !CARRIED_FORWARD_RE.test(descCand)) {
                 currentTxn = { date: currentDate, type: '', description: '', moneyOut: '', moneyIn: '', balance: '' };
             }
         }
