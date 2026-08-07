@@ -196,6 +196,61 @@ export interface ChainVerification {
 }
 
 /**
+ * Sort file summaries into chronological chain order by matching closing → opening balances.
+ * Handles gaps (missing statements between some files) by placing the longest contiguous
+ * chain first, then any isolated files.  Returns the original order when the sort is
+ * ambiguous (e.g. no opening/closing data at all).
+ */
+function sortByBalanceChain(files: FileSummary[]): FileSummary[] {
+    if (files.length <= 1) return files;
+    const EPS = 0.02;
+
+    // Build a successor map: file → the file whose opening matches this file's closing
+    const successor = new Map<FileSummary, FileSummary>();
+    for (const a of files) {
+        if (a.closingBalance == null) continue;
+        const next = files.find(b =>
+            b !== a &&
+            b.openingBalance != null &&
+            Math.abs(b.openingBalance - a.closingBalance!) <= EPS,
+        );
+        if (next) successor.set(a, next);
+    }
+
+    // Chain starters = files not pointed to as a successor by any other file
+    const incomingSet = new Set(successor.values());
+    const starters = files.filter(f => !incomingSet.has(f));
+    if (!starters.length) return files; // all files in a cycle — shouldn't happen
+
+    // Walk each chain from its starter
+    const visited = new Set<FileSummary>();
+    const chains: FileSummary[][] = [];
+    for (const start of starters) {
+        if (visited.has(start)) continue;
+        const chain: FileSummary[] = [];
+        let cur: FileSummary | undefined = start;
+        while (cur && !visited.has(cur)) {
+            visited.add(cur);
+            chain.push(cur);
+            cur = successor.get(cur);
+        }
+        chains.push(chain);
+    }
+    // Append any remaining unvisited files (shouldn't occur in practice)
+    for (const f of files) {
+        if (!visited.has(f)) chains.push([f]);
+    }
+
+    // Longest chain first; ties broken by opening balance ascending
+    chains.sort((a, b) =>
+        b.length - a.length ||
+        (a[0].openingBalance ?? 0) - (b[0].openingBalance ?? 0),
+    );
+
+    return chains.flat();
+}
+
+/**
  * Check whether the opening balance of the first file + all IN - all OUT equals
  * the closing balance of the last file.  A non-zero diff indicates a missing
  * statement somewhere in the chain.
@@ -203,7 +258,11 @@ export interface ChainVerification {
  * Only call this after all individual per-file checks have passed — a failed
  * individual file would make the chain diff meaningless.
  *
- * @param fileSummaries  Summaries in the order files were processed (chronological).
+ * Files are automatically sorted into chronological order by balance chain
+ * (closing balance of file N must match opening balance of file N+1) so the
+ * caller does not need to pre-sort them.
+ *
+ * @param fileSummaries  Summaries in any order (will be sorted chronologically).
  * @param totalIn        Sum of parsedIn across all files.
  * @param totalOut       Sum of parsedOut across all files.
  */
@@ -212,8 +271,9 @@ export function computeChainVerification(
     totalIn: number,
     totalOut: number,
 ): ChainVerification | undefined {
-    const withOpen  = fileSummaries.filter(f => f.openingBalance != null);
-    const withClose = fileSummaries.filter(f => f.closingBalance != null);
+    const sorted    = sortByBalanceChain(fileSummaries);
+    const withOpen  = sorted.filter(f => f.openingBalance != null);
+    const withClose = sorted.filter(f => f.closingBalance != null);
     if (!withOpen.length || !withClose.length) return undefined;
 
     const chainOpen  = withOpen[0].openingBalance!;
@@ -221,12 +281,12 @@ export function computeChainVerification(
     const expected   = Math.round((chainOpen + totalIn - totalOut) * 100) / 100;
     const diff       = Math.round((chainClose - expected) * 100) / 100;
 
-    // Per-period gap detection: for each consecutive pair of files, check whether
-    // file[N].closingBalance matches file[N+1].openingBalance (within £0.02).
+    // Per-period gap detection: for each consecutive pair of files (in sorted order),
+    // check whether file[N].closingBalance matches file[N+1].openingBalance (within £0.02).
     const gaps: ChainGap[] = [];
-    for (let i = 0; i < fileSummaries.length - 1; i++) {
-        const cur  = fileSummaries[i];
-        const next = fileSummaries[i + 1];
+    for (let i = 0; i < sorted.length - 1; i++) {
+        const cur  = sorted[i];
+        const next = sorted[i + 1];
         if (cur.closingBalance == null || next.openingBalance == null) continue;
         const gapDiff = Math.round((next.openingBalance - cur.closingBalance) * 100) / 100;
         if (Math.abs(gapDiff) > 0.02) {
