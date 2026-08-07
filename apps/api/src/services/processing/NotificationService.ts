@@ -32,6 +32,11 @@ const TEAM_EMAIL   = TEAM_EMAILS[0]; // primary — used for dedup comparisons
 const CLIENT_EMAIL = process.env.ALERT_CLIENT_EMAIL || 'vasil.lozev@aiassist.bg';
 const FROM_EMAIL   = 'info@support.acctos.ai';
 
+// When true, skip error/issue notifications sent to the client (chain gap,
+// insufficient files, parser mismatch, unsupported attachment).
+// Result emails with the Excel attachment are always sent regardless.
+const PAUSE_CLIENT_ERRORS = process.env.PAUSE_CLIENT_ERRORS === 'true';
+
 /** Send to all configured team recipients. */
 function sendToAllTeam(subject: string, body: string): void {
     for (const email of TEAM_EMAILS) {
@@ -497,10 +502,14 @@ export function notifyClientIssuesSummary(alert: ClientIssuesSummaryAlert): void
     ].join('\n');
 
     // Send to client + primary team contact.
-    console.warn(`[ALERT:client_issues_summary] ${alert.issues.length} issue(s) for "${submissionRef}" → ${CLIENT_EMAIL}, ${TEAM_EMAIL}`);
-    sendEmail(CLIENT_EMAIL, subject, body);
-    if (TEAM_EMAIL.toLowerCase() !== CLIENT_EMAIL.toLowerCase()) {
-        sendEmail(TEAM_EMAIL, subject, body);
+    if (PAUSE_CLIENT_ERRORS) {
+        console.warn(`[ALERT:client_issues_summary] PAUSED — skipping client email to ${CLIENT_EMAIL} (PAUSE_CLIENT_ERRORS=true)`);
+    } else {
+        console.warn(`[ALERT:client_issues_summary] ${alert.issues.length} issue(s) for "${submissionRef}" → ${CLIENT_EMAIL}, ${TEAM_EMAIL}`);
+        sendEmail(CLIENT_EMAIL, subject, body);
+        if (TEAM_EMAIL.toLowerCase() !== CLIENT_EMAIL.toLowerCase()) {
+            sendEmail(TEAM_EMAIL, subject, body);
+        }
     }
 }
 
@@ -792,7 +801,8 @@ export function notifyUnsupportedAttachment(alert: UnsupportedAttachmentAlert): 
         .catch(err => console.error(`[Notifications] Failed to send unsupported-attachment reply to ${to}:`, err.message));
 
     sendTo(TEAM_EMAIL);
-    if (CLIENT_EMAIL.toLowerCase() !== TEAM_EMAIL.toLowerCase()) sendTo(CLIENT_EMAIL);
+    if (!PAUSE_CLIENT_ERRORS && CLIENT_EMAIL.toLowerCase() !== TEAM_EMAIL.toLowerCase()) sendTo(CLIENT_EMAIL);
+    else if (PAUSE_CLIENT_ERRORS) console.warn(`[Notifications] Unsupported-attachment client reply PAUSED (PAUSE_CLIENT_ERRORS=true)`);
 }
 
 // ── Team: unknown bank — AI fallback was used ─────────────────────────────────
