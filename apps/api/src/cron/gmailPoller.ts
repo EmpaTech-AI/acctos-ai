@@ -172,6 +172,15 @@ export async function handleHistoryUpdate(newHistoryId: string): Promise<void> {
         return;
     }
 
+    // Anti-regression guard: Pub/Sub may re-deliver old notifications after a service
+    // restart (unacknowledged during shutdown). If the incoming historyId is not newer
+    // than our current cursor, skip it — processing it would regress the cursor and
+    // cause the NEXT real notification to re-query already-processed history.
+    if (BigInt(newHistoryId) <= BigInt(lastHistoryId)) {
+        console.log(`[GmailPush] Stale notification historyId=${newHistoryId} ≤ cursor=${lastHistoryId} — ignoring`);
+        return;
+    }
+
     // Advance the cursor BEFORE the async API call so that concurrent push
     // notifications that arrive while this one is awaiting getMessagesSince
     // will query from a later historyId and won't return the same messages.
