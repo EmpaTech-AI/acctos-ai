@@ -2,9 +2,10 @@
 //   Variant A (original): [date, description, type, money_in, money_out, balance]
 //   Variant B (Pmnt Type / Reward): [date, pmnt_type, details, money_out(£), money_in(£), balance(£)]
 // Column positions are detected dynamically from the header row so both variants work correctly.
-// Summary block on page 1 carries Money In / Money Out totals and period balances:
-//   "Money In £3,257.38   Balance on 01 June 2025 £22,226.18"
-//   "Money Out £4,067.99  Balance on 30 June 2025 £21,415.57"
+// Summary block on page 1 carries Money In / Money Out totals and period balances.
+// Two OCR formats exist for the summary block:
+//   Format 1 (inline): "Money In £3,257.38   Balance on 01 June 2025 £22,226.18"
+//   Format 2 (multi-line): "Money In\nMoney Out\nYour Transactions\n£46,067.61\n£60,781.74"
 // Transactions are in ascending date order across pages 1–4; page 5 is a type legend only.
 // Date format: "2 Jun 25" (D MMM YY) — handled by parseDateToDDMMYYYY.
 // Note: Halifax is a division of Bank of Scotland plc — both are classified as 'halifax'.
@@ -35,10 +36,25 @@ function extractDeclaredTotals(content: string): ParseResult['statementTotals'] 
     const amt = (m: RegExpMatchArray | null): number | null =>
         m ? parseMoney(m[1].replace(/,/g, '')) : null;
 
-    // "Money In £3,257.38" / "Money Out £4,067.99" — column header "Money In (£)" won't match
-    // because it has "(" before £, not a digit
-    const moneyIn  = amt(content.match(/money\s+in\s+£\s*([\d,]+\.\d{2})/i));
-    const moneyOut = amt(content.match(/money\s+out\s+£\s*([\d,]+\.\d{2})/i));
+    // Format 1 (inline): "Money In £3,257.38" / "Money Out £4,067.99"
+    // Column header "Money In (£)" won't match because "(" precedes £, not a digit.
+    let moneyIn  = amt(content.match(/money\s+in\s+£\s*([\d,]+\.\d{2})/i));
+    let moneyOut = amt(content.match(/money\s+out\s+£\s*([\d,]+\.\d{2})/i));
+
+    if (moneyIn === null || moneyOut === null) {
+        // Format 2 (multi-line): OCR reads "Money In" and "Money Out" as separate column headers
+        // with the £ amounts on subsequent lines, e.g.:
+        //   Money In\nMoney Out\nYour Transactions\n£46,067.61\n£60,781.74
+        // "Money In (£)" (table column header) won't match because "(£)" prevents the immediate newline.
+        const ml = content.match(
+            /money\s+in[\r\n]\s*money\s+out(?:[\r\n][^\r\n£]*){0,3}[\r\n]\s*£\s*([\d,]+\.\d{2})[\r\n]\s*£\s*([\d,]+\.\d{2})/i,
+        );
+        if (ml) {
+            moneyIn  = parseMoney(ml[1].replace(/,/g, ''));
+            moneyOut = parseMoney(ml[2].replace(/,/g, ''));
+        }
+    }
+
     if (moneyIn === null || moneyOut === null) return undefined;
 
     // "Balance on 01 June 2025 £22,226.18" — first = opening, last = closing
