@@ -195,13 +195,33 @@ export interface ChainVerification {
     gaps: ChainGap[];             // per-period: file[N].closing vs file[N+1].opening
 }
 
+/** Return all permutations of an array. Safe for n ≤ 7 (5040 max). */
+function permutations<T>(arr: T[]): T[][] {
+    if (arr.length <= 1) return [arr];
+    const result: T[][] = [];
+    for (let i = 0; i < arr.length; i++) {
+        const rest = [...arr.slice(0, i), ...arr.slice(i + 1)];
+        for (const perm of permutations(rest)) result.push([arr[i], ...perm]);
+    }
+    return result;
+}
+
 /**
  * Sort file summaries into chronological chain order by matching closing → opening balances.
- * Handles gaps (missing statements between some files) by placing the longest contiguous
- * chain first, then any isolated files.  Returns the original order when the sort is
- * ambiguous (e.g. no opening/closing data at all).
+ *
+ * 1. Build connected chains by matching each file's closingBalance to the next file's
+ *    openingBalance — the internal order of connected chains is unambiguous.
+ * 2. When multiple chains/isolated files exist (gap in the statement set), use
+ *    permutation search: try every ordering of the chain segments and pick the one
+ *    that minimises |actualClosing − expectedClosing|. With the correct chronological
+ *    order the gap is either zero (complete set) or the true missing-statement amount
+ *    (smallest possible diff). This replaces the previous "longest first, asc opening"
+ *    tiebreaker which was wrong for accounts with net outflow submitted in reverse order.
+ *
+ * Permutation search is bounded to ≤ 7 independent chains (5040 perms); beyond that it
+ * falls back to longest-chain-first with descending opening balance (net-outflow default).
  */
-function sortByBalanceChain(files: FileSummary[]): FileSummary[] {
+function sortByBalanceChain(files: FileSummary[], totalIn = 0, totalOut = 0): FileSummary[] {
     if (files.length <= 1) return files;
     const EPS = 0.02;
 
@@ -220,7 +240,7 @@ function sortByBalanceChain(files: FileSummary[]): FileSummary[] {
     // Chain starters = files not pointed to as a successor by any other file
     const incomingSet = new Set(successor.values());
     const starters = files.filter(f => !incomingSet.has(f));
-    if (!starters.length) return files; // all files in a cycle — shouldn't happen
+    if (!starters.length) return files; // cycle — shouldn't happen
 
     // Walk each chain from its starter
     const visited = new Set<FileSummary>();
@@ -236,17 +256,41 @@ function sortByBalanceChain(files: FileSummary[]): FileSummary[] {
         }
         chains.push(chain);
     }
-    // Append any remaining unvisited files (shouldn't occur in practice)
     for (const f of files) {
         if (!visited.has(f)) chains.push([f]);
     }
 
-    // Longest chain first; ties broken by opening balance ascending
+    if (chains.length === 1) return chains[0];
+
+    // Permutation search: pick the chain ordering that minimises the gap between
+    // actual and expected closing balance. This finds the correct chronological order
+    // regardless of whether the account balance is increasing or decreasing.
+    const gapFor = (perm: FileSummary[][]): number => {
+        const flat = perm.flat();
+        const open  = flat.find(f => f.openingBalance != null)?.openingBalance;
+        const close = [...flat].reverse().find(f => f.closingBalance != null)?.closingBalance;
+        if (open == null || close == null) return Infinity;
+        const expected = Math.round((open + totalIn - totalOut) * 100) / 100;
+        return Math.abs(Math.round((close - expected) * 100) / 100);
+    };
+
+    if (chains.length <= 7) {
+        const perms = permutations(chains);
+        let best = chains;
+        let bestGap = gapFor(chains);
+        for (const perm of perms) {
+            const g = gapFor(perm);
+            if (g < bestGap) { bestGap = g; best = perm; }
+        }
+        return best.flat();
+    }
+
+    // Fallback for > 7 chains: longest first, descending opening balance
+    // (descending is correct for net-outflow accounts, the most common case)
     chains.sort((a, b) =>
         b.length - a.length ||
-        (a[0].openingBalance ?? 0) - (b[0].openingBalance ?? 0),
+        (b[0].openingBalance ?? 0) - (a[0].openingBalance ?? 0),
     );
-
     return chains.flat();
 }
 
@@ -271,7 +315,7 @@ export function computeChainVerification(
     totalIn: number,
     totalOut: number,
 ): ChainVerification | undefined {
-    const sorted    = sortByBalanceChain(fileSummaries);
+    const sorted    = sortByBalanceChain(fileSummaries, totalIn, totalOut);
     const withOpen  = sorted.filter(f => f.openingBalance != null);
     const withClose = sorted.filter(f => f.closingBalance != null);
     if (!withOpen.length || !withClose.length) return undefined;
