@@ -32,8 +32,12 @@ export function parse(cells: Cell[]): ParseResult {
     const grid = buildGrid(cells.filter(c => c.rowIndex >= 0));
     const rows = maxRow(cells);
 
-    // First pass: collect raw rows in PDF order (newest-first)
+    // First pass: collect valid rows in PDF order (newest-first).
+    // Rows where Amount is missing but Balance is present are saved separately —
+    // their amount will be inferred from the balance chain in the gap-fill pass below.
     const raw: { date: string; desc: string; amt: number; bal: number }[] = [];
+    const pendingInfer: { date: string; desc: string; bal: number }[] = [];
+
     for (let r = 0; r <= rows; r++) {
         const row = grid.get(r);
         if (!row) continue;
@@ -43,12 +47,15 @@ export function parse(cells: Cell[]): ParseResult {
         if (!desc) continue;
         const amt = parseMoney(normStr(row.get(3) ?? ''));
         const bal = parseMoney(normStr(row.get(4) ?? ''));
-        if (amt === null || amt === 0 || bal === null) continue;
+        if (bal === null) continue;
+        if (amt === null) { pendingInfer.push({ date: rawDate, desc, bal }); continue; }
+        if (amt === 0) continue;
         raw.push({ date: rawDate, desc, amt, bal });
     }
 
     // Reverse to oldest-first so balance chain formula holds: bal[N] = bal[N-1] + amt[N]
     raw.reverse();
+    pendingInfer.reverse();
 
     // Second pass: correct missing minus signs using balance continuity
     // In oldest-first order: expected_balance = prevBalance + amount
@@ -96,6 +103,48 @@ export function parse(cells: Cell[]): ParseResult {
         transactions.push({ date: r.date, type: '', description: r.desc, moneyIn, moneyOut, balance });
     }
 
+    // Gap-fill pass: insert pendingInfer rows where the balance chain has a break.
+    // A break at transaction T means: prevBal + T.amt ≠ T.bal.
+    // If a pending row has balance = T.bal - T.amt, it bridges the gap — insert it
+    // before T with amount = pendingBal - prevBal.
     const statementTotals = extractDeclaredBalances(cells);
+
+    if (pendingInfer.length > 0) {
+        const filled: ParsedTransaction[] = [];
+        let gapPrev: number | null = null;
+
+        for (const tx of transactions) {
+            const txAmt = tx.moneyIn ? parseFloat(tx.moneyIn) : -(parseFloat(tx.moneyOut) || 0);
+            const txBal = parseFloat(tx.balance);
+
+            if (gapPrev !== null) {
+                const expected = Math.round((gapPrev + txAmt) * 100) / 100;
+                if (Math.abs(expected - txBal) > 0.02) {
+                    // Gap detected — find a pending row whose balance = txBal - txAmt
+                    const bridgeBal = Math.round((txBal - txAmt) * 100) / 100;
+                    const idx = pendingInfer.findIndex(s => Math.abs(s.bal - bridgeBal) < 0.02);
+                    if (idx >= 0) {
+                        const s = pendingInfer.splice(idx, 1)[0];
+                        const inferredAmt = Math.round((s.bal - gapPrev) * 100) / 100;
+                        if (inferredAmt !== 0) {
+                            filled.push({
+                                date: s.date, type: '', description: s.desc,
+                                moneyIn:  inferredAmt > 0 ? formatMoney(inferredAmt)           : '',
+                                moneyOut: inferredAmt < 0 ? formatMoney(Math.abs(inferredAmt)) : '',
+                                balance:  s.bal.toFixed(2),
+                            });
+                            gapPrev = s.bal;
+                        }
+                    }
+                }
+            }
+
+            filled.push(tx);
+            gapPrev = txBal;
+        }
+
+        return { transactions: filled, ascending: true, ...(statementTotals ? { statementTotals } : {}) };
+    }
+
     return { transactions, ascending: true, ...(statementTotals ? { statementTotals } : {}) };
 }
