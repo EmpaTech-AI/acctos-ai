@@ -36,6 +36,7 @@ export interface FileSummary {
     declaredOut?: number;
     openingBalance?: number;
     closingBalance?: number;
+    chainClosingBalance?: number;
 }
 
 export interface ProcessingJob {

@@ -228,11 +228,12 @@ function sortByBalanceChain(files: FileSummary[], totalIn = 0, totalOut = 0): Fi
     // Build a successor map: file → the file whose opening matches this file's closing
     const successor = new Map<FileSummary, FileSummary>();
     for (const a of files) {
-        if (a.closingBalance == null) continue;
+        const aClose = a.chainClosingBalance ?? a.closingBalance;
+        if (aClose == null) continue;
         const next = files.find(b =>
             b !== a &&
             b.openingBalance != null &&
-            Math.abs(b.openingBalance - a.closingBalance!) <= EPS,
+            Math.abs(b.openingBalance - aClose) <= EPS,
         );
         if (next) successor.set(a, next);
     }
@@ -331,13 +332,14 @@ export function computeChainVerification(
     for (let i = 0; i < sorted.length - 1; i++) {
         const cur  = sorted[i];
         const next = sorted[i + 1];
-        if (cur.closingBalance == null || next.openingBalance == null) continue;
-        const gapDiff = Math.round((next.openingBalance - cur.closingBalance) * 100) / 100;
+        const curClose = cur.chainClosingBalance ?? cur.closingBalance;
+        if (curClose == null || next.openingBalance == null) continue;
+        const gapDiff = Math.round((next.openingBalance - curClose) * 100) / 100;
         if (Math.abs(gapDiff) > 0.02) {
             gaps.push({
                 afterFile:    cur.filename,
                 beforeFile:   next.filename,
-                expectedOpen: cur.closingBalance,
+                expectedOpen: curClose,
                 actualOpen:   next.openingBalance,
                 diff:         gapDiff,
             });

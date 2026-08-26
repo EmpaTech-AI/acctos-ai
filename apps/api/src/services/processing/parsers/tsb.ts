@@ -18,6 +18,24 @@ function parseSignedBalance(s: string): string {
     return n.toFixed(2);
 }
 
+function dateCmp(a: string, b: string): number {
+    const [ad, am, ay] = a.split('/').map(Number);
+    const [bd, bm, by] = b.split('/').map(Number);
+    return ay !== by ? ay - by : am !== bm ? am - bm : ad - bd;
+}
+
+function parseLabelDate(label: string): string {
+    // label is already lowercased, e.g. "balance on 01 june 2026"
+    const m = label.match(/balance\s+on\s+(\d{1,2})\s+([a-z]+)\s+(\d{2,4})/);
+    if (!m) return '';
+    const FULL: Record<string, string> = {
+        january:'jan', february:'feb', march:'mar', april:'apr', may:'may', june:'jun',
+        july:'jul', august:'aug', september:'sep', october:'oct', november:'nov', december:'dec',
+    };
+    const mon3 = FULL[m[2]] ?? m[2].slice(0, 3);
+    return parseDate(`${m[1]} ${mon3} ${m[3]}`);
+}
+
 function parseDate(s: string): string {
     s = normStr(s);
     // Web format: 2026-04-30
@@ -122,10 +140,11 @@ export function parse(cells: Cell[]): ParseResult {
     // Pre-scan: extract declared totals from TSB summary section (appears before transaction table).
     // TSB places a 2-column header block: col 0 = label, col 1 = value.
     // "Balance on <date>" appears twice — first = opening, second = closing.
-    let declaredOpen:     number | undefined;
-    let declaredClose:    number | undefined;
-    let declaredMoneyIn:  number | undefined;
-    let declaredMoneyOut: number | undefined;
+    let declaredOpen:      number | undefined;
+    let declaredClose:     number | undefined;
+    let declaredMoneyIn:   number | undefined;
+    let declaredMoneyOut:  number | undefined;
+    let declaredCloseDate: string | undefined;
 
     for (const row of rows) {
         const label = normStr(row.cells.get(0) ?? '').toLowerCase();
@@ -138,7 +157,10 @@ export function parse(cells: Cell[]): ParseResult {
             const v = parseMoney(raw);
             if (v) {
                 if (declaredOpen === undefined) declaredOpen  = parseFloat(v);
-                else                            declaredClose = parseFloat(v);
+                else {
+                    declaredClose     = parseFloat(v);
+                    declaredCloseDate = parseLabelDate(label);
+                }
             }
         }
     }
@@ -182,6 +204,22 @@ export function parse(cells: Cell[]): ParseResult {
         if (!paidIn && !paidOut) continue;
 
         transactions.push({ date, type, description: details, moneyIn: paidIn, moneyOut: paidOut, balance });
+    }
+
+    // Cross-period detection: TSB sometimes includes next-month direct debits in the current statement.
+    // When the last transaction(s) are dated on or after the statement closing date, the declared
+    // closing balance already includes those future DDs. The NEXT statement opens at the pre-DD balance,
+    // so we expose that pre-DD balance as chainClosingBalance for the chain gap check.
+    if (format === 'old' && statementTotals && declaredCloseDate && transactions.length > 0) {
+        let crossIdx = transactions.length;
+        for (let i = transactions.length - 1; i >= 0; i--) {
+            if (dateCmp(transactions[i].date, declaredCloseDate) < 0) break;
+            crossIdx = i;
+        }
+        if (crossIdx > 0 && crossIdx < transactions.length) {
+            const preCrossBal = parseFloat(transactions[crossIdx - 1].balance);
+            if (isFinite(preCrossBal)) statementTotals.chainClosingBalance = preCrossBal;
+        }
     }
 
     // 'old' format (scanned, DD MMM YY dates) → oldest first; 'new' format (web, YYYY-MM-DD) → newest first

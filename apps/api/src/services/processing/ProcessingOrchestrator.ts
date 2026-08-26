@@ -367,7 +367,7 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
         let confirmedBankType: BankType | null = bankHint ?? null;
         if (confirmedBankType) console.log(`[Orchestrator] Bank hint applied: ${confirmedBankType}`);
         let combinedStatementTotals: { moneyIn?: number; moneyOut?: number; openingBalance?: number; closingBalance?: number } | undefined;
-        const fileTotals: Array<{ moneyIn?: number; moneyOut?: number; openingBalance?: number; closingBalance?: number }> = [];
+        const fileTotals: Array<{ moneyIn?: number; moneyOut?: number; openingBalance?: number; closingBalance?: number; chainClosingBalance?: number }> = [];
         const fileSummaries: FileSummary[] = [];
         let ascending = false;
         let totalPagesSpent = 0;
@@ -573,10 +573,11 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
                 transactions: fileTransactions.length,
                 parsedIn:  parsedInFile,
                 parsedOut: parsedOutFile,
-                declaredIn:     statementTotals?.moneyIn,
-                declaredOut:    statementTotals?.moneyOut,
-                openingBalance: fileOpeningBalance,
-                closingBalance: fileClosingBalance,
+                declaredIn:          statementTotals?.moneyIn,
+                declaredOut:         statementTotals?.moneyOut,
+                openingBalance:      fileOpeningBalance,
+                closingBalance:      fileClosingBalance,
+                chainClosingBalance: statementTotals?.chainClosingBalance,
             });
             if (statementTotals) {
                 fileTotals.push(statementTotals);
@@ -602,7 +603,7 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
         let chainBestLen = 0;
         if (combinedStatementTotals && fileTotals.length > 1) {
             const allClose = new Set(
-                fileTotals.filter(t => t.closingBalance != null).map(t => Math.round(t.closingBalance! * 100))
+                fileTotals.filter(t => t.closingBalance != null).map(t => Math.round((t.chainClosingBalance ?? t.closingBalance!) * 100))
             );
             const allOpen = new Set(
                 fileTotals.filter(t => t.openingBalance != null).map(t => Math.round(t.openingBalance! * 100))
@@ -620,7 +621,7 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
                 let len = 1;
                 let tail = start;
                 while (true) {
-                    const curClose = cur.closingBalance;
+                    const curClose = cur.chainClosingBalance ?? cur.closingBalance;
                     if (curClose == null) break;
                     const nxt = fileTotals.find(t => t.openingBalance != null && Math.round(t.openingBalance * 100) === Math.round(curClose * 100));
                     if (!nxt) break;
@@ -731,15 +732,16 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
             // Sort fileSummaries chronologically by balance-chain matching before gap check
             const sortedForChain = (() => {
                 if (!allFilesHaveBalances || fileSummaries.length <= 1) return fileSummaries;
-                const allClose = new Set(fileSummaries.filter(f => f.closingBalance != null).map(f => Math.round(f.closingBalance! * 100)));
+                const allClose = new Set(fileSummaries.filter(f => f.closingBalance != null).map(f => Math.round((f.chainClosingBalance ?? f.closingBalance!) * 100)));
                 const first = fileSummaries.find(f => f.openingBalance != null && !allClose.has(Math.round(f.openingBalance * 100)));
                 if (!first) return fileSummaries;
                 const out = [first];
                 const rem = fileSummaries.filter(f => f !== first);
                 while (rem.length > 0) {
                     const last = out[out.length - 1];
-                    if (last.closingBalance == null) break;
-                    const idx = rem.findIndex(f => f.openingBalance != null && Math.round(f.openingBalance * 100) === Math.round(last.closingBalance! * 100));
+                    const lastClose = last.chainClosingBalance ?? last.closingBalance;
+                    if (lastClose == null) break;
+                    const idx = rem.findIndex(f => f.openingBalance != null && Math.round(f.openingBalance * 100) === Math.round(lastClose * 100));
                     if (idx < 0) break;
                     out.push(rem.splice(idx, 1)[0]);
                 }
