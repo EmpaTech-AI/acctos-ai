@@ -506,10 +506,32 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
             ) {
                 const altResult = await parseAllCells(pageCells, conflictDetected);
                 if (altResult.transactions.length > parseResult.transactions.length) {
-                    console.log(`[Orchestrator] Switching to content-detected bank "${conflictDetected}" (${altResult.transactions.length} tx) over confirmed "${bankType}" (${parseResult.transactions.length} tx)`);
-                    bankType = conflictDetected;
-                    parseResult = altResult;
-                    jobStore.update(jobId, { bankType });
+                    // Guard: don't switch when the confirmed parser already matches declared
+                    // totals well but the alternative is significantly off. This handles the
+                    // case where a payee mention (e.g. "Revolut" transfer inside a TSB statement)
+                    // triggers a false-positive content detection, and the alt parser happens to
+                    // find 1 extra spurious transaction with wrong totals.
+                    const nc = (s: string) => parseFloat((s || '').replace(/,/g, '') || '0') || 0;
+                    const sumIn  = (r: { transactions: { moneyIn?: string }[] }) =>
+                        r.transactions.reduce((s, t) => s + nc(t.moneyIn  || ''), 0);
+                    const sumOut = (r: { transactions: { moneyOut?: string }[] }) =>
+                        r.transactions.reduce((s, t) => s + nc(t.moneyOut || ''), 0);
+                    const st = parseResult.statementTotals;
+                    const confInDiff  = st?.moneyIn  != null ? Math.abs(sumIn(parseResult)  - st.moneyIn)  : Infinity;
+                    const confOutDiff = st?.moneyOut != null ? Math.abs(sumOut(parseResult) - st.moneyOut) : Infinity;
+                    const confMaxDiff = Math.max(confInDiff, confOutDiff);
+                    const altInDiff   = st?.moneyIn  != null ? Math.abs(sumIn(altResult)   - st.moneyIn)  : Infinity;
+                    const altOutDiff  = st?.moneyOut != null ? Math.abs(sumOut(altResult)  - st.moneyOut) : Infinity;
+                    const altMaxDiff  = Math.max(altInDiff, altOutDiff);
+                    const confirmedFits = confMaxDiff < 1 && altMaxDiff > confMaxDiff + 1;
+                    if (confirmedFits) {
+                        console.log(`[Orchestrator] Keeping confirmed bank "${bankType}" despite fewer tx — declared-totals fit better (conf diff=${confMaxDiff.toFixed(2)}, alt diff=${altMaxDiff.toFixed(2)})`);
+                    } else {
+                        console.log(`[Orchestrator] Switching to content-detected bank "${conflictDetected}" (${altResult.transactions.length} tx) over confirmed "${bankType}" (${parseResult.transactions.length} tx)`);
+                        bankType = conflictDetected;
+                        parseResult = altResult;
+                        jobStore.update(jobId, { bankType });
+                    }
                 } else {
                     console.log(`[Orchestrator] Keeping confirmed bank "${bankType}" (${parseResult.transactions.length} tx ≥ ${altResult.transactions.length} tx from "${conflictDetected}")`);
                 }
