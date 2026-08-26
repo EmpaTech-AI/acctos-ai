@@ -688,7 +688,14 @@ export function parse(cells: Cell[]): ParseResult {
             if (rawCarried && currentTxn && !currentTxn.balance) {
                 currentTxn.balance = normalizeBalance(rawCarried);
             }
-            continue;
+            // Azure DI sometimes merges "BALANCE BROUGHT/CARRIED FORWARD" with the next
+            // transaction's description into the same cell. When the row also carries a
+            // real transaction amount (c3=Out or c4=In), strip the forward-balance text
+            // from c2 and fall through so that transaction is captured.
+            const hasTxnAmt = isAmount((row.c3 || '').trim()) || isAmount((row.c4 || '').trim());
+            if (!hasTxnAmt) continue;
+            row.c2 = (row.c2 || '').replace(STRIP_DESC_RE, '').replace(/\s+/g, ' ').trim();
+            row.__skipBalanceForCurrentTxn = true;
         }
 
         if (isStatementFooterRow(row)) continue;
