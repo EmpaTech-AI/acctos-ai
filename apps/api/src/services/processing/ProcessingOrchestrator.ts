@@ -505,35 +505,46 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
                 conflictDetected !== confirmedBankType
             ) {
                 const altResult = await parseAllCells(pageCells, conflictDetected);
-                if (altResult.transactions.length > parseResult.transactions.length) {
-                    // Guard: don't switch when the confirmed parser already matches declared
-                    // totals well but the alternative is significantly off. This handles the
-                    // case where a payee mention (e.g. "Revolut" transfer inside a TSB statement)
-                    // triggers a false-positive content detection, and the alt parser happens to
-                    // find 1 extra spurious transaction with wrong totals.
-                    const nc = (s: string) => parseFloat((s || '').replace(/,/g, '') || '0') || 0;
-                    const sumIn  = (r: { transactions: { moneyIn?: string }[] }) =>
-                        r.transactions.reduce((s, t) => s + nc(t.moneyIn  || ''), 0);
-                    const sumOut = (r: { transactions: { moneyOut?: string }[] }) =>
-                        r.transactions.reduce((s, t) => s + nc(t.moneyOut || ''), 0);
-                    const st = parseResult.statementTotals;
-                    const confInDiff  = st?.moneyIn  != null ? Math.abs(sumIn(parseResult)  - st.moneyIn)  : Infinity;
-                    const confOutDiff = st?.moneyOut != null ? Math.abs(sumOut(parseResult) - st.moneyOut) : Infinity;
-                    const confMaxDiff = Math.max(confInDiff, confOutDiff);
-                    const altInDiff   = st?.moneyIn  != null ? Math.abs(sumIn(altResult)   - st.moneyIn)  : Infinity;
-                    const altOutDiff  = st?.moneyOut != null ? Math.abs(sumOut(altResult)  - st.moneyOut) : Infinity;
-                    const altMaxDiff  = Math.max(altInDiff, altOutDiff);
-                    const confirmedFits = confMaxDiff < 1 && altMaxDiff > confMaxDiff + 1;
+                const nc = (s: string) => parseFloat((s || '').replace(/,/g, '') || '0') || 0;
+                const sumIn  = (r: { transactions: { moneyIn?: string }[] }) =>
+                    r.transactions.reduce((s, t) => s + nc(t.moneyIn  || ''), 0);
+                const sumOut = (r: { transactions: { moneyOut?: string }[] }) =>
+                    r.transactions.reduce((s, t) => s + nc(t.moneyOut || ''), 0);
+                // Compare confirmed parser against its own declared totals
+                const st = parseResult.statementTotals;
+                const confInDiff  = st?.moneyIn  != null ? Math.abs(sumIn(parseResult)  - st.moneyIn)  : Infinity;
+                const confOutDiff = st?.moneyOut != null ? Math.abs(sumOut(parseResult) - st.moneyOut) : Infinity;
+                const confMaxDiff = Math.max(confInDiff, confOutDiff);
+                // Compare alt parser against confirmed's declared totals (same-bank false-positive guard)
+                const altVsConfInDiff  = st?.moneyIn  != null ? Math.abs(sumIn(altResult)  - st.moneyIn)  : Infinity;
+                const altVsConfOutDiff = st?.moneyOut != null ? Math.abs(sumOut(altResult) - st.moneyOut) : Infinity;
+                const altVsConfMaxDiff = Math.max(altVsConfInDiff, altVsConfOutDiff);
+                // Compare alt parser against its OWN declared totals (genuine-multi-bank detection)
+                const ast = altResult.statementTotals;
+                const altSelfInDiff  = ast?.moneyIn  != null ? Math.abs(sumIn(altResult)  - ast.moneyIn)  : Infinity;
+                const altSelfOutDiff = ast?.moneyOut != null ? Math.abs(sumOut(altResult) - ast.moneyOut) : Infinity;
+                const altSelfMaxDiff = Math.max(altSelfInDiff, altSelfOutDiff);
+                // Guard: don't switch when confirmed fits its declared totals but alt is way off.
+                const confirmedFits = confMaxDiff < 1 && altVsConfMaxDiff > confMaxDiff + 1;
+                // Also switch when alt verifies its own totals perfectly but conf has none —
+                // this handles genuine multi-bank batches where the second bank's filename
+                // gives no bank hint (generic) and both parsers yield the same tx count.
+                const confHasNoTotals = st?.moneyIn == null && st?.moneyOut == null;
+                const altVerifiedBetter = altSelfMaxDiff < 0.02 && confHasNoTotals;
+                if (altResult.transactions.length > parseResult.transactions.length || altVerifiedBetter) {
                     if (confirmedFits) {
-                        console.log(`[Orchestrator] Keeping confirmed bank "${bankType}" despite fewer tx — declared-totals fit better (conf diff=${confMaxDiff.toFixed(2)}, alt diff=${altMaxDiff.toFixed(2)})`);
+                        console.log(`[Orchestrator] Keeping confirmed bank "${bankType}" despite fewer/equal tx — declared-totals fit better (conf diff=${confMaxDiff.toFixed(2)}, alt diff=${altVsConfMaxDiff.toFixed(2)})`);
                     } else {
-                        console.log(`[Orchestrator] Switching to content-detected bank "${conflictDetected}" (${altResult.transactions.length} tx) over confirmed "${bankType}" (${parseResult.transactions.length} tx)`);
+                        const reason = altVerifiedBetter && !(altResult.transactions.length > parseResult.transactions.length)
+                            ? `alt verified own totals (diff=${altSelfMaxDiff.toFixed(2)}), conf has none`
+                            : `${altResult.transactions.length} tx vs ${parseResult.transactions.length} tx`;
+                        console.log(`[Orchestrator] Switching to content-detected bank "${conflictDetected}" (${reason}) over confirmed "${bankType}"`);
                         bankType = conflictDetected;
                         parseResult = altResult;
                         jobStore.update(jobId, { bankType });
                     }
                 } else {
-                    console.log(`[Orchestrator] Keeping confirmed bank "${bankType}" (${parseResult.transactions.length} tx ≥ ${altResult.transactions.length} tx from "${conflictDetected}")`);
+                    console.log(`[Orchestrator] Keeping confirmed bank "${bankType}" (${parseResult.transactions.length} tx ≥ ${altResult.transactions.length} tx from "${conflictDetected}", conf diff=${confMaxDiff === Infinity ? '∞' : confMaxDiff.toFixed(2)})`);
                 }
             }
             const { transactions: fileTransactions, statementTotals, ascending: fileAscending } = parseResult;
