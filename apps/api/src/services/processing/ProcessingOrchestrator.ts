@@ -606,11 +606,17 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
                 let cur = start;
                 let len = 1;
                 let tail = start;
+                // A file may only appear once per chain. Without this guard a file whose
+                // opening balance equals its own closing balance (e.g. a statement that
+                // parsed to 0 transactions) matches itself forever, the loop never ends,
+                // and the blocked event loop wedges the whole process.
+                const seen = new Set<typeof fileTotals[0]>([start]);
                 while (true) {
                     const curClose = cur.closingBalance;
                     if (curClose == null) break;
-                    const nxt = fileTotals.find(t => t.openingBalance != null && Math.round(t.openingBalance * 100) === Math.round(curClose * 100));
+                    const nxt = fileTotals.find(t => t.openingBalance != null && !seen.has(t) && Math.round(t.openingBalance * 100) === Math.round(curClose * 100));
                     if (!nxt) break;
+                    seen.add(nxt);
                     cur = nxt; tail = nxt; len++;
                 }
                 if (len > bestLen) { bestLen = len; bestFirst = start; bestLast = tail; }
