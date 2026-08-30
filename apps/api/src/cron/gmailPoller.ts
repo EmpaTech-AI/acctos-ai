@@ -10,6 +10,7 @@ import {
 import { startBatchProcessingJob, startProcessingJob, extractClientName } from '../services/processing/ProcessingOrchestrator.js';
 import { notifyUnsupportedAttachment } from '../services/processing/NotificationService.js';
 import { uploadOriginalsToDrive } from '../services/google/GoogleService.js';
+import { saveGmailHistoryId, loadGmailHistoryId, claimGmailMessage } from '../services/SupabaseService.js';
 import prisma from '../lib/prisma.js';
 
 // Build a tracking context from env vars — used to record usage for Gmail-triggered jobs.
@@ -55,14 +56,22 @@ async function processEmailMessage(
     message: { id: string; subject: string; from: string },
     processingMode: 'bank_statement' | 'vat',
 ): Promise<void> {
-    // Deduplicate: JavaScript is single-threaded so this Set check+add is atomic.
-    // If push and poll both call this for the same message, the first wins and the
-    // second returns here immediately.
+    // In-memory dedup: JS is single-threaded so Set check+add is atomic.
+    // Handles concurrent push+poll calls within the same process instance.
     if (processingMessageIds.has(message.id)) {
         console.log(`[GmailPoller] Message ${message.id} already being processed — skipping duplicate`);
         return;
     }
     processingMessageIds.add(message.id);
+
+    // DB dedup: survives service restarts. Inserts the message ID; fails on duplicate.
+    // Falls through on DB errors so in-memory guard still protects within a process.
+    const claimed = await claimGmailMessage(message.id);
+    if (!claimed) {
+        console.log(`[GmailPoller] Message ${message.id} already processed (DB record) — skipping`);
+        processingMessageIds.delete(message.id);
+        return;
+    }
 
     // Skip emails sent from our own system — result-delivery emails land in the
     // monitored inbox and must never trigger reprocessing.
@@ -163,11 +172,21 @@ export async function handleHistoryUpdate(newHistoryId: string): Promise<void> {
         return;
     }
 
+    // Anti-regression guard: Pub/Sub may re-deliver old notifications after a service
+    // restart (unacknowledged during shutdown). If the incoming historyId is not newer
+    // than our current cursor, skip it — processing it would regress the cursor and
+    // cause the NEXT real notification to re-query already-processed history.
+    if (BigInt(newHistoryId) <= BigInt(lastHistoryId)) {
+        console.log(`[GmailPush] Stale notification historyId=${newHistoryId} ≤ cursor=${lastHistoryId} — ignoring`);
+        return;
+    }
+
     // Advance the cursor BEFORE the async API call so that concurrent push
     // notifications that arrive while this one is awaiting getMessagesSince
     // will query from a later historyId and won't return the same messages.
     const fromHistoryId = lastHistoryId;
     lastHistoryId = newHistoryId;
+    saveGmailHistoryId(newHistoryId).catch(() => {}); // persist across restarts (fire-and-forget)
 
     let messages;
     try {
@@ -227,9 +246,12 @@ async function callWatch(): Promise<void> {
 
     try {
         const result = await watchInbox(topic);
-        lastHistoryId = result.historyId;
+        // Only set lastHistoryId from watch() if we don't already have a cursor loaded
+        // from the DB — we prefer the persisted cursor to avoid missing messages that
+        // arrived between the last push notification and the service restart.
+        if (!lastHistoryId) lastHistoryId = result.historyId;
         const expiresAt = new Date(Number(result.expiration)).toISOString();
-        console.log(`[GmailPush] watch() active — historyId=${result.historyId}, expires ${expiresAt}`);
+        console.log(`[GmailPush] watch() active — using historyId=${lastHistoryId}, expires ${expiresAt}`);
     } catch (e: any) {
         console.error(`[GmailPush] watch() failed: ${e.message}`);
     }
@@ -249,6 +271,14 @@ export async function initGmailWatch(): Promise<void> {
         return;
     }
     if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_REFRESH_TOKEN) return;
+
+    // Restore persisted historyId before calling watch() so we don't miss messages
+    // that arrived between the last push notification and this restart.
+    const persisted = await loadGmailHistoryId();
+    if (persisted) {
+        lastHistoryId = persisted;
+        console.log(`[GmailPush] Restored historyId=${persisted} from DB`);
+    }
 
     await resolveLabelIds();
     await callWatch();

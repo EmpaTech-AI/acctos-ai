@@ -219,12 +219,15 @@ router.post('/import', requireRole(...ADMIN_ROLES), upload.array('files', 20), a
         // Single file: use original path (supports Excel + PDF)
         // Multiple files: batch path (PDF only, sorts by date, one combined output)
         const jobId = files.length === 1
-            ? startProcessingJob(files[0].originalname, files[0].mimetype, files[0].buffer, tracking, processingMode)
+            ? startProcessingJob(files[0].originalname, files[0].mimetype, files[0].buffer, tracking, processingMode, undefined, undefined, true)
             : startBatchProcessingJob(
                 files.map(f => ({ filename: f.originalname, mimeType: f.mimetype, buffer: f.buffer })),
                 tracking,
                 bankHint,
                 processingMode,
+                undefined,
+                undefined,
+                true,
             );
 
         res.json({ success: true, jobId });

@@ -460,9 +460,14 @@ function parseNormal(cells: Cell[]): ParseResult {
             }
         }
 
-        // Active posting-date group: rows without a date inherit the last seen date
+        // Active posting-date group: rows without a date inherit the last seen date.
+        // Barclays statements include interest-rate tables whose first cell is a balance
+        // range (e.g. "£1 - £999,999" or ">£9,999,999+"). These are never valid dates;
+        // skip them before they can inherit an active posting date and become fake txns.
         if (parsedDate) {
             activePostingDate = parsedDate;
+        } else if (dateCell && /^[£>]/.test(dateCell)) {
+            continue;
         } else if (activePostingDate) {
             parsedDate = activePostingDate;
         }

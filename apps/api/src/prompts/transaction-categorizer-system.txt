@@ -84,12 +84,12 @@ OUTFLOW CATEGORY PRIORITY
 
 Apply in this order — first match wins:
 
-1. RENT       — if description contains: Rent, Rental, Landlord, Lettings, Letting Agent
+1. RENT       — if description starts with "Rent" or contains: Rental, Landlord, Lettings, Letting Agent. BRENT is NOT RENT (it is a place name).
 2. LOAN       — Loan repayment, Credit Agreement, Instalment, Finance, Klarna, Zopa, Lending
 3. HMRC       — HMRC, HM Revenue, VAT payment, PAYE, Corporation Tax, Self Assessment
 4. CASH       — ATM, Cash Machine, Cash Withdrawal, Cashpoint, Cash Dispensed
 5. PHONE      — mobile operator: EE, Vodafone, O2, Three, Lycamobile, Lebara, Giffgaff, Sky Mobile, BT Mobile, Virgin Mobile
-6. TRAVEL     — Uber, Bolt, TFL, Trainline, National Rail, EasyJet, Ryanair, Wizz Air, Eurostar, Parking, Fuel, Shell, BP, Esso
+6. TRAVEL     — Uber, Bolt, TFL, Trainline, National Rail, EasyJet, Ryanair, Wizz Air, Eurostar, Parking, Fuel, Shell, BP Connect, BP PLC, Esso, Arriva, National Express
 7. INSURANCE  — Hastings, Admiral, Aviva, AXA, Direct Line, Churchill, or description contains "Insurance"
 8. BILLS      — utilities: British Gas, EDF, Octopus, E.ON, Thames Water, Severn Trent; Council Tax; broadband: BT, Sky, Virgin Media, TalkTalk; TV Licence
 9. CHARGES    — BANK FEES ONLY: Overdraft Fee, Monthly Account Fee, Interest Charged, Returned Item Fee, Unpaid DD Fee, FX Fee, CHAPS Fee, Service Charge
@@ -149,16 +149,18 @@ TRAVEL
 All transport and travel: taxis, public transport, trains, flights, buses, fuel, parking.
 
 Brands/Keywords (match any):
-  Uber, Uber Trip, Uber Eats (if transport)
+  Uber, Uber Trip
   Bolt, Bolt Ridesharing
-  TFL, Transport for London, London Underground, London Bus
+  TFL, Transport for London, London Underground, London Bus, London Overground
   Trainline, National Rail, Avanti West Coast, CrossCountry, GWR, LNER, Southern, Thameslink
   EasyJet, Ryanair, British Airways, Wizz Air, Jet2, TUI Airways
   Kiwi.com, Skyscanner (flight booking)
   Eurostar, Heathrow Express, Gatwick Express
   National Express, Stagecoach, Megabus, Arriva (buses)
-  Parking, NCP, Q-Park, JustPark
-  Fuel, Shell, BP, Esso, Texaco, Jet (petrol stations)
+  Parking, NCP, Q-Park, JustPark, Pay At Pump, Payat Pump
+  Fuel, Shell, BP Connect, BP PLC, Esso, Texaco, Jet, MFG, Sainsburys Petrol, Asda Petrol, Tesco PFS (petrol stations)
+
+🚨 NOT TRAVEL: London, Uxbridge, Hounslow, Brent, Harrow or any other place name alone — a place name in a description does not make it TRAVEL unless it refers to a specific transport service or fuel station.
 
 Examples:
   "Uber Trip London"                → TRAVEL
@@ -166,6 +168,10 @@ Examples:
   "TFL Contactless"                 → TRAVEL
   "EasyJet Flight"                  → TRAVEL
   "Shell Fuel Station"              → TRAVEL
+  "Arriva Bus Tickets"              → TRAVEL
+  "Uxbridge Market"                 → OTHER (place name, not transport)
+  "Hounslow Halal Meat"             → OTHER (food shop)
+  "Brent Council Tax"               → BILLS (council tax)
 
 ──────────────────────────────────────────────
 INSURANCE
@@ -230,15 +236,20 @@ Bank_Transfer
 ──────────────────────────────────────────────
 Personal bank transfers, bill payments to individuals, and transfers to other accounts belonging to the same person.
 
+Bank payment prefixes: descriptions starting with "BP " (BP = Bill Payment in HSBC/NatWest) or "FT " (Faster Transfer) followed by a payee name are Bank_Transfer.
+
 Examples:
   "Bill Payment to John Smith"      → Bank_Transfer
   "Faster Payment to Sarah Jones"   → Bank_Transfer
+  "BP John Smith 12345678"          → Bank_Transfer (BP prefix = bill payment)
+  "FT Sarah Jones 20481234"         → Bank_Transfer (FT prefix = faster transfer)
   "Transfer to Joint Account"       → Bank_Transfer
   "Revolut Top Up"                  → Bank_Transfer (transfer to own Revolut)
   "Monzo Transfer"                  → Bank_Transfer
   "Bill Payment to Selam Curraj"    → Bank_Transfer
 
 NOT Bank_Transfer: payments to companies/businesses → use the appropriate category (TRAVEL, PHONE, OTHER, etc.)
+NOT Bank_Transfer: "BP Connect" or "BP PLC" → TRAVEL (BP petrol station, not a bill payment prefix)
 
 ──────────────────────────────────────────────
 OTHER

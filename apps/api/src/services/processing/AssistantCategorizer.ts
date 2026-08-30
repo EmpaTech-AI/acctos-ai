@@ -185,8 +185,8 @@ const PRE_RULES: Array<{ pattern: RegExp; category: string }> = [
     { pattern: /\bHMRC\b/,                                                                          category: 'HMRC'   },
     // PHONE — UK mobile operators (exact brand names)
     { pattern: /\b(EE LIMITED|EE LTD|EE MOBILE|VODAFONE|O2 UK|O2 MOBILE|THREE UK|THREE MOBILE|LYCAMOBILE|LEBARA MOBILE|GIFFGAFF|TALKMOBILE|SKY MOBILE|BT MOBILE|VIRGIN MOBILE|SMARTY)\b/i, category: 'PHONE' },
-    // TRAVEL — transport brands + fuel stations
-    { pattern: /\b(UBER|BOLT(?:\.EU| RIDESHARING)?|TFL |TRANSPORT FOR LONDON|TRAINLINE|NATIONAL RAIL|EASYJET|RYANAIR|WIZZ ?AIR|WIZZAIR|KIWI\.COM|EUROSTAR|NATIONAL EXPRESS|STAGECOACH|MEGABUS|HEATHROW EXPRESS|GATWICK EXPRESS|SHELL|BP |BP PLC|ESSO|TEXACO|TOTAL ENERGIES|GULF OIL)\b/i, category: 'TRAVEL' },
+    // TRAVEL — transport brands + fuel stations (BP/BP PLC removed — handled by DB vendor rules)
+    { pattern: /\b(UBER|BOLT(?:\.EU| RIDESHARING)?|TFL |TRANSPORT FOR LONDON|TRAINLINE|NATIONAL RAIL|EASYJET|RYANAIR|WIZZ ?AIR|WIZZAIR|KIWI\.COM|EUROSTAR|NATIONAL EXPRESS|STAGECOACH|MEGABUS|HEATHROW EXPRESS|GATWICK EXPRESS|SHELL|ESSO|TEXACO|TOTAL ENERGIES|GULF OIL)\b/i, category: 'TRAVEL' },
     // SALARY — outgoing salary/wage payments (before Bank_Transfer — salary keyword wins)
     { pattern: /\bsalar(?:y|ies)\b/i, category: 'SALARY' },
     // Bank_Transfer — inter-account transfers
@@ -545,9 +545,7 @@ export async function categorize(transactions: ParsedTransaction[], context?: { 
                 const idx = nextIdx++;
                 if (idx >= batches.length) break;
                 const batch = batches[idx];
-                console.log(`[Categorizer] Batch ${idx + 1}/${totalBatches} started — ${batch.length} transactions`);
                 batchResults[idx] = await categorizeBatch(batch, apiKey);
-                console.log(`[Categorizer] Batch ${idx + 1}/${totalBatches} done`);
             }
         };
         await Promise.all(Array.from({ length: parallelLimit }, worker));
@@ -574,15 +572,8 @@ export async function categorize(transactions: ParsedTransaction[], context?: { 
             // Find the category placed by AI (non-empty expense column)
             const placedCat = EXPENSE_CATS.filter(k => k !== 'INCOME')
                 .find(k => (result as any)[k] && (result as any)[k] !== '');
-            if (!placedCat || placedCat === 'OTHER') {
-                console.log(`[Categorizer] Signal "${signal}" skipped — category is ${placedCat ?? 'none'}`);
-                continue;
-            }
-            if (applyVendorRule(signal, vendorRules) !== null) {
-                console.log(`[Categorizer] Signal "${signal}" skipped — already in vendor rules`);
-                continue;
-            }
-            console.log(`[Categorizer] Learning signal "${signal}" → ${placedCat}`);
+            if (!placedCat || placedCat === 'OTHER') continue;
+            if (applyVendorRule(signal, vendorRules) !== null) continue;
             learnPromises.push(saveAiVendorRule(signal, placedCat));
         }
         console.log(`[Categorizer] Learning summary: ${signalCount} signal(s) from ${aiIndices.length} AI results → ${learnPromises.length} new rule(s)`);

@@ -206,6 +206,61 @@ export async function saveAiVendorRule(pattern: string, category: string): Promi
     }
 }
 
+// ── Gmail deduplication ────────────────────────────────────────────────────────
+
+/** Persist the Gmail history cursor so it survives service restarts. */
+export async function saveGmailHistoryId(historyId: string): Promise<void> {
+    const sb = getClient();
+    if (!sb) return;
+    try {
+        await sb.from('system_config').upsert(
+            { key: 'gmail_last_history_id', value: historyId, updated_at: new Date().toISOString() },
+            { onConflict: 'key' },
+        );
+    } catch (err: any) {
+        console.warn('[Supabase] saveGmailHistoryId failed:', err?.message);
+    }
+}
+
+/** Load the persisted Gmail history cursor. Returns null if not found or on error. */
+export async function loadGmailHistoryId(): Promise<string | null> {
+    const sb = getClient();
+    if (!sb) return null;
+    try {
+        const { data } = await sb
+            .from('system_config')
+            .select('value')
+            .eq('key', 'gmail_last_history_id')
+            .single();
+        return (data as any)?.value ?? null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Claim a Gmail message ID for processing by inserting it into processed_emails.
+ * Returns true  if the claim succeeded — first time we see this message.
+ * Returns false if it was already processed (unique constraint on message_id).
+ * Returns true  on DB error so processing can still proceed (in-memory dedup stays active).
+ */
+export async function claimGmailMessage(messageId: string): Promise<boolean> {
+    const sb = getClient();
+    if (!sb) return true; // DB unavailable — fall through to in-memory guard
+    try {
+        const { error } = await sb.from('processed_emails').insert({ message_id: messageId });
+        if (error) {
+            if ((error as any).code === '23505') return false; // unique violation = duplicate
+            console.warn('[Supabase] claimGmailMessage error:', error.message);
+            return true; // other DB error — proceed, in-memory dedup still active
+        }
+        return true;
+    } catch (err: any) {
+        console.warn('[Supabase] claimGmailMessage failed:', err?.message);
+        return true;
+    }
+}
+
 export async function listJobRecords(): Promise<Array<Record<string, any>>> {
     const sb = getClient();
     if (!sb) return [];

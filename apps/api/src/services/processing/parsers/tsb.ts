@@ -18,6 +18,24 @@ function parseSignedBalance(s: string): string {
     return n.toFixed(2);
 }
 
+function dateCmp(a: string, b: string): number {
+    const [ad, am, ay] = a.split('/').map(Number);
+    const [bd, bm, by] = b.split('/').map(Number);
+    return ay !== by ? ay - by : am !== bm ? am - bm : ad - bd;
+}
+
+function parseLabelDate(label: string): string {
+    // label is already lowercased, e.g. "balance on 01 june 2026"
+    const m = label.match(/balance\s+on\s+(\d{1,2})\s+([a-z]+)\s+(\d{2,4})/);
+    if (!m) return '';
+    const FULL: Record<string, string> = {
+        january:'jan', february:'feb', march:'mar', april:'apr', may:'may', june:'jun',
+        july:'jul', august:'aug', september:'sep', october:'oct', november:'nov', december:'dec',
+    };
+    const mon3 = FULL[m[2]] ?? m[2].slice(0, 3);
+    return parseDate(`${m[1]} ${mon3} ${m[3]}`);
+}
+
 function parseDate(s: string): string {
     s = normStr(s);
     // Web format: 2026-04-30
@@ -122,23 +140,28 @@ export function parse(cells: Cell[]): ParseResult {
     // Pre-scan: extract declared totals from TSB summary section (appears before transaction table).
     // TSB places a 2-column header block: col 0 = label, col 1 = value.
     // "Balance on <date>" appears twice — first = opening, second = closing.
-    let declaredOpen:     number | undefined;
-    let declaredClose:    number | undefined;
-    let declaredMoneyIn:  number | undefined;
-    let declaredMoneyOut: number | undefined;
+    // Guards prevent multi-account PDFs from overwriting first-account totals with later accounts'.
+    let declaredOpen:      number | undefined;
+    let declaredClose:     number | undefined;
+    let declaredMoneyIn:   number | undefined;
+    let declaredMoneyOut:  number | undefined;
+    let declaredCloseDate: string | undefined;
 
     for (const row of rows) {
         const label = normStr(row.cells.get(0) ?? '').toLowerCase();
         const raw   = row.cells.get(1) ?? '';
         if (label === 'money in') {
-            const v = parseMoney(raw); if (v) declaredMoneyIn  = parseFloat(v);
+            const v = parseMoney(raw); if (v && declaredMoneyIn === undefined) declaredMoneyIn = parseFloat(v);
         } else if (label === 'money out') {
-            const v = parseMoney(raw); if (v) declaredMoneyOut = parseFloat(v);
+            const v = parseMoney(raw); if (v && declaredMoneyOut === undefined) declaredMoneyOut = parseFloat(v);
         } else if (label.startsWith('balance on ')) {
             const v = parseMoney(raw);
             if (v) {
-                if (declaredOpen === undefined) declaredOpen  = parseFloat(v);
-                else                            declaredClose = parseFloat(v);
+                if (declaredOpen === undefined) { declaredOpen = parseFloat(v); }
+                else if (declaredClose === undefined) {
+                    declaredClose = parseFloat(v);
+                    declaredCloseDate = parseLabelDate(label);
+                }
             }
         }
     }
@@ -151,17 +174,52 @@ export function parse(cells: Cell[]): ParseResult {
     if (!headerFound) return { transactions: [], ...(statementTotals ? { statementTotals } : {}) };
 
     const transactions: ParsedTransaction[] = [];
+    let pendingDate = '';  // carries a date-only row's date to the next row with amounts
 
     for (const row of rows) {
         const c = row.cells;
+
+        // Re-detect column assignments on per-page headers. Azure DI sometimes inserts an empty
+        // phantom column on certain pages, shifting all money columns by 1. Guard against merged
+        // "Details Money Out (£)" cells by requiring that the matched cell doesn't include 'details'.
+        if (format === 'old') {
+            const rowVals = [...c.values()].map(v => v.toLowerCase());
+            const looksLikeHeader = rowVals.includes('date') &&
+                rowVals.some(v => !v.includes('details') && (v.includes('paid out') || v.includes('money out') || v.includes('paid in') || v.includes('money in')));
+            if (looksLikeHeader) {
+                for (const [col, v] of c.entries()) {
+                    const vl = v.toLowerCase();
+                    if (vl === 'date')                                                                            COL_DATE    = col;
+                    else if (vl === 'payment type')                                                               COL_TYPE    = col;
+                    else if (vl === 'details')                                                                    COL_DETAILS = col;
+                    else if (!vl.includes('details') && (vl.includes('paid out') || vl.includes('money out')))   COL_OUT     = col;
+                    else if (!vl.includes('details') && (vl.includes('paid in') || vl.includes('money in')))     COL_IN      = col;
+                    else if (vl.startsWith('balance'))                                                            COL_BAL     = col;
+                }
+                pendingDate = '';
+                continue;
+            }
+        }
+
         const dateRaw = c.get(COL_DATE)    ?? '';
         const rawType = c.get(COL_TYPE)    ?? '';
         const details = c.get(COL_DETAILS) ?? '';
         const paidOut = parseMoney(c.get(COL_OUT) ?? '');
         const paidIn  = parseMoney(c.get(COL_IN)  ?? '');
         const balance = parseSignedBalance(c.get(COL_BAL) ?? '');
-        const date    = parseDate(dateRaw);
+        let date      = parseDate(dateRaw);
         const type    = format === 'new' ? mapType(rawType) : rawType;
+
+        // Handle split-row transactions where Azure DI puts the date on one row and the
+        // amounts/description on the next. Carry the date forward via pendingDate.
+        if (format === 'old' && date && !paidIn && !paidOut && !balance && !details) {
+            pendingDate = date;
+            continue;
+        }
+        if (!date && pendingDate && (paidIn || paidOut)) {
+            date = pendingDate;
+        }
+        if (date) pendingDate = '';
 
         if (format === 'old' && !date && transactions.length > 0 && !paidIn && !paidOut) {
             // Only treat as description continuation when type is empty — page header rows
@@ -182,6 +240,25 @@ export function parse(cells: Cell[]): ParseResult {
         if (!paidIn && !paidOut) continue;
 
         transactions.push({ date, type, description: details, moneyIn: paidIn, moneyOut: paidOut, balance });
+    }
+
+    // Cross-period detection: TSB sometimes includes next-month direct debits in the current statement.
+    // When the last transaction(s) are dated on or after the statement closing date, the declared
+    // closing balance already includes those future DDs. The NEXT statement opens at the pre-DD balance,
+    // so we expose that pre-DD balance as chainClosingBalance for the chain gap check.
+    // Guard: only applies when the closing date is the 1st of the month — the only known TSB pattern
+    // for cross-period DDs. Non-1st closing dates (e.g. the 8th) are not cross-period.
+    const closingDay = declaredCloseDate ? parseInt(declaredCloseDate.split('/')[0], 10) : 0;
+    if (format === 'old' && statementTotals && declaredCloseDate && closingDay === 1 && transactions.length > 0) {
+        let crossIdx = transactions.length;
+        for (let i = transactions.length - 1; i >= 0; i--) {
+            if (dateCmp(transactions[i].date, declaredCloseDate) < 0) break;
+            crossIdx = i;
+        }
+        if (crossIdx > 0 && crossIdx < transactions.length) {
+            const preCrossBal = parseFloat(transactions[crossIdx - 1].balance);
+            if (isFinite(preCrossBal)) statementTotals.chainClosingBalance = preCrossBal;
+        }
     }
 
     // 'old' format (scanned, DD MMM YY dates) → oldest first; 'new' format (web, YYYY-MM-DD) → newest first

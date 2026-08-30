@@ -13,6 +13,12 @@ type JobStatus = 'queued' | 'processing' | 'completed' | 'failed';
 type StageKey = 'upload' | 'classify' | 'extract' | 'parse' | 'categorize' | 'output';
 type StageState = 'idle' | 'active' | 'completed' | 'failed';
 
+interface AdminIssue {
+    level: 'warning' | 'error';
+    title: string;
+    details?: string;
+}
+
 interface JobSummary {
     moneyIn?:          number;
     moneyOut?:         number;
@@ -44,6 +50,8 @@ interface Job {
     totalFiles?: number;
     error?: string;
     summary?: JobSummary | null;
+    adminImport?: boolean;
+    adminIssues?: AdminIssue[];
 }
 
 interface RecentJob {
@@ -449,6 +457,33 @@ function SummaryInline({ summary: s }: { summary: JobSummary }) {
     );
 }
 
+function AdminIssuesPanel({ issues }: { issues: AdminIssue[] }) {
+    return (
+        <div style={{
+            marginTop: '0.75rem', padding: '0.65rem 0.85rem',
+            background: 'rgba(251,191,36,0.06)', borderRadius: '0.6rem',
+            border: '1px solid rgba(251,191,36,0.2)',
+            display: 'flex', flexDirection: 'column', gap: '0.35rem',
+        }}>
+            <span style={{ fontSize: '0.68rem', fontWeight: 700, color: 'rgba(251,191,36,0.7)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '0.1rem' }}>
+                Admin notes
+            </span>
+            {issues.map((issue, i) => (
+                <div key={i}>
+                    <div style={{ fontSize: '0.74rem', color: issue.level === 'error' ? '#f87171' : '#fbbf24', fontWeight: 600 }}>
+                        {issue.level === 'error' ? '✗' : '⚠'} {issue.title}
+                    </div>
+                    {issue.details && (
+                        <div style={{ fontSize: '0.69rem', color: 'var(--text-muted)', marginLeft: '1rem', marginTop: '0.1rem', lineHeight: 1.4 }}>
+                            {issue.details}
+                        </div>
+                    )}
+                </div>
+            ))}
+        </div>
+    );
+}
+
 // ── Main component ───────────────────────────────────────────────────────────
 
 export default function ImportFile() {
@@ -512,7 +547,7 @@ export default function ImportFile() {
                     const j: Job = { id: active.id, filename: active.filename, ...res.data.job };
                     if (j.status === 'completed') {
                         clearActiveJob();
-                        addToRecent(j);
+                        if (!j.adminImport) addToRecent(j);
                         setJob(j);
                     } else if (j.status === 'failed') {
                         clearActiveJob();
@@ -547,7 +582,7 @@ export default function ImportFile() {
                     if (updated.status === 'completed' || updated.status === 'failed') {
                         if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
                         clearActiveJob();
-                        if (updated.status === 'completed') addToRecent(updated);
+                        if (updated.status === 'completed' && !updated.adminImport) addToRecent(updated);
                     } else if (!pollRef.current) {
                         startPolling(j.id);
                     }
@@ -686,7 +721,7 @@ export default function ImportFile() {
                     clearInterval(pollRef.current!);
                     pollRef.current = null;
                     clearActiveJob();
-                    if (j.status === 'completed') addToRecent(j);
+                    if (j.status === 'completed' && !j.adminImport) addToRecent(j);
                     return;
                 }
             } catch { /* ignore transient errors */ }
@@ -858,15 +893,19 @@ export default function ImportFile() {
                                     ✓ Complete — {job.transactionCount} transactions extracted
                                 </span>
                                 {job.summary && <SummaryPanel summary={job.summary} />}
+                                {job.adminIssues && job.adminIssues.length > 0 && <AdminIssuesPanel issues={job.adminIssues} />}
                             </div>
                         )}
                         {isFailed && (
-                            <span style={{ fontSize: '0.75rem', color: '#ef4444' }}>
-                                {job.currentStage
-                                    ? `Failed at the ${job.currentStage.charAt(0).toUpperCase() + job.currentStage.slice(1)} stage`
-                                    : 'Processing failed'
-                                } — hover the red icon for more details
-                            </span>
+                            <div>
+                                <span style={{ fontSize: '0.75rem', color: '#ef4444' }}>
+                                    {job.currentStage
+                                        ? `Failed at the ${job.currentStage.charAt(0).toUpperCase() + job.currentStage.slice(1)} stage`
+                                        : 'Processing failed'
+                                    } — hover the red icon for more details
+                                </span>
+                                {job.adminIssues && job.adminIssues.length > 0 && <AdminIssuesPanel issues={job.adminIssues} />}
+                            </div>
                         )}
                     </div>
                 </div>

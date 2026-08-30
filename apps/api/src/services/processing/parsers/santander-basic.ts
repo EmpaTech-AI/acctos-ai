@@ -499,6 +499,20 @@ export function parse(cells: Cell[]): ParseResult {
             if (!current.balance && extraBalance !== null) {
                 current.balance = balanceToString(extraBalance);
             }
+
+            // Azure DI sometimes wraps a transaction across two rows: the date row has the
+            // date and description but no amounts, and the continuation row carries the amounts.
+            // Pick them up here so the transaction isn't silently dropped by flush().
+            if (!current.moneyIn && !current.moneyOut) {
+                if (moneyInVal !== null || moneyOutVal !== null) {
+                    if (moneyInVal  !== null) current.moneyIn  = numberToAmountString(moneyInVal);
+                    if (moneyOutVal !== null) current.moneyOut = numberToAmountString(moneyOutVal);
+                } else if (amountVal !== null) {
+                    const cls = classifyAmount(amountVal, balanceVal, prevBalance, current.description ?? '', direction);
+                    current.moneyIn  = cls.moneyIn;
+                    current.moneyOut = cls.moneyOut;
+                }
+            }
         }
     }
 
