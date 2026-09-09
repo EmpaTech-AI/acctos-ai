@@ -79,3 +79,7 @@ test_fixtures/**/*.pdf
 
 # Azure DI cache dumps written by debug runs (contain client data)
 apps/api/*.cache.json
+
+# Per-developer Claude Code overrides. settings.json is the shared project file;
+# settings.local.json is personal and machine-specific, so it must not be tracked.
+.claude/settings.local.json
