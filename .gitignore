@@ -76,3 +76,6 @@ apps/api/test-hsbc-reference/
 # Parser test fixtures with client data
 apps/api/src/services/processing/template-bank-statement.ORIGINAL.xlsx
 test_fixtures/**/*.pdf
+
+# Azure DI cache dumps written by debug runs (contain client data)
+apps/api/*.cache.json
