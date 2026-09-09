@@ -11,7 +11,7 @@ import {
 // Strips Barclays legal, interest-rate, and contact-section text.
 // Uses \s* (not \s+) so it truncates even when the footer starts at position 0
 // (standalone footer cell, not just appended continuation text).
-const FOOTER_TRUNCATE_RE = /\s*(?:if\s+your\s+account\s+pays\s+interest|the\s+statement\s+balance\s+or\s+the\s+cleared\s+balance|if\s+you\s+use\s+your\s+overdraft\s+facilit|if\s+you\s+need\s+to\s+transfer\s+money\s+between\s+countries|barclays\.co\.uk\/|(?:our\s+)?bank\s+charges\s+explained|tailor\s+the\s+alerts\s+you\s+receive|you\s+can\s+also\s+tailor\s+the\s+alerts|if\s+you\s+don.t\s+get\s+these\s+messages|(?:in\s+the\s+uk[)\s]|we.ll\s+charge\s+you\s+a\s+\d)|0345\s+7\s+345\s+345|open\s+24\/7\s+including\s+holidays|from\s+abroad\s+\+44|write\s+to\s+us\s+barclays|(?:names?\s+are\s+)?part\s+of\s+barclays|barclays\s+business\s+banking[,\s]+barclays\s+premier|barclays\s+premier\s+banking).*/i;
+const FOOTER_TRUNCATE_RE = /\s*(?:if\s+your\s+account\s+pays\s+interest|the\s+statement\s+balance\s+or\s+the\s+cleared\s+balance|if\s+you\s+use\s+your\s+overdraft\s+facilit|if\s+you\s+need\s+to\s+transfer\s+money\s+between\s+countries|barclays\.co\.uk\/|(?:our\s+)?bank\s+charges\s+explained|tailor\s+the\s+alerts\s+you\s+receive|you\s+can\s+also\s+tailor\s+the\s+alerts|if\s+you\s+don.t\s+get\s+these\s+messages|(?:in\s+the\s+uk[)\s]|we.ll\s+charge\s+you\s+a\s+\d)|0345\s+7\s+345\s+345|open\s+24\/7\s+including\s+holidays|from\s+abroad\s+\+44|write\s+to\s+us\s+barclays|(?:names?\s+are\s+)?part\s+of\s+barclays|barclays\s+business\s+banking[,\s]+barclays\s+premier|barclays\s+premier\s+banking|once\s+a\s+calendar\s+year\s+usually\s+with\s+your\s+account\s+statement).*/i;
 
 function stripFooterText(desc: string): string {
     return normStr(desc.replace(FOOTER_TRUNCATE_RE, ''));
@@ -25,7 +25,7 @@ const MONTH_MAP: Record<string, number> = {
 };
 
 const SKIP_RE          = /\b(start\s+balance|opening\s+balance|balance\s+brought\s+forward|brought\s+forward|starting\s+balance)\b/i;
-const FOOTER_RE        = /\b(if\s+you\s+have\s+a\s+problem\s+with\s+your|compensation\s+to\s+depositors|financial\s+services\s+compensation\s+scheme|fscs\s+protect|protected\s+by\s+the\s+fscs|depositor\s+protection|transferring\s+money\s+between\s+countries|most\s+depositors|financial\s+ombudsman\s+service|credit\s+interest\s+rate.*shown\s+on\s+your\s+statement|unarranged\s+borrowing\s+rate|part\s+of\s+barclays\s*[:,]|names?\s+are\s+part\s+of\s+barclays|barclays\s+business\s+banking[,\s]+barclays\s+premier|barclays\s+premier\s+banking[,\s]+barclays\s+wealth|tesco\s+bank\s+(?:are\s+all\s+trading|tel[\s:])|if\s+your\s+account\s+pays\s+interest|the\s+statement\s+balance\s+or\s+the\s+cleared\s+balance|if\s+you\s+use\s+your\s+overdraft\s+facilit|if\s+you\s+need\s+to\s+transfer\s+money\s+between\s+countries|barclays\.co\.uk\/|bank\s+charges\s+explained|tailor\s+the\s+alerts\s+you\s+receive|if\s+you\s+don.t\s+get\s+these\s+messages|we.ll\s+charge\s+you\s+a\s+\d|our\s+main\s+number\s+\d|lost\s+and\s+stolen\s+cards|online\s+banking\s+help|open\s+24\/7\s+including\s+holidays|from\s+abroad\s+\+44|write\s+to\s+us\s+barclays)\b/i;
+const FOOTER_RE        = /\b(if\s+you\s+have\s+a\s+problem\s+with\s+your|compensation\s+to\s+depositors|financial\s+services\s+compensation\s+scheme|fscs\s+protect|protected\s+by\s+the\s+fscs|depositor\s+protection|transferring\s+money\s+between\s+countries|most\s+depositors|financial\s+ombudsman\s+service|credit\s+interest\s+rate.*shown\s+on\s+your\s+statement|unarranged\s+borrowing\s+rate|part\s+of\s+barclays\s*[:,]|names?\s+are\s+part\s+of\s+barclays|barclays\s+business\s+banking[,\s]+barclays\s+premier|barclays\s+premier\s+banking[,\s]+barclays\s+wealth|tesco\s+bank\s+(?:are\s+all\s+trading|tel[\s:])|if\s+your\s+account\s+pays\s+interest|the\s+statement\s+balance\s+or\s+the\s+cleared\s+balance|if\s+you\s+use\s+your\s+overdraft\s+facilit|if\s+you\s+need\s+to\s+transfer\s+money\s+between\s+countries|barclays\.co\.uk\/|bank\s+charges\s+explained|tailor\s+the\s+alerts\s+you\s+receive|if\s+you\s+don.t\s+get\s+these\s+messages|we.ll\s+charge\s+you\s+a\s+\d|our\s+main\s+number\s+\d|lost\s+and\s+stolen\s+cards|online\s+banking\s+help|open\s+24\/7\s+including\s+holidays|from\s+abroad\s+\+44|write\s+to\s+us\s+barclays|once\s+a\s+calendar\s+year\s+usually\s+with\s+your\s+account\s+statement)\b/i;
 const CARRIED_FWD_RE   = /\b(balance\s+carried\s+forward|carried\s+forward)\b/i;
 const TOTAL_RE         = /\b(total\s+payments[\/\\]receipts|total\s+payments|end\s+balance)\b/i;
 const NEW_TXN_RE       = /^(card\s+purchase|card\s+payment|internet\s+banking\s+transfer|on-line\s+banking\s+bill\s+payment|giro\s+direct\s+credit|direct\s+credit|atm\s+cash\s+machine|cash\s+machine\s+withdrawal|direct\s+debit|standing\s+order|refund\s+from|transfer\s+from|asd\s+withdrawal)\b/i;
@@ -425,6 +425,14 @@ function parseNormal(cells: Cell[]): ParseResult {
         if (moneyOut !== null && Math.abs(moneyOut) > MAX_SANE_AMOUNT) moneyOut = null;
         if (balance  !== null && Math.abs(balance)  > MAX_SANE_AMOUNT) balance  = null;
 
+        // Azure DI column-shift guard: each Barclays row is either a credit OR a debit,
+        // never both simultaneously. When both moneyIn and moneyOut are positive, the larger
+        // value is the running balance that Azure DI placed in the moneyIn column slot instead
+        // of the balance column (happens when the PDF table has one fewer detected column).
+        if (moneyIn !== null && moneyIn > 0 && moneyOut !== null && moneyOut > 0) {
+            if (moneyIn > moneyOut) { balance = balance ?? moneyIn; moneyIn = null; }
+        }
+
         const movement = (moneyIn ?? 0) > 0 || (moneyOut ?? 0) > 0;
 
         // Skip rows with unreasonably large amounts (footnotes, phone numbers, etc.)
@@ -502,9 +510,22 @@ function parseNormal(cells: Cell[]): ParseResult {
         if (!dateCell && !desc && (moneyIn !== null || moneyOut !== null || balance !== null)) {
             if (physical.length > 0) {
                 const prev = physical[physical.length - 1];
-                if (!prev.moneyIn  && moneyIn  !== null) prev.moneyIn  = moneyIn;
-                if (!prev.moneyOut && moneyOut !== null) prev.moneyOut = moneyOut;
-                if (balance !== null) prev.balance = balance;
+                const hasAmount = moneyIn !== null || moneyOut !== null;
+                const mergedIn  = !prev.moneyIn  && moneyIn  !== null;
+                const mergedOut = !prev.moneyOut && moneyOut !== null;
+                if (!hasAmount) {
+                    // Balance-only: update the running balance on the previous row.
+                    if (balance !== null) prev.balance = balance;
+                } else if (mergedIn || mergedOut) {
+                    if (mergedIn)  prev.moneyIn  = moneyIn;
+                    if (mergedOut) prev.moneyOut = moneyOut;
+                    if (balance !== null) prev.balance = balance;
+                } else if (parsedDate) {
+                    // Amount couldn't merge (prev already has that column): Azure DI placed
+                    // the amount on its own row because the description was merged into the
+                    // preceding cell. Emit it as a new transaction with the inherited date.
+                    physical.push({ date: parsedDate, desc: '', moneyIn, moneyOut, balance });
+                }
             } else if (balance !== null) {
                 initialBalance = balance;
             }

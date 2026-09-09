@@ -390,26 +390,27 @@ async function callResponses(indexed: object[], apiKey: string, attempt = 0): Pr
         }),
     });
 
-    if (!res.ok && attempt < MAX_RETRIES) {
-        if (res.status === 429) {
-            const body = await res.clone().json().catch(() => ({})) as any;
-            const code = body?.error?.code as string | undefined;
-            if (code === 'insufficient_quota') {
-                openAIQuotaExhausted = true;
-                throw new QuotaExhaustedError();
-            }
+    if (!res.ok && res.status === 429) {
+        const body = await res.clone().json().catch(() => ({})) as any;
+        const code = body?.error?.code as string | undefined;
+        if (code === 'insufficient_quota') {
+            openAIQuotaExhausted = true;
+            throw new QuotaExhaustedError();
+        }
+        if (attempt < MAX_RETRIES) {
             const retryAfter = Number(res.headers.get('retry-after') || '0');
             const waitMs = retryAfter > 0 ? retryAfter * 1000 : Math.min(60000 * (attempt + 1), 120000);
             console.warn(`[Categorizer] OpenAI 429 — waiting ${Math.round(waitMs / 1000)}s (attempt ${attempt + 1}/${MAX_RETRIES})...`);
             await new Promise(r => setTimeout(r, waitMs));
             return callResponses(indexed, apiKey, attempt + 1);
         }
-        if (res.status >= 500) {
-            const waitMs = 3000 * (attempt + 1);
-            console.warn(`[Categorizer] OpenAI ${res.status} — retrying after ${waitMs / 1000}s (attempt ${attempt + 1}/${MAX_RETRIES})...`);
-            await new Promise(r => setTimeout(r, waitMs));
-            return callResponses(indexed, apiKey, attempt + 1);
-        }
+    }
+
+    if (!res.ok && res.status >= 500 && attempt < MAX_RETRIES) {
+        const waitMs = 3000 * (attempt + 1);
+        console.warn(`[Categorizer] OpenAI ${res.status} — retrying after ${waitMs / 1000}s (attempt ${attempt + 1}/${MAX_RETRIES})...`);
+        await new Promise(r => setTimeout(r, waitMs));
+        return callResponses(indexed, apiKey, attempt + 1);
     }
 
     return res;
@@ -430,6 +431,10 @@ async function categorizeBatch(batch: object[], apiKey: string): Promise<Categor
 
     if (!res.ok) {
         const errBody = await res.json().catch(() => ({})) as any;
+        if (errBody?.error?.code === 'insufficient_quota') {
+            openAIQuotaExhausted = true;
+            return categorizeBatchWithClaude(batch);
+        }
         throw new Error(`OpenAI API error ${res.status}: ${errBody?.error?.message ?? ''}`);
     }
 
