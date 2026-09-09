@@ -37,6 +37,12 @@ export interface FileSummary {
     openingBalance?: number;
     closingBalance?: number;
     chainClosingBalance?: number;
+    /**
+     * Earliest transaction date in the file as a sortable YYYYMMDD number.
+     * Used to order statements chronologically when the balance chain breaks into
+     * several disconnected runs; undefined when no transaction date could be parsed.
+     */
+    periodStart?: number;
 }
 
 export interface ProcessingJob {

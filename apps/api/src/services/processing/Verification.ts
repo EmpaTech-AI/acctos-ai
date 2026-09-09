@@ -195,6 +195,22 @@ export interface ChainVerification {
     gaps: ChainGap[];             // per-period: file[N].closing vs file[N+1].opening
 }
 
+/**
+ * Earliest transaction date in a set, as a sortable YYYYMMDD number.
+ * ParsedTransaction.date is DD/MM/YYYY by contract (see parsers/shared.ts).
+ * Returns undefined when no date could be parsed.
+ */
+export function earliestTransactionDate(transactions: { date: string }[]): number | undefined {
+    let min: number | undefined;
+    for (const t of transactions) {
+        const m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec((t.date ?? '').trim());
+        if (!m) continue;
+        const key = Number(m[3]) * 10000 + Number(m[2]) * 100 + Number(m[1]);
+        if (min === undefined || key < min) min = key;
+    }
+    return min;
+}
+
 /** Return all permutations of an array. Safe for n ≤ 7 (5040 max). */
 function permutations<T>(arr: T[]): T[][] {
     if (arr.length <= 1) return [arr];
@@ -211,15 +227,19 @@ function permutations<T>(arr: T[]): T[][] {
  *
  * 1. Build connected chains by matching each file's closingBalance to the next file's
  *    openingBalance — the internal order of connected chains is unambiguous.
- * 2. When multiple chains/isolated files exist (gap in the statement set), use
- *    permutation search: try every ordering of the chain segments and pick the one
- *    that minimises |actualClosing − expectedClosing|. With the correct chronological
- *    order the gap is either zero (complete set) or the true missing-statement amount
- *    (smallest possible diff). This replaces the previous "longest first, asc opening"
- *    tiebreaker which was wrong for accounts with net outflow submitted in reverse order.
+ * 2. When multiple chains/isolated files exist (gap in the statement set), order the
+ *    segments by statement date (FileSummary.periodStart). Dates are authoritative:
+ *    they put the segments in real chronological order, so the reported gap is the
+ *    true missing-statement amount and it is attributed to the correct pair of files.
+ * 3. Only when dates are unavailable for some segment, fall back to permutation search
+ *    on the balance residual, bounded to ≤ 7 segments (5040 perms), then to
+ *    longest-chain-first with descending opening balance.
  *
- * Permutation search is bounded to ≤ 7 independent chains (5040 perms); beyond that it
- * falls back to longest-chain-first with descending opening balance (net-outflow default).
+ * Note on the fallback: minimising |actualClosing − expectedClosing| is the opposite of
+ * what a gap report wants. It picks whichever arrangement makes the books look closest to
+ * balanced, which understates the discrepancy and names the wrong file boundary — on MM19
+ * it reported £100.85 between APR-26 and APR-25 when the real gap was £1,866.93 between
+ * MAY-25 and JUL-25. It survives only as a last resort for date-less inputs.
  */
 function sortByBalanceChain(files: FileSummary[], totalIn = 0, totalOut = 0): FileSummary[] {
     if (files.length <= 1) return files;
@@ -263,9 +283,24 @@ function sortByBalanceChain(files: FileSummary[], totalIn = 0, totalOut = 0): Fi
 
     if (chains.length === 1) return chains[0];
 
-    // Permutation search: pick the chain ordering that minimises the gap between
-    // actual and expected closing balance. This finds the correct chronological order
-    // regardless of whether the account balance is increasing or decreasing.
+    // Preferred: order the disconnected segments by statement date.
+    const segmentDate = (chain: FileSummary[]): number | undefined => {
+        let min: number | undefined;
+        for (const f of chain) {
+            if (f.periodStart == null) continue;
+            if (min === undefined || f.periodStart < min) min = f.periodStart;
+        }
+        return min;
+    };
+    const dated = chains.map(chain => ({ chain, date: segmentDate(chain) }));
+    if (dated.every(d => d.date !== undefined)) {
+        dated.sort((a, b) => a.date! - b.date!);
+        return dated.flatMap(d => d.chain);
+    }
+
+    // Fallback for date-less input: pick the chain ordering that minimises the gap
+    // between actual and expected closing balance. See the note in the doc comment —
+    // this understates real gaps, so it is only used when dates cannot be derived.
     const gapFor = (perm: FileSummary[][]): number => {
         const flat = perm.flat();
         const open  = flat.find(f => f.openingBalance != null)?.openingBalance;

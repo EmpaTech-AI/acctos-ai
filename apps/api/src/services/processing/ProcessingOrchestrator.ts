@@ -9,7 +9,7 @@ import { categorize, CategorizedTransaction } from './AssistantCategorizer.js';
 import { parseExcel } from './ExcelParser.js';
 import { buildPdfOutputExcel, buildExcelOutputExcel, buildVatOutputExcel, VatStats } from './ExcelOutputBuilder.js';
 import { Cell, ParsedTransaction, ParseResult } from './parsers/shared.js';
-import { computeVerification, applyCatVerification, logVerificationSummary, computeChainVerification } from './Verification.js';
+import { computeVerification, applyCatVerification, logVerificationSummary, computeChainVerification, earliestTransactionDate } from './Verification.js';
 import { notifyParserError, notifyChainGap, notifyJobFailed, notifyInsufficientFiles, notifyDuplicatesRemoved, notifyProcessingComplete, notifyTeamIssuesSummary, notifyClientIssuesSummary, notifyUnknownBank, ClientIssueItem, BankSummary } from './NotificationService.js';
 import { JobSummary, AdminIssue } from './JobStore.js';
 import {
@@ -611,6 +611,7 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
                 openingBalance:      fileOpeningBalance,
                 closingBalance:      fileClosingBalance,
                 chainClosingBalance: statementTotals?.chainClosingBalance,
+                periodStart:         earliestTransactionDate(fileTransactions),
             });
             if (statementTotals) {
                 fileTotals.push(statementTotals);
