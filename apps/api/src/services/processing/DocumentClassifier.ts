@@ -32,11 +32,13 @@ export function classify(filename: string, mimeType: string): Classification {
 }
 
 function detectFormat(lower: string, mime: string): FileFormat {
-    if (lower.endsWith('.pdf') || mime.includes('pdf')) return 'pdf';
-    if (lower.endsWith('.xlsx') || lower.endsWith('.xls') || lower.endsWith('.csv')
-        || mime.includes('spreadsheet') || mime.includes('excel') || mime.includes('csv')) {
-        return 'excel';
-    }
+    // An explicit extension outranks the mimeType: mime comes from email headers or
+    // Drive metadata and is often wrong. A genuine .xlsx statement arriving labelled
+    // application/pdf was being sent down the PDF/assistant path instead of parseExcel.
+    if (lower.endsWith('.xlsx') || lower.endsWith('.xls') || lower.endsWith('.csv')) return 'excel';
+    if (lower.endsWith('.pdf')) return 'pdf';
+    if (mime.includes('spreadsheet') || mime.includes('excel') || mime.includes('csv')) return 'excel';
+    if (mime.includes('pdf')) return 'pdf';
     return 'pdf'; // default to PDF
 }
 

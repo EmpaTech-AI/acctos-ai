@@ -96,7 +96,14 @@ async function processEmailMessage(
 
     try {
         const attachments = await getSupportedAttachments(message.id);
-        const pdfs = attachments.filter(a => a.mimeType === 'application/pdf' || a.filename.toLowerCase().endsWith('.pdf'));
+        // An .xlsx/.xls name is never a PDF, whatever the mimeType claims. Senders'
+        // mail clients mislabel spreadsheets as application/pdf, which put the same
+        // attachment in both lists below; since the pdfs branch is checked first, a
+        // real Excel statement was sent to Azure DI instead of parseExcel.
+        const pdfs = attachments.filter(a =>
+            !/\.xlsx?$/i.test(a.filename)
+            && (a.mimeType === 'application/pdf' || a.filename.toLowerCase().endsWith('.pdf')),
+        );
 
         // Exclude already-processed output files (e.g. *_processed.xlsx sent back by the client)
         const isProcessedOutput = (a: { filename: string }) => a.filename.toLowerCase().endsWith('_processed.xlsx');
