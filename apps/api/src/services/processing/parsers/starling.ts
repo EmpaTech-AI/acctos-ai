@@ -30,26 +30,118 @@ function isHeaderRow(cells: string[]): boolean {
     );
 }
 
-// Detect 6-col vs 5-col from header: 6-col has separate "in" and "out" columns
-function detectLayout(headerCells: Map<number, string>): '6col' | '5col' {
-    let hasIn = false;
-    let hasOut = false;
-    for (const v of headerCells.values()) {
-        const l = v.toLowerCase();
-        if ((l === 'in' || l.includes('money in')) && !l.includes('transaction')) hasIn = true;
-        if ((l === 'out' || l.includes('money out')) && !l.includes('transaction')) hasOut = true;
-    }
-    return hasIn && hasOut ? '6col' : '5col';
+/**
+ * A cell that holds a money value, as a magnitude, or null when it does not.
+ *
+ * `parseMoney` alone is NOT safe for deciding whether a cell *is* money: it strips
+ * every non-digit and then reads Number(''), which is 0. It answers 0 for "Variable"
+ * and "%AER", and 1 for a stray reference fragment like "Ref 1". Layout detection
+ * reads cells that routinely contain exactly that kind of text, and mistaking one
+ * for a balance is the misdetection this module exists to prevent. So require the
+ * whole cell to look like a money token before trusting the parse.
+ *
+ * The two decimal places are required deliberately. Without them a bare integer —
+ * a payment reference, a page number, a year, a masked card fragment — reads as a
+ * balance, and one such cell in col 5 of a dated row is enough to swap the balance
+ * column for a whole page. That particular corruption leaves Money In and Money Out
+ * untouched, so the declared-totals check still passes and nothing downstream
+ * notices. Statement money on these documents is always printed to 2dp.
+ *
+ * Returns the magnitude: `parseMoney` signs DR/OD cells negative, and layout only
+ * cares about presence and non-zero-ness, never direction.
+ */
+const MONEY_CELL = new RegExp(
+    '^[-+]?\\s*[£$€]?\\s*-?(?:' +
+        '\\d{1,3}(?:\\s*,\\s*\\d{3})+' +   // 1,604 / "1, 604" (Azure DI injects spaces)
+        '|\\d+' +                           // 1604
+    ')\\.\\d{2}\\s*(?:DR|OD|CR)?$',
+    'i',
+);
+
+function cellAmount(raw: string): number | null {
+    const s = normStr(raw);
+    if (!MONEY_CELL.test(s)) return null;
+    const n = parseMoney(s);
+    return n === null ? null : Math.abs(n);
 }
 
-function isInterestSection(cellValues: string[]): boolean {
-    const t = cellValues.join(' ').toLowerCase();
-    return (
-        t.includes('interest rate paid on') ||
-        t.includes('%aer') ||
-        t.includes('%gross') ||
-        t.includes('interest rate charged')
-    );
+/**
+ * Decide the column layout for one page-group.
+ *
+ * Only *transaction* rows vote. A row is a transaction row when col 0 parses as a
+ * date — which excludes the interest-rate disclosure table Starling prints under
+ * the last page's transactions, the legal footer, and the summary box.
+ *
+ * That exclusion is the point. The disclosure table is 6 columns wide on every
+ * Starling statement, so a plain max-column scan over the page reports 6col for a
+ * 5col transaction page, and the parser then reads col 3 (the single amount
+ * column) as money IN and col 4 (the running balance) as money OUT. Seen in the
+ * field: a monthly statement whose Money In came out overstated and Money Out
+ * understated, while its closing balance still reconciled, so nothing downstream
+ * noticed until the declared-totals check fired.
+ * Worked example: __tests__/starling.test.ts.
+ *
+ * Evidence is weighed in order, strongest first. The ORDER IS LOAD-BEARING —
+ * do not add a new rule without deciding where it sits relative to these:
+ *   1. a row with col 5 holding money      → 6col. The balance column exists.
+ *   2. rows with col 3 > 0 AND col 4       → 5col, but only when they OUTNUMBER the
+ *      present (a 0.00 balance counts)       rows carrying col 4 alone. Amount plus
+ *                                            running balance on one row is the 5col
+ *                                            shape; col 4 alone is the 6col shape,
+ *                                            an amount in the Out column. Both are
+ *                                            counted and the majority wins, because
+ *                                            a single merged or mis-OCR'd row must
+ *                                            not outvote a page that plainly
+ *                                            disagrees with it.
+ *                                            A balance of exactly 0.00 is a real
+ *                                            balance — an account emptied to zero.
+ *   3. otherwise                           → fall back to the whole-page max-column
+ *                                            scan, i.e. the behaviour that shipped
+ *                                            before this function existed.
+ *
+ * Why col-4-alone never decides 6col on its own: that shape is genuinely ambiguous.
+ * It is a 6col page whose balances Azure DI dropped, OR a 5col page whose amount
+ * cell Azure DI dropped, and the cells alone cannot say which. Reading it as 6col
+ * turns a running balance into a fabricated payment that can still reconcile, which
+ * is the worst outcome this pipeline has. So it only ever votes against rule 2; it
+ * never carries a page by itself.
+ *
+ * The fallback is NOT a safe harbour. When the disclosure table pins maxCol at 5, a
+ * 5col page whose balances were all dropped is still read as 6col, and its payments
+ * are still recorded as income — the original field bug, reached through rule 3.
+ * Rules 1 and 2 shrink the set of pages that get there; they do not empty it. The
+ * declared-totals check in Verification.ts remains the backstop for this class.
+ */
+function detectGroupLayout(
+    rows: number[],
+    grid: Map<number, Map<number, string>>,
+): '6col' | '5col' {
+    let amountAndBalanceRows = 0;
+    let bareOutColumnRows    = 0;
+    let maxCol = 0;
+
+    for (const r of rows) {
+        const row = grid.get(r);
+        if (!row) continue;
+
+        for (const c of row.keys()) if (c > maxCol) maxCol = c;
+
+        if (!parseDateToDDMMYYYY(normStr(row.get(0) ?? ''))) continue;
+
+        // evidence 1 (strongest) — decides immediately.
+        if (cellAmount(row.get(5) ?? '') !== null) return '6col';
+
+        // evidence 2 — tallied here, weighed after the loop.
+        const col3 = cellAmount(row.get(3) ?? '');
+        const col4 = cellAmount(row.get(4) ?? '');
+        if (col3 !== null && col3 > 0 && col4 !== null) amountAndBalanceRows++;
+        else if ((col3 === null || col3 === 0) && col4 !== null && col4 > 0) bareOutColumnRows++;
+        // Do not add an early return below this line: it would outrank evidence 1.
+    }
+
+    // evidence 2 — the 5col shape must outnumber the shape that contradicts it.
+    if (amountAndBalanceRows > bareOutColumnRows) return '5col';
+    return maxCol >= 5 ? '6col' : '5col';       // evidence 3 (fallback)
 }
 
 function txKey(t: ParsedTransaction): string {
@@ -226,15 +318,8 @@ export function parse(cells: Cell[]): ParseResult {
 
     if (!sortedRows.length) return rawFallback(rawText, []);
 
-    // Global maxCol fallback for sections without a header row
-    const globalMaxCol = cells
-        .filter(c => c.rowIndex >= 0)
-        .reduce((mx, c) => Math.max(mx, c.columnIndex), 0);
-    const globalLayout: '6col' | '5col' = globalMaxCol >= 5 ? '6col' : '5col';
-
     const transactions: ParsedTransaction[] = [];
     let sectionRows: number[] = [];
-    let sectionLayout: '6col' | '5col' = globalLayout;
 
     // PAGE_GAP: row-offset system adds 10 000 between pages when splitting page-by-page.
     // A gap ≥ this value means we've crossed a page boundary and each group should be
@@ -258,16 +343,7 @@ export function parse(cells: Cell[]): ParseResult {
         groups.push(grp);
 
         for (const g of groups) {
-            // Per-group maxCol: if no col-5 data in this page, use 5col mode
-            // (col 3 = single amount → moneyOut). This fixes Azure DI column-shift
-            // on pages where the IN/OUT column distinction is lost.
-            let grpMaxCol = 0;
-            for (const r of g) {
-                for (const c of grid.get(r)!.keys()) {
-                    if (c > grpMaxCol) grpMaxCol = c;
-                }
-            }
-            const grpLayout: '6col' | '5col' = grpMaxCol >= 5 ? '6col' : '5col';
+            const grpLayout = detectGroupLayout(g, grid);
             extractFromSection(g, grid, grpLayout, transactions);
         }
 
@@ -280,7 +356,6 @@ export function parse(cells: Cell[]): ParseResult {
 
         if (isHeaderRow(rowCells)) {
             flushSection();
-            sectionLayout = detectLayout(row);
             continue;
         }
 
