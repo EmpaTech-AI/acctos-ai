@@ -25,7 +25,8 @@ function parseDate(s: string): string {
     const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
     if (iso) return `${iso[3]}/${iso[2]}/${iso[1]}`;
     // Scanned format: 30 Apr 26 or 30 Apr 2026 — allow trailing text e.g. "(Continued on…)"
-    const m = s.match(/^(\d{1,2})\s+([A-Za-z]{3})\s+(\d{2,4})\b/);
+    // Select Statement format: 17Nov25
+    const m = s.match(/^(\d{1,2})\s+([A-Za-z]{3})\s+(\d{2,4})\b/) ?? s.match(/^(\d{1,2})([A-Za-z]{3})(\d{2})$/);
     if (!m) return '';
     const MONTHS: Record<string, string> = {
         jan:'01', feb:'02', mar:'03', apr:'04', may:'05', jun:'06',
@@ -37,6 +38,17 @@ function parseDate(s: string): string {
     let year = m[3];
     if (year.length === 2) year = '20' + year;
     return `${day}/${mon}/${year}`;
+}
+
+// Transaction codes from the Select Statement legend that prefix the Activity column
+const SELECT_CODES = new Set([
+    'BGC', 'BP', 'CHG', 'CHQ', 'COM', 'COR', 'CPT', 'CSH', 'CSQ', 'DC', 'DD', 'DEB', 'DEP',
+    'EUR', 'FEE', 'FPI', 'FPO', 'IB', 'MPI', 'MPO', 'PAY', 'SO', 'TFR',
+]);
+
+// Every money token in a cell: "12.50 230.58" → [12.5, 230.58]
+function amounts(s?: string): number[] {
+    return (normStr(s ?? '').match(/\d[\d,]*\.\d{2}/g) ?? []).map(x => parseFloat(x.replace(/,/g, '')));
 }
 
 function mapType(code: string): string {
@@ -142,11 +154,35 @@ export function parse(cells: Cell[]): ParseResult {
 
     // Detect header row and column indices
     let COL_DATE = 0, COL_TYPE = 1, COL_DETAILS = 2, COL_OUT = 3, COL_IN = 4, COL_BAL = 5;
-    let format: 'old' | 'new' = 'old';
+    let format: 'old' | 'new' | 'select' = 'old';
     let headerFound = false;
+    let selectOpen: number | undefined;
 
     for (const row of rows) {
         const vals = [...row.cells.values()].map(v => v.toLowerCase());
+
+        // Business "Select Statement": Date | Activity | Paid out | Paid in | "Sheet: N Of M ... Balance X".
+        // The date header can carry the brought-forward date ("Date 17Nov25"); the balance header
+        // carries the brought-forward balance, which on the first sheet is the opening balance.
+        if (vals.some(v => /^date\b/.test(v)) && vals.includes('activity') &&
+            vals.some(v => v.includes('paid out')) && vals.some(v => v.includes('paid in'))) {
+            format = 'select';
+            COL_TYPE = -1;
+            for (const [col, v] of row.cells.entries()) {
+                const vl = v.toLowerCase();
+                if (/^date\b/.test(vl))           COL_DATE    = col;
+                else if (vl === 'activity')       COL_DETAILS = col;
+                else if (vl.includes('paid out')) COL_OUT     = col;
+                else if (vl.includes('paid in'))  COL_IN      = col;
+                else if (vl.includes('balance')) {
+                    COL_BAL = col;
+                    const b = vl.match(/balance\s+(-?[\d,]+\.\d{2})/);
+                    if (b) selectOpen = parseFloat(b[1].replace(/,/g, ''));
+                }
+            }
+            headerFound = true;
+            break;
+        }
 
         const isOldHeader =
             vals.includes('date') &&
@@ -198,19 +234,44 @@ export function parse(cells: Cell[]): ParseResult {
     let declaredMoneyIn:  number | undefined;
     let declaredMoneyOut: number | undefined;
 
+    let sheetIn = 0, sheetOut = 0, sheetFooters = 0;
+
     for (const row of rows) {
         const c = row.cells;
         const dateRaw    = c.get(COL_DATE)    ?? '';
         const rawType    = c.get(COL_TYPE)    ?? '';
-        const details    = c.get(COL_DETAILS) ?? '';
-        const paidOut    = parseMoney(c.get(COL_OUT) ?? '');
-        const paidIn     = parseMoney(c.get(COL_IN)  ?? '');
+        let   details    = c.get(COL_DETAILS) ?? '';
+        let   paidOut    = parseMoney(c.get(COL_OUT) ?? '');
+        let   paidIn     = parseMoney(c.get(COL_IN)  ?? '');
         const balance    = parseBalance(c.get(COL_BAL) ?? '');
         const date       = parseDate(dateRaw);
-        const type       = format === 'new' ? mapType(rawType) : rawType;
+        let   type       = format === 'new' ? mapType(rawType) : rawType;
 
-        // Continuation row: old scanned format, no date, no amounts — append to previous
-        if (format === 'old' && !date && transactions.length > 0 && !paidIn && !paidOut) {
+        if (format === 'select') {
+            // The header repeats on every sheet
+            if (details.toLowerCase() === 'activity') continue;
+            // Every sheet ends with "TOTAL PAYMENTS/RECEIPTS: <paid out> <paid in>". Azure DI either
+            // gives it a row of its own or merges it into the sheet's last transaction, whose amount
+            // then comes first in its column ("12.50 230.58"). The footers add up to the statement totals.
+            const footerAt = details.toUpperCase().indexOf('TOTAL PAYMENTS/RECEIPTS');
+            if (footerAt >= 0) {
+                const outs = amounts(c.get(COL_OUT)), ins = amounts(c.get(COL_IN));
+                sheetOut += outs[outs.length - 1] ?? 0;
+                sheetIn  += ins[ins.length - 1]  ?? 0;
+                sheetFooters++;
+                details = normStr(details.slice(0, footerAt));
+                paidOut = outs.length > 1 ? outs[0].toFixed(2) : '';
+                paidIn  = ins.length  > 1 ? ins[0].toFixed(2)  : '';
+            }
+            // Activity starts with the transaction code: "DEB HORIZON PARKING LT CD 1242"
+            const code = details.match(/^([A-Z]{2,3})\s+(.+)$/);
+            if (date && code && SELECT_CODES.has(code[1])) { type = code[1]; details = code[2]; }
+            // Brought-forward row: a date and a balance, nothing else
+            if (date && !details && !paidIn && !paidOut && balance && selectOpen === undefined) selectOpen = parseFloat(balance);
+        }
+
+        // Continuation row: no date, no amounts — append to previous
+        if ((format === 'old' || format === 'select') && !date && transactions.length > 0 && !paidIn && !paidOut) {
             const last = transactions[transactions.length - 1];
             if (type)    last.type        = normStr(`${last.type} ${type}`);
             if (details) last.description = normStr(`${last.description} ${details}`);
@@ -238,8 +299,16 @@ export function parse(cells: Cell[]): ParseResult {
 
     // Table-based detection (old scanned format with "Balance brought/carried forward" rows)
     // takes precedence; context extraction covers the new web-export format.
+    const lastBalance = transactions.length ? parseFloat(transactions[transactions.length - 1].balance) : NaN;
     const statementTotals: ParseResult['statementTotals'] =
-        (declaredOpen !== undefined || declaredClose !== undefined || declaredMoneyIn !== undefined || declaredMoneyOut !== undefined)
+        format === 'select' && sheetFooters > 0
+            ? {
+                openingBalance: selectOpen,
+                closingBalance: isFinite(lastBalance) ? lastBalance : undefined,
+                moneyIn:        Math.round(sheetIn  * 100) / 100,
+                moneyOut:       Math.round(sheetOut * 100) / 100,
+              }
+        : (declaredOpen !== undefined || declaredClose !== undefined || declaredMoneyIn !== undefined || declaredMoneyOut !== undefined)
             ? {
                 openingBalance: declaredOpen,
                 closingBalance: declaredClose,

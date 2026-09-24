@@ -86,6 +86,9 @@ export function detectBankFromContent(text: string): BankType {
     // enough that they don't appear in genuine HSBC or NatWest PDFs.
     // OCR often splits "Metro" as "M ETRO"; the regex handles that.
     if (/m\s*etro\s+bank/i.test(t) || t.includes('mymbgb') || t.includes('metrobankonline')) return 'metro';
+    // Lloyds business "Select Statement": the text never names Lloyds, and payees such as
+    // "FPI HSBC (FASTER PAYME..." would otherwise trigger HSBC. Every sheet ends with this footer.
+    if (t.includes('total payments/receipts:'))                      return 'lloyds';
     // HSBC: check before NatWest — HSBC statements routinely contain "NATWEST" in ATM
     // transaction descriptions (e.g. "CASH NATWEST APR18"). Identify by BIC prefix or product name.
     if (t.includes('hbukgb') || t.includes('hsbc kinetic') || /\bhsbc\s+uk\b/.test(t)) return 'hsbc';
