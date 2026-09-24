@@ -48,29 +48,79 @@ function parseAnyDate(s: string): string {
     return parseDateToDDMMYYYY(s) || parseBgDate(s);
 }
 
-// Extract GBP statement totals from the "Balance summary" section.
+type SummarySection = { openingBalance?: number; moneyIn?: number; moneyOut?: number; closingBalance?: number };
+
+const SUMMARY_LABELS = new Map<string, keyof SummarySection>([
+    ['начален баланс', 'openingBalance'], ['opening balance', 'openingBalance'],
+    ['входяща сума',   'moneyIn'],        ['money in',        'moneyIn'],
+    ['изходяща сума',  'moneyOut'],       ['money out',       'moneyOut'],
+    ['краен баланс',   'closingBalance'], ['closing balance', 'closingBalance'],
+]);
+
+// Compare in whole pennies: 10.03 - 10.02 is below 0.01 in floating point
+const samePenny = (a?: number, b?: number) => a !== undefined && b !== undefined && Math.round(a * 100) === Math.round(b * 100);
+
+// Extract GBP statement totals from the "Balance summary" section(s).
 // Handles both Bulgarian and English Revolut Business statements.
 // Rows look like: col0="Начален баланс" col1="£114.70"
 //             or: col0="Opening balance" col1="£320.71"
+//
+// One account statement can carry several summaries: one per currency account
+// (€/$ summaries are skipped by the £ match), one per extra GBP account, and one
+// per legal-entity period — UK clients moved from Revolut Ltd e-money to Revolut
+// Bank UK on 27/28 Jul 2026, so a statement spanning that date has two GBP
+// summaries for the same account. Transactions from every section are parsed,
+// so the declared totals must cover every section too, not just the last one.
 function extractBgStatementTotals(grid: Map<number, Map<number, string>>): ParseResult['statementTotals'] | undefined {
-    let openingBalance: number | undefined;
-    let closingBalance: number | undefined;
-    let moneyIn:        number | undefined;
-    let moneyOut:       number | undefined;
+    const sections: SummarySection[] = [];
+    let cur: SummarySection | undefined;
     const rowIdxs = [...grid.keys()].filter(r => r >= 0).sort((a, b) => a - b);
     for (const r of rowIdxs) {
-        const label = normStr(getCell(grid, r, 0)).toLowerCase();
-        const val   = normStr(getCell(grid, r, 1));
+        const field = SUMMARY_LABELS.get(normStr(getCell(grid, r, 0)).toLowerCase());
+        if (!field) continue;
+        const val = normStr(getCell(grid, r, 1));
         // Extract first £ amount, ignoring leading "- "
         const poundM = val.replace(/^-\s*/, '').match(/£\s*([\d\s,]+\.\d{2})/);
-        const n = poundM ? parseFloat(poundM[1].replace(/[\s,]/g, '')) : null;
-        if ((label === 'начален баланс' || label === 'opening balance') && n !== null) openingBalance = n;
-        if ((label === 'входяща сума'   || label === 'money in')        && n !== null) moneyIn        = n;
-        if ((label === 'изходяща сума'  || label === 'money out')       && n !== null) moneyOut       = n;
-        if ((label === 'краен баланс'   || label === 'closing balance')  && n !== null) closingBalance = n;
+        if (!poundM) continue;
+        // A repeated label (or an opening balance) starts the next summary
+        if (!cur || field === 'openingBalance' || cur[field] !== undefined) {
+            cur = {};
+            sections.push(cur);
+        }
+        cur[field] = parseFloat(poundM[1].replace(/[\s,]/g, ''));
     }
-    if (moneyIn === undefined && moneyOut === undefined) return undefined;
-    return { moneyIn: moneyIn ?? 0, moneyOut: moneyOut ?? 0, openingBalance, closingBalance };
+
+    const withIn = sections.filter(s => s.moneyIn !== undefined || s.moneyOut !== undefined);
+    if (!withIn.length) return undefined;
+
+    // Empty GBP pockets print an all-£0.00 summary; they add nothing to any total.
+    const active = withIn.filter(s => [s.openingBalance, s.moneyIn, s.moneyOut, s.closingBalance].some(v => v !== undefined && v !== 0));
+    const list = active.length ? active : withIn.slice(-1);
+
+    // Periods of one account chain: each closing balance is the next period's opening.
+    // Link them into one chain per account, whatever order they are printed in.
+    const chains = list.map(s => [s]);
+    for (let linked = true; linked; ) {
+        linked = false;
+        for (const a of chains) {
+            const b = chains.find(b => b !== a && samePenny(a[a.length - 1].closingBalance, b[0].openingBalance));
+            if (!b) continue;
+            a.push(...chains.splice(chains.indexOf(b), 1)[0]);
+            linked = true;
+            break;
+        }
+    }
+
+    // Parallel accounts are all parsed together, so the statement's balances are their sum.
+    const sum = (vals: number[]) => Math.round(vals.reduce((a, v) => a + v, 0) * 100) / 100;
+    const sumAll = (vals: Array<number | undefined>) =>
+        vals.some(v => v === undefined) ? undefined : sum(vals as number[]);
+    return {
+        moneyIn:        sum(list.map(s => s.moneyIn  ?? 0)),
+        moneyOut:       sum(list.map(s => s.moneyOut ?? 0)),
+        openingBalance: sumAll(chains.map(ch => ch[0].openingBalance)),
+        closingBalance: sumAll(chains.map(ch => ch[ch.length - 1].closingBalance)),
+    };
 }
 
 function directionByCode(code: string): 'IN' | 'OUT' | '' {
