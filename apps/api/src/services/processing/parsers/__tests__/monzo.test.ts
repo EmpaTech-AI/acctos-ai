@@ -128,3 +128,33 @@ describe('Monzo declared totals', () => {
         expect(statementTotals).toEqual({ moneyIn: 10, moneyOut: 85, openingBalance: 50, closingBalance: -25 });
     });
 });
+
+/**
+ * Origin: a Monzo Personal statement for Nov 2025 whose parsed Money Out was
+ * £7.90 below the declared total. The oldest row, at the bottom of the last
+ * page, had an empty balance cell in Azure DI's table although the balance
+ * was in the page text, and the 4-col path skipped any row without one.
+ */
+describe('Monzo row with an empty balance cell', () => {
+    it('keeps the row and rebuilds its balance from the newer row above it', () => {
+        const { transactions } = parse([
+            ...HEADER,
+            ...row(1, '02/11/2025', 'ACME LTD (Faster Payments) Reference: SALARY', '500.00', '520.00'),
+            ...row(2, '01/11/2025', 'TRANSPORT GBR', '-8.00', ''),
+        ]);
+
+        expect(transactions).toHaveLength(2);
+        expect(transactions[1]).toMatchObject({ date: '01/11/2025', moneyOut: '8.00', moneyIn: '', balance: '20.00' });
+    });
+
+    it('keeps the row with a blank balance when no newer row is on the page', () => {
+        const { transactions } = parse([
+            ...HEADER,
+            ...row(1, '01/11/2025', 'TRANSPORT GBR', '-8.00', ''),
+            ...row(2, '31/10/2025', 'ACME LTD', '100.00', '28.00'),
+        ]);
+
+        expect(transactions).toHaveLength(2);
+        expect(transactions[0]).toMatchObject({ moneyOut: '8.00', balance: '' });
+    });
+});
