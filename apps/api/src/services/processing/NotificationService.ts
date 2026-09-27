@@ -34,7 +34,7 @@ const FROM_EMAIL   = 'info@support.acctos.ai';
 
 // When true, skip error/issue notifications sent to the client (chain gap,
 // insufficient files, parser mismatch, unsupported attachment).
-// Result emails with the Excel attachment are always sent regardless.
+// Result emails are always sent regardless.
 const PAUSE_CLIENT_ERRORS = process.env.PAUSE_CLIENT_ERRORS === 'true';
 
 /** Send to all configured team recipients. */
@@ -513,7 +513,7 @@ export function notifyClientIssuesSummary(alert: ClientIssuesSummaryAlert): void
     }
 }
 
-// ── Accountant: processed result with Excel attachment ────────────────────────
+// ── Accountant: processed result (Excel to team, Drive link to client) ─────────
 
 export interface VatSummary {
     total:         number;
@@ -558,11 +558,12 @@ export function notifyProcessingComplete(alert: ProcessingCompleteAlert): void {
 
     const name = alert.clientName || alert.emailSubject;
     const isVat = !!alert.vatSummary;
-    const linkSection = alert.driveFileUrl
-        ? `\nYou can also access the file via the link below:\n${alert.driveFileUrl}\n`
+    // `attached` = this copy of the email carries the Excel. Without it the Drive link is the file.
+    const linkSection = (attached: boolean) => alert.driveFileUrl
+        ? `\n${attached ? 'You can also access the file via the link below:' : 'Open the file via the link below:'}\n${alert.driveFileUrl}\n`
         : '';
-    const linkSectionBg = alert.driveFileUrl
-        ? `\nМожете да отворите файла и чрез следния линк:\n${alert.driveFileUrl}\n`
+    const linkSectionBg = (attached: boolean) => alert.driveFileUrl
+        ? `\n${attached ? 'Можете да отворите файла и чрез следния линк:' : 'Отворете файла чрез следния линк:'}\n${alert.driveFileUrl}\n`
         : '';
 
     const fmt = (n: number) => n.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
@@ -615,15 +616,22 @@ export function notifyProcessingComplete(alert: ProcessingCompleteAlert): void {
 
     const processedAt = `Processed at: ${ukTimeStr()}`;
 
-    const text = [
+    const intro   = (attached: boolean, n: string) => attached
+        ? `Attached you can find the extracted ${descEn} information for ${n}.`
+        : `You can find the extracted ${descEn} information for ${n} via the link below.`;
+    const introBg = (attached: boolean, n: string) => attached
+        ? `В прикачения файл можете да намерите свалената информация от ${descBg} за ${n}.`
+        : `Можете да намерите свалената информация от ${descBg} за ${n} чрез линка по-долу.`;
+
+    const text = (attached: boolean) => [
         title,
         '',
         'Hi,',
         '',
-        `Attached you can find the extracted ${descEn} information for ${name}.`,
+        intro(attached, name),
         summaryText,
         processedAt,
-        linkSection,
+        linkSection(attached),
         'If you have any questions, please reply to this email.',
         '',
         '---',
@@ -632,9 +640,9 @@ export function notifyProcessingComplete(alert: ProcessingCompleteAlert): void {
         '',
         'Здравейте,',
         '',
-        `В прикачения файл можете да намерите свалената информация от ${descBg} за ${name}.`,
+        introBg(attached, name),
         processedAt,
-        linkSectionBg,
+        linkSectionBg(attached),
         'Ако имате въпроси, моля отговорете на този имейл.',
     ].join('\n');
 
@@ -708,10 +716,10 @@ export function notifyProcessingComplete(alert: ProcessingCompleteAlert): void {
 
     const summaryHtml = vatSummaryHtml + bankSummaryHtml;
 
-    const html = `<!DOCTYPE html><html><body style="font-family:Arial,sans-serif;font-size:15px;color:#111827;max-width:600px;margin:0 auto;padding:24px">
+    const html = (attached: boolean) => `<!DOCTYPE html><html><body style="font-family:Arial,sans-serif;font-size:15px;color:#111827;max-width:600px;margin:0 auto;padding:24px">
       <h2 style="font-size:20px;font-weight:700;margin:0 0 16px">${title}</h2>
       <p>Hi,</p>
-      <p>Attached you can find the extracted ${descEn} information for <strong>${name}</strong>.</p>
+      <p>${intro(attached, `<strong>${name}</strong>`)}</p>
       ${summaryHtml}
       <p style="font-size:13px;color:#6b7280;margin:8px 0">${processedAt}</p>
       ${driveButton('Open File', 'Plain link (in case the button doesn\'t work)')}
@@ -719,30 +727,31 @@ export function notifyProcessingComplete(alert: ProcessingCompleteAlert): void {
       <hr style="border:none;border-top:1px solid #e5e7eb;margin:32px 0">
       <h2 style="font-size:20px;font-weight:700;margin:0 0 16px">${titleBg}</h2>
       <p>Здравейте,</p>
-      <p>В прикачения файл можете да намерите свалената информация от ${descBg} за <strong>${name}</strong>.</p>
+      <p>${introBg(attached, `<strong>${name}</strong>`)}</p>
       ${driveButton('Отвори файла', 'Директен линк (ако бутонът не работи)')}
       <p style="margin-top:24px;color:#6b7280;font-size:13px">Ако имате въпроси, моля отговорете на този имейл.</p>
     </body></html>`;
 
-    const sendTo = (to: string) => sendMailgunMessage({
+    const sendTo = (to: string, attach: boolean) => sendMailgunMessage({
         from:       FROM_EMAIL,
         to,
         subject:    replySubject,
-        text,
-        html,
-        attachment: { filename: alert.filename, content: alert.xlsxBuffer },
+        text:       text(attach),
+        html:       html(attach),
+        ...(attach ? { attachment: { filename: alert.filename, content: alert.xlsxBuffer } } : {}),
     }).then(() => {
-        console.log(`[Notifications] Reply with Excel sent to ${to}: "${replySubject}"`);
+        console.log(`[Notifications] Reply ${attach ? 'with Excel' : 'with Drive link only'} sent to ${to}: "${replySubject}"`);
     }).catch(err => {
         console.error(`[Notifications] Failed to send reply email to ${to}:`, err.message);
     });
 
     // Result email goes to fixed recipients only — never to the original sender.
     // Primary team contact (index 0) gets the Excel.
-    sendTo(TEAM_EMAIL);
-    // Client email gets the Excel if different from the primary team contact.
+    sendTo(TEAM_EMAIL, true);
+    // The client gets the Drive link only, so a file corrected later on Drive is what she sees —
+    // an attached copy can't be updated once sent. Attach only if the Drive upload failed.
     if (CLIENT_EMAIL && CLIENT_EMAIL.toLowerCase() !== TEAM_EMAIL.toLowerCase()) {
-        sendTo(CLIENT_EMAIL);
+        sendTo(CLIENT_EMAIL, !alert.driveFileUrl);
     }
 }
 
