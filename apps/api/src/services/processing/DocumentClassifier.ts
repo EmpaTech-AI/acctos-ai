@@ -92,11 +92,11 @@ export function detectBankFromContent(text: string): BankType {
     // HSBC: check before NatWest — HSBC statements routinely contain "NATWEST" in ATM
     // transaction descriptions (e.g. "CASH NATWEST APR18"). Identify by BIC prefix or product name.
     if (t.includes('hbukgb') || t.includes('hsbc kinetic') || /\bhsbc\s+uk\b/.test(t)) return 'hsbc';
-    // NatWest must come before Mettle — NatWest FSCS footer text mentions "mettle" as a subsidiary,
-    // so a generic /\bmettle\b/ check would misidentify NatWest statements as Mettle.
-    if (t.includes('nwbkgb2l') || /\bnatwest\b/.test(t) || /\bnat west\b/.test(t)) return 'natwest';
-    // Mettle: require specific branding text, not just the word "mettle" which appears in other banks' FSCS disclosures.
+    // Mettle before NatWest — Mettle statements are headed "mettle. by NatWest" and their footer
+    // names "National Westminster Bank plc trading as Mettle", so the NatWest check would claim them.
+    // Require Mettle's own branding text: NatWest's FSCS footer also lists "Mettle", but only by name.
     if (t.includes('the mettle bank account') || t.includes('mettle.co.uk')) return 'mettle';
+    if (t.includes('nwbkgb2l') || /\bnatwest\b/.test(t) || /\bnat west\b/.test(t)) return 'natwest';
     if (/\btide\b/.test(t))                                          return 'tide';
     // Nationwide: nationwide.co.uk and flexaccount are unique to Nationwide's own header/footer,
     // so they are checked before Santander. "nationwide building society" alone is NOT sufficient —
