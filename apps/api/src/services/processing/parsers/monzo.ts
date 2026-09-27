@@ -105,19 +105,31 @@ export function parse(cells: Cell[], _opts?: { pendingFromPrev?: ParsedTransacti
             const balanceRaw  = normStr(c[3]);
 
             const amountNum = parseMoney(amountRaw);
-            const balNum    = parseMoney(balanceRaw);
+            let   balNum    = parseMoney(balanceRaw);
             // amountNum may be negative (Monzo signs debits with "-"); skip only null/zero
-            if (amountNum === null || amountNum === 0 || balNum === null) continue;
+            if (amountNum === null || amountNum === 0) continue;
+
+            // Azure DI sometimes leaves the balance cell empty although the page text has it.
+            // The amount's sign still gives the direction, so keep the row and rebuild the
+            // balance from the newer row above it: its balance minus its own signed amount.
+            if (balNum === null) {
+                const newer = transactions[transactions.length - 1];
+                const newerBal = newer ? parseMoney(newer.balance || '') : null;
+                if (newer && newerBal !== null) {
+                    const newerSigned = (parseMoney(newer.moneyIn || '') ?? 0) - (parseMoney(newer.moneyOut || '') ?? 0);
+                    balNum = Math.round((newerBal - newerSigned) * 100) / 100;
+                }
+            }
 
             const absAmt = Math.abs(amountNum);
-            const bal    = balNum.toFixed(2);
+            const bal    = balNum !== null ? balNum.toFixed(2) : '';
 
             // Primary: use sign from amount value
             let isOut = amountNum < 0;
 
             // Secondary: if amount appears positive but balance delta says money left,
             // OCR dropped the minus sign — correct direction using balance delta
-            if (!isOut) {
+            if (!isOut && balNum !== null) {
                 const nextRow = table[i + 1];
                 if (nextRow) {
                     const nextBal = parseMoney(nextRow.cols[3]);
