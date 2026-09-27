@@ -42,17 +42,22 @@ function isHeaderRow(cols: string[]): boolean {
 
 /** Extract bank-declared totals from the page-1 content string. */
 function extractDeclaredTotals(content: string): { moneyIn: number; moneyOut: number; closingBalance: number } | null {
-    // Content has (newline may fall between amount and label):
+    // Content has each amount followed by its label:
     //   -£52,212.77 Total outgoings
     //   +£52,213.75\nTotal deposits
-    //   £0.98 Business Account balance
-    const inM  = content.match(/\+£\s*([\d,]+(?:\.\d{1,2})?)\s*[\r\n]*\s*Total deposits/i);
-    const outM = content.match(/-£\s*([\d,]+(?:\.\d{1,2})?)\s+Total outgoings/i);
-    const balM = content.match(/£\s*([\d,]+(?:\.\d{1,2})?)\s+Business Account balance/i);
+    //   £0.98 Business Account balance      (or "Personal Account balance")
+    // but Azure DI often interleaves the address / sort-code column between the two:
+    //   +£32,534.79\nAccount number: 43588045\nTotal deposits
+    //   £4,975.73\nHRISTECH LTD\nBusiness Account balance
+    // so allow unrelated text in between, as long as it holds no other £ amount.
+    const inM  = content.match(/\+£\s*([\d,]+(?:\.\d{1,2})?)[^£]{0,200}?Total deposits/i);
+    const outM = content.match(/-£\s*([\d,]+(?:\.\d{1,2})?)[^£]{0,200}?Total outgoings/i);
+    const balM = content.match(/(?<!\+)(-?)£\s*([\d,]+(?:\.\d{1,2})?)[^£]{0,200}?Account balance/i);
     if (!inM || !outM) return null;
     const moneyIn  = parseMoney(inM[1].replace(/,/g, ''));
     const moneyOut = parseMoney(outM[1].replace(/,/g, ''));
-    const closingBalance = balM ? (parseMoney(balM[1].replace(/,/g, '')) ?? 0) : 0;
+    const balAbs   = balM ? (parseMoney(balM[2].replace(/,/g, '')) ?? 0) : 0;
+    const closingBalance = balM?.[1] ? -balAbs : balAbs;
     if (moneyIn === null || moneyOut === null) return null;
     return { moneyIn, moneyOut, closingBalance };
 }
