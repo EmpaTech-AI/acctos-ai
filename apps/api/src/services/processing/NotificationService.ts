@@ -745,13 +745,14 @@ export function notifyProcessingComplete(alert: ProcessingCompleteAlert): void {
         console.error(`[Notifications] Failed to send reply email to ${to}:`, err.message);
     });
 
-    // Result email goes to fixed recipients only — never to the original sender.
-    // Primary team contact (index 0) gets the Excel.
-    sendTo(TEAM_EMAIL, true);
-    // The client gets the Drive link only, so a file corrected later on Drive is what she sees —
-    // an attached copy can't be updated once sent. Attach only if the Drive upload failed.
+    // Result email goes to fixed recipients only — never to the original sender: the primary
+    // team contact (index 0) and the client. Both get the Drive link only, so a file corrected
+    // later on Drive is what they see — an attached copy can't be updated once sent.
+    // Attach only if the Drive upload failed.
+    const attach = !alert.driveFileUrl;
+    sendTo(TEAM_EMAIL, attach);
     if (CLIENT_EMAIL && CLIENT_EMAIL.toLowerCase() !== TEAM_EMAIL.toLowerCase()) {
-        sendTo(CLIENT_EMAIL, !alert.driveFileUrl);
+        sendTo(CLIENT_EMAIL, attach);
     }
 }
 

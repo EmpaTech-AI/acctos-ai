@@ -1,10 +1,12 @@
 /**
- * The result email sends the client the Drive link only, never a copy of the Excel.
+ * The result email sends the Drive link only, never a copy of the Excel — to the
+ * client and to the team.
  *
  * Origin: a VAT result for a client was later corrected on Drive in place. Anyone
  * opening the Drive link saw the fix, but the Excel attached to the client's email
- * was a separate copy that could not be updated once sent. The team copy keeps
- * the attachment; the client copy attaches the file only if there is no Drive link.
+ * was a separate copy that could not be updated once sent. The team has access to
+ * the client's Drive folder, so its attached copy went stale the same way. Both
+ * copies attach the file only if there is no Drive link.
  *
  * Mailgun is mocked: nothing is sent.
  */
@@ -61,18 +63,22 @@ describe('notifyProcessingComplete', () => {
         expect(client.text).not.toContain('В прикачения файл');
     });
 
-    it('still attaches the Excel to the team copy', async () => {
+    it('sends the team the Drive link without attaching the Excel', async () => {
         const { team } = await send(alert());
 
-        expect(team.attachment?.filename).toBe('Example Ltd VAT_processed.xlsx');
-        expect(team.text).toContain('Attached you can find');
+        expect(team.attachment).toBeUndefined();
         expect(team.text).toContain(DRIVE_URL);
+        expect(team.html).toContain(DRIVE_URL);
+        expect(team.text).toContain('via the link below');
+        expect(team.text).not.toMatch(/attached/i);
     });
 
-    it('attaches the Excel for the client when the Drive upload failed', async () => {
-        const { client } = await send(alert({ driveFileUrl: undefined }));
+    it('attaches the Excel for team and client when the Drive upload failed', async () => {
+        const { team, client } = await send(alert({ driveFileUrl: undefined }));
 
-        expect(client.attachment?.filename).toBe('Example Ltd VAT_processed.xlsx');
-        expect(client.text).toContain('Attached you can find');
+        for (const m of [team, client]) {
+            expect(m.attachment?.filename).toBe('Example Ltd VAT_processed.xlsx');
+            expect(m.text).toContain('Attached you can find');
+        }
     });
 });
