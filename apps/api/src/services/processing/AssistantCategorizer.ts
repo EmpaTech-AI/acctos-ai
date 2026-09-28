@@ -151,13 +151,28 @@ async function getVendorRules(): Promise<VendorRule[]> {
     return rules;
 }
 
-function applyVendorRule(description: string, rules: VendorRule[]): string | null {
+// AI-learned "contains" rules match whole words only. A plain substring match let short
+// learned signals swallow unrelated text: "Car" caught every "Card purchase" (491 rows of
+// one statement went to TRAVEL), "INS" caught "Travis Perkins", "Bridge" caught "Uxbridge".
+// Rules entered by a person keep substring matching — they are written deliberately.
+const wholeWordCache = new Map<string, RegExp>();
+function wholeWord(pat: string): RegExp {
+    let re = wholeWordCache.get(pat);
+    if (!re) {
+        re = new RegExp(`(^|[^a-z0-9])${pat.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}($|[^a-z0-9])`);
+        wholeWordCache.set(pat, re);
+    }
+    return re;
+}
+
+export function applyVendorRule(description: string, rules: VendorRule[]): string | null {
     const lower = description.toLowerCase();
     for (const rule of rules) {
         const pat = rule.pattern.toLowerCase();
         let match = false;
         if      (rule.match_type === 'exact')       match = lower === pat;
         else if (rule.match_type === 'starts_with') match = lower.startsWith(pat);
+        else if (rule.source === 'ai')              match = wholeWord(pat).test(lower);
         else                                         match = lower.includes(pat);
         if (match) return rule.category;
     }
@@ -572,7 +587,8 @@ export async function categorize(transactions: ParsedTransaction[], context?: { 
         for (let j = 0; j < aiIndices.length; j++) {
             const result  = aiResults[j];
             const signal  = ((result as any).__signal as string | undefined)?.trim();
-            if (!signal || signal.length < 3) continue;
+            // 3-letter signals ("Car", "INS", "KEY") became rules that matched far too much
+            if (!signal || signal.length < 4) continue;
             signalCount++;
             // Find the category placed by AI (non-empty expense column)
             const placedCat = EXPENSE_CATS.filter(k => k !== 'INCOME')

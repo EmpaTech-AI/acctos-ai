@@ -173,6 +173,8 @@ export interface VendorRule {
     pattern:    string;
     match_type: 'exact' | 'contains' | 'starts_with';
     category:   string;
+    /** 'ai' = learned by the categorizer; anything else was entered by a person. */
+    source?:    string | null;
 }
 
 export async function loadVendorCategories(): Promise<VendorRule[]> {
@@ -181,7 +183,7 @@ export async function loadVendorCategories(): Promise<VendorRule[]> {
     try {
         const { data, error } = await sb
             .from('vendor_categories')
-            .select('pattern, match_type, category')
+            .select('pattern, match_type, category, source')
             .eq('active', true)
             .order('id', { ascending: true });
         if (error || !data) return [];

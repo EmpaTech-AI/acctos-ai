@@ -40,6 +40,10 @@ function blockJob(
         ? `${gate.resource === 'rows' ? 'Excel rows' : 'PDF pages'} limit reached for this billing period (${gate.used}/${gate.limit}). Processing paused.`
         : 'Processing is currently paused. Contact your administrator.';
     jobStore.update(jobId, { status: 'failed', error: errMsg, errorType: 'LIMIT_EXCEEDED' });
+    // Close the Supabase record too — otherwise a blocked job shows as "queued" forever
+    updateJobRecord(jobId, {
+        status: 'failed', error: errMsg, error_type: 'limit_exceeded', completed_at: new Date().toISOString(),
+    }).catch(() => {});
     console.warn(`[Orchestrator] Job ${jobId} blocked — ${gate.reason}${gate.reason === 'limit_exceeded' ? `:${gate.resource} ${gate.used}/${gate.limit}` : ''}`);
     if (senderEmail && emailSubject) {
         notifyProcessingBlocked({

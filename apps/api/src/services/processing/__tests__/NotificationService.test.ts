@@ -98,7 +98,7 @@ describe('notifyProcessingBlocked', () => {
         };
     }
     const rowsOut = {
-        emailSubject: 'FS BEXLEY LONDON LTD accounts', filenames: ['Mettle-Export.xlsx'],
+        emailSubject: 'EXAMPLE TRADING LTD accounts', filenames: ['Bank-Export.xlsx'],
         reason: 'limit_exceeded' as const, resource: 'rows' as const, used: 1401, limit: 1000,
     };
 
@@ -107,7 +107,7 @@ describe('notifyProcessingBlocked', () => {
 
         expect(client).toBeDefined();
         expect(team).toBeDefined();
-        expect(client.subject).toBe('Re: FS BEXLEY LONDON LTD accounts');
+        expect(client.subject).toBe('Re: EXAMPLE TRADING LTD accounts');
         expect(client.attachment).toBeUndefined();
     });
 
@@ -116,12 +116,12 @@ describe('notifyProcessingBlocked', () => {
 
         expect(client.text).toContain('Excel rows limit reached');
         expect(client.text).toContain('1,401 of 1,000');
-        expect(client.text).toContain('Mettle-Export.xlsx');
+        expect(client.text).toContain('Bank-Export.xlsx');
         expect(client.text).toContain('PDF statements are still processed.');
         expect(client.text).toContain('please send this email again');
         expect(client.text).toContain('/dashboard/billing');
         expect(client.text).toContain('редовете за Excel за текущия период на фактуриране са изчерпани');
-        expect(client.html).toContain('<strong>FS BEXLEY LONDON LTD accounts</strong>');
+        expect(client.html).toContain('<strong>EXAMPLE TRADING LTD accounts</strong>');
     });
 
     it('for a manual pause, says processing is paused without a limit or billing link', async () => {
