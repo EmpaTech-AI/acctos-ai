@@ -137,6 +137,8 @@ interface UsageStatus {
     totalPagesLimit: number;
     totalRowsLimit: number;
     scenariosPaused: boolean;
+    pagesExhausted?: boolean;
+    rowsExhausted?: boolean;
     lastResetAt: string;
     nextResetAt: string;
     subscriptionStatus: string;
@@ -445,6 +447,9 @@ export default function Billing() {
     const curPages       = us?.currentPages ?? rawUsage?.pages ?? 0;
     const curRows        = us?.currentRows  ?? rawUsage?.rows  ?? 0;
     const isPaused       = us?.scenariosPaused ?? false;
+    // Only one limit used up → only that kind of statement is blocked; the other keeps processing.
+    const onlyRowsOut    = !!us?.rowsExhausted && !us?.pagesExhausted;
+    const onlyPagesOut   = !!us?.pagesExhausted && !us?.rowsExhausted;
 
     const pagesPct = Math.min(100, totalPages > 0 ? (curPages / totalPages) * 100 : 0);
     const rowsPct  = Math.min(100, totalRows  > 0 ? (curRows  / totalRows)  * 100 : 0);
@@ -456,7 +461,9 @@ export default function Billing() {
                 <div className="pause-banner">
                     <AlertCircle size={20} />
                     <div className="pause-banner-text">
-                        <strong>{t.agentPausedBilling}</strong>{t.agentPausedBillingDesc}
+                        {onlyRowsOut || onlyPagesOut
+                            ? <strong>{onlyRowsOut ? t.bannerTitleRows : t.bannerTitlePages} </strong>
+                            : <><strong>{t.agentPausedBilling}</strong>{t.agentPausedBillingDesc}</>}
                         {isSubscribed
                             ? t.autoResume(us?.nextResetAt ? formatDate(us.nextResetAt) : '—')
                             : t.purchaseToResume
@@ -484,9 +491,10 @@ export default function Billing() {
                         Processing: {isPaused ? 'Paused' : 'Active'}
                     </span>
                     <span style={{ fontSize: '0.76rem', color: 'var(--text-muted)', flex: 1 }}>
-                        {isPaused
-                            ? 'New jobs are blocked. Running jobs complete normally.'
-                            : 'New jobs are accepted normally.'}
+                        {!isPaused ? 'New jobs are accepted normally.'
+                            : onlyRowsOut  ? 'Excel jobs are blocked (rows limit); PDF jobs are accepted. Running jobs complete normally.'
+                            : onlyPagesOut ? 'PDF jobs are blocked (pages limit); Excel jobs are accepted. Running jobs complete normally.'
+                            : 'New jobs are blocked. Running jobs complete normally.'}
                     </span>
                     <button
                         onClick={handleToggleProcessing}

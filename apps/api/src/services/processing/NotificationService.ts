@@ -815,6 +815,105 @@ export function notifyUnsupportedAttachment(alert: UnsupportedAttachmentAlert): 
     else if (PAUSE_CLIENT_ERRORS) console.warn(`[Notifications] Unsupported-attachment client reply PAUSED (PAUSE_CLIENT_ERRORS=true)`);
 }
 
+// ── Client + team: statement not processed (usage limit or manual pause) ──────
+
+export interface ProcessingBlockedAlert {
+    emailSubject: string;
+    filenames:    string[];
+    reason:       'paused' | 'limit_exceeded';
+    resource?:    'pages' | 'rows';
+    used?:        number;
+    limit?:       number;
+}
+
+/**
+ * A job was stopped at the limit gate, so nothing was processed. The email is
+ * already marked read and claimed, so it will never be picked up again — the
+ * client has to send it again once there is capacity, and this says so.
+ * Goes to the client and every team address. Not gated by PAUSE_CLIENT_ERRORS:
+ * it is a billing notice, not a processing error.
+ */
+export function notifyProcessingBlocked(alert: ProcessingBlockedAlert): void {
+    const replySubject = /^re:/i.test(alert.emailSubject) ? alert.emailSubject : `Re: ${alert.emailSubject}`;
+    const billingUrl   = `${process.env.APP_URL ?? 'https://acctos.ai'}/dashboard/billing`;
+    const n   = (x?: number) => (x ?? 0).toLocaleString('en-GB');
+    const nBg = (x?: number) => (x ?? 0).toLocaleString('bg-BG');
+    const files   = alert.filenames.join(', ');
+    const isLimit = alert.reason === 'limit_exceeded';
+    const isRows  = alert.resource === 'rows';
+
+    const en = isLimit ? {
+        title:  `Statement not processed — ${isRows ? 'Excel rows' : 'PDF pages'} limit reached`,
+        why:    `your ${isRows ? 'Excel rows' : 'PDF pages'} for this billing period are used up (${n(alert.used)} of ${n(alert.limit)}).`,
+        other:  isRows ? 'PDF statements are still processed.' : 'Excel statements are still processed.',
+        todo:   [`purchase additional ${isRows ? 'rows' : 'pages'} on the Billing page of your Acctos dashboard, or`, 'upgrade your subscription plan.'],
+        resend: 'Once you have added more, please send this email again — it will not be processed automatically.',
+    } : {
+        title:  'Statement not processed — processing is paused',
+        why:    'processing is currently paused for your account.',
+        other:  '',
+        todo:   ['contact your Acctos administrator to resume processing.'],
+        resend: 'Once processing is resumed, please send this email again — it will not be processed automatically.',
+    };
+    const bg = isLimit ? {
+        title:  `Извлечението не е обработено — достигнат лимит на ${isRows ? 'редовете за Excel' : 'страниците за PDF'}`,
+        why:    `${isRows ? 'редовете за Excel' : 'страниците за PDF'} за текущия период на фактуриране са изчерпани (${nBg(alert.used)} от ${nBg(alert.limit)}).`,
+        other:  isRows ? 'PDF извлеченията продължават да се обработват.' : 'Excel извлеченията продължават да се обработват.',
+        todo:   [`закупете допълнителни ${isRows ? 'редове' : 'страници'} от страницата за фактуриране в таблото на Acctos, или`, 'надстройте абонаментния си план.'],
+        resend: 'След като добавите, моля изпратете този имейл отново — той няма да бъде обработен автоматично.',
+    } : {
+        title:  'Извлечението не е обработено — обработката е спряна',
+        why:    'обработката за вашия акаунт в момента е спряна.',
+        other:  '',
+        todo:   ['свържете се с вашия администратор в Acctos, за да бъде възобновена.'],
+        resend: 'След като обработката бъде възобновена, моля изпратете този имейл отново — той няма да бъде обработен автоматично.',
+    };
+
+    const text = [
+        en.title, '', 'Hi,', '',
+        `We received your email "${alert.emailSubject}" (${files}), but it was not processed: ${en.why}`,
+        ...(en.other ? [en.other] : []),
+        '', 'To continue, please:', ...en.todo.map(t => `  - ${t}`),
+        ...(isLimit ? [billingUrl] : []),
+        '', en.resend, '',
+        'If you have any questions, please reply to this email.',
+        '', '---', '',
+        bg.title, '', 'Здравейте,', '',
+        `Получихме вашия имейл „${alert.emailSubject}“ (${files}), но той не беше обработен: ${bg.why}`,
+        ...(bg.other ? [bg.other] : []),
+        '', 'За да продължите, моля:', ...bg.todo.map(t => `  - ${t}`),
+        ...(isLimit ? [billingUrl] : []),
+        '', bg.resend, '',
+        'Ако имате въпроси, моля отговорете на този имейл.',
+    ].join('\n');
+
+    const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const errStyle = 'font-size:20px;font-weight:700;margin:0 0 16px;color:#dc2626';
+    const link = isLimit ? `<p><a href="${billingUrl}" style="color:#2563eb">${billingUrl}</a></p>` : '';
+    const section = (t: typeof en, hi: string, lead: string, subj: string, cont: string, footer: string) => `
+      <h2 style="${errStyle}">${t.title}</h2>
+      <p>${hi}</p>
+      <p>${lead.replace('{subject}', `<strong>${esc(subj)}</strong>`).replace('{files}', esc(files))} ${t.why}</p>
+      ${t.other ? `<p>${t.other}</p>` : ''}
+      <p>${cont}</p>
+      <ul>${t.todo.map(x => `<li>${x}</li>`).join('')}</ul>
+      ${link}
+      <p><strong>${t.resend}</strong></p>
+      <p style="margin-top:24px;color:#6b7280;font-size:13px">${footer}</p>`;
+    const html = `<!DOCTYPE html><html><body style="font-family:Arial,sans-serif;font-size:15px;color:#111827;max-width:600px;margin:0 auto;padding:24px">
+      ${section(en, 'Hi,', 'We received your email {subject} ({files}), but it was not processed:', alert.emailSubject, 'To continue, please:', 'If you have any questions, please reply to this email.')}
+      <hr style="border:none;border-top:1px solid #e5e7eb;margin:32px 0">
+      ${section(bg, 'Здравейте,', 'Получихме вашия имейл {subject} ({files}), но той не беше обработен:', alert.emailSubject, 'За да продължите, моля:', 'Ако имате въпроси, моля отговорете на този имейл.')}
+    </body></html>`;
+
+    const sendTo = (to: string) => sendMailgunMessage({ from: FROM_EMAIL, to, subject: replySubject, text, html })
+        .then(() => console.log(`[Notifications] Not-processed notice (${alert.reason}${alert.resource ? ':' + alert.resource : ''}) sent to ${to}: "${replySubject}"`))
+        .catch(err => console.error(`[Notifications] Failed to send not-processed notice to ${to}:`, err.message));
+
+    const recipients = [...new Set([CLIENT_EMAIL, ...TEAM_EMAILS].map(e => e.toLowerCase()))];
+    recipients.forEach(sendTo);
+}
+
 // ── Team: unknown bank — AI fallback was used ─────────────────────────────────
 
 export interface UnknownBankAlert {
