@@ -420,12 +420,12 @@ export async function buildVatOutputExcel(transactions: CategorizedTransaction[]
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.load(templateBuf as unknown as ArrayBuffer);
 
-    if (clientName) {
-        const vatReturnWs = workbook.getWorksheet('VAT Return');
-        if (vatReturnWs) {
-            vatReturnWs.getCell('C1').value = clientName;
-            try { vatReturnWs.getCell('D1').value = clientName; } catch {}
-        }
+    // Always overwrite the header: template-vat.xlsx carries a leftover client name in C1/D1,
+    // which ended up in another client's file whenever no name was passed.
+    const vatReturnWs = workbook.getWorksheet('VAT Return');
+    if (vatReturnWs) {
+        vatReturnWs.getCell('C1').value = clientName ?? '';
+        try { vatReturnWs.getCell('D1').value = clientName ?? ''; } catch {}
     }
 
     const salesWs    = workbook.getWorksheet('Sales');

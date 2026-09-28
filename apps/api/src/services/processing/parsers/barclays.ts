@@ -625,7 +625,14 @@ function parseNormal(cells: Cell[]): ParseResult {
 //   "Money out\n£6,168.61\n..."  "Start balance\n£1,495.64\n..."
 // We try cells first then fall back to the content string for missing fields.
 
-function extractBarclaysStatementTotals(cells: Cell[]): ParseResult['statementTotals'] | undefined {
+// A balance keeps its sign: an overdrawn statement shows "-£5.66" (or "£5.66 OD").
+// The start balance used to be forced positive, so a statement that began overdrawn
+// broke the chain against the previous statement's (correctly negative) end balance.
+function signedBalance(raw: string, v: number): number {
+    return /\bOD\b/i.test(raw) ? -Math.abs(v) : v;
+}
+
+export function extractBarclaysStatementTotals(cells: Cell[]): ParseResult['statementTotals'] | undefined {
     // Pass 1: read from cell structure (label in col0, amount in col1)
     const rows = new Map<number, Map<number, string>>();
     for (const c of cells) {
@@ -641,10 +648,10 @@ function extractBarclaysStatementTotals(cells: Cell[]): ParseResult['statementTo
         const c0 = normStr(colMap.get(0) ?? '').toLowerCase();
         const c1 = normStr(colMap.get(1) ?? '');
         if (c0 === 'start balance' || c0 === 'opening balance') {
-            const v = parseMoney(c1); if (v !== null) openingBalance = Math.abs(v);
+            const v = parseMoney(c1); if (v !== null) openingBalance = signedBalance(c1, v);
         } else if (c0 === 'end balance' || c0 === 'closing balance') {
             const v = parseMoney(c1);
-            if (v !== null) closingBalance = /\bOD\b/i.test(c1) ? -Math.abs(v) : v;
+            if (v !== null) closingBalance = signedBalance(c1, v);
         } else if (c0 === 'money out') {
             const v = parseMoney(c1); if (v !== null) moneyOut = Math.abs(v);
         } else if (c0 === 'money in') {
@@ -665,15 +672,16 @@ function extractBarclaysStatementTotals(cells: Cell[]): ParseResult['statementTo
         };
         if (moneyOut === undefined)      moneyOut      = pick(/\bMoney out\n[£€]?([\d,]+\.?\d*)/i);
         if (moneyIn === undefined)       moneyIn       = pick(/\bMoney in\n[£€]?([\d,]+\.?\d*)/i);
-        if (openingBalance === undefined) openingBalance = pick(/\bStart balance\n[£€]?([\d,]+\.?\d*)/i);
-        if (closingBalance === undefined) {
-            // Use OD-aware extraction: preserve negative sign for overdraft closing balance
-            const ecm = /\bEnd balance\n[£€]?([\d,]+\.?\d*)(\s*OD)?/i.exec(raw);
-            if (ecm) {
-                const v = parseMoney(ecm[1]);
-                if (v !== null) closingBalance = ecm[2]?.trim() ? -Math.abs(v) : v;
-            }
-        }
+        // Balances keep their sign: overdrawn shows as "-£5.66", "£-5.66" or "£5.66 OD".
+        const pickBalance = (label: string): number | undefined => {
+            const m = new RegExp(`\\b${label}\\n(-?)[£€]?(-?)([\\d,]+\\.?\\d*)(\\s*OD)?`, 'i').exec(raw);
+            if (!m) return undefined;
+            const v = parseMoney(m[3]);
+            if (v === null) return undefined;
+            return m[1] || m[2] || m[4]?.trim() ? -Math.abs(v) : Math.abs(v);
+        };
+        if (openingBalance === undefined) openingBalance = pickBalance('Start balance');
+        if (closingBalance === undefined) closingBalance = pickBalance('End balance');
     }
 
     if (moneyIn === undefined || moneyOut === undefined) return undefined;

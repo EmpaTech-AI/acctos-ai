@@ -11,6 +11,7 @@ import { startBatchProcessingJob, startProcessingJob, extractClientName } from '
 import { notifyUnsupportedAttachment } from '../services/processing/NotificationService.js';
 import { uploadOriginalsToDrive } from '../services/google/GoogleService.js';
 import { saveGmailHistoryId, loadGmailHistoryId, claimGmailMessage } from '../services/SupabaseService.js';
+import { subjectOrSender } from '../utils/emailSubject.js';
 import prisma from '../lib/prisma.js';
 
 // Build a tracking context from env vars — used to record usage for Gmail-triggered jobs.
@@ -94,6 +95,12 @@ async function processEmailMessage(
         console.warn(`[GmailPoller] markAsRead failed for ${message.id} — continuing anyway:`, e?.message);
     }
 
+    // With no subject, everything below would be filed nameless and no result email sent.
+    const subject = subjectOrSender(message.subject, message.from);
+    if (!message.subject.trim()) {
+        console.log(`[GmailPoller] Message ${message.id} has no subject — using sender name "${subject}"`);
+    }
+
     try {
         const attachments = await getSupportedAttachments(message.id);
         // An .xlsx/.xls name is never a PDF, whatever the mimeType claims. Senders'
@@ -116,7 +123,7 @@ async function processEmailMessage(
 
         if (!attachments.length) {
             console.log(`[GmailPoller] Message ${message.id} has no supported attachments — sending error reply`);
-            notifyUnsupportedAttachment({ to: extractEmail(message.from), emailSubject: message.subject });
+            notifyUnsupportedAttachment({ to: extractEmail(message.from), emailSubject: subject });
             return;
         }
 
@@ -130,8 +137,8 @@ async function processEmailMessage(
         const originalsId = processingMode === 'vat'
             ? process.env.DRIVE_VAT_ORIGINALS_FOLDER_ID
             : process.env.DRIVE_BANK_STATEMENT_ORIGINALS_FOLDER_ID;
-        if (originalsId && message.subject) {
-            const clientFolder = extractClientName(message.subject);
+        if (originalsId) {
+            const clientFolder = extractClientName(subject);
             uploadOriginalsToDrive(
                 sourceAttachments.map(a => ({ buffer: a.buffer, filename: a.filename })),
                 originalsId,
@@ -140,21 +147,21 @@ async function processEmailMessage(
         }
 
         if (pdfs.length > 0) {
-            console.log(`[GmailPoller] Processing ${pdfs.length} PDF(s) from "${message.subject}" as ${processingMode}`);
+            console.log(`[GmailPoller] Processing ${pdfs.length} PDF(s) from "${subject}" as ${processingMode}`);
             startBatchProcessingJob(
                 pdfs.map(pdf => ({ filename: pdf.filename, mimeType: pdf.mimeType, buffer: pdf.buffer })),
                 getGmailTracking(),
                 undefined,
                 processingMode,
-                message.subject,
+                subject,
                 message.from,
             );
         } else if (excels.length === 1) {
-            console.log(`[GmailPoller] Processing Excel "${excels[0].filename}" from "${message.subject}" as ${processingMode}`);
-            startProcessingJob(excels[0].filename, excels[0].mimeType, excels[0].buffer, getGmailTracking(), processingMode, message.subject, extractEmail(message.from));
+            console.log(`[GmailPoller] Processing Excel "${excels[0].filename}" from "${subject}" as ${processingMode}`);
+            startProcessingJob(excels[0].filename, excels[0].mimeType, excels[0].buffer, getGmailTracking(), processingMode, subject, extractEmail(message.from));
         } else {
             console.log(`[GmailPoller] Message ${message.id} has ${excels.length} Excel files but no PDFs — sending error reply`);
-            notifyUnsupportedAttachment({ to: extractEmail(message.from), emailSubject: message.subject });
+            notifyUnsupportedAttachment({ to: extractEmail(message.from), emailSubject: subject });
         }
     } finally {
         // Keep the ID in the set for 10 minutes — prevents a second push notification
