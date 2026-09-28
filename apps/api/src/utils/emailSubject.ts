@@ -3,8 +3,8 @@
  * subject — the originals folder, the result folder and filename, the VAT header and
  * the result email — so an email sent with no subject used to be processed but then
  * filed as "_processed.xlsx" in the root folder, with no originals and no result email.
- * With no subject, fall back to the sender's display name ("Greek Gyros Afroviti Ltd"),
- * or their address when there is no display name.
+ * With no subject, fall back to the sender's display name ("Example Ltd" in
+ * "Example Ltd <owner@example.com>"), or their address when there is no display name.
  */
 export function subjectOrSender(subject: string | undefined, from: string): string {
     const s = (subject ?? '').trim();
