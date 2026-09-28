@@ -26,6 +26,7 @@ export default function Layout({ children }: LayoutProps) {
     const { t, language, setLanguage } = useLanguage();
     const [showTenantMenu, setShowTenantMenu] = useState(false);
     const [scenariosPaused, setScenariosPaused] = useState(false);
+    const [exhausted, setExhausted] = useState({ pages: false, rows: false });
     const navigate = useNavigate();
 
     useEffect(() => {
@@ -35,7 +36,10 @@ export default function Layout({ children }: LayoutProps) {
         const fetchPauseStatus = async () => {
             try {
                 const res = await axios.get('/v1/billing/usage-status');
-                if (!cancelled) setScenariosPaused(res.data.scenariosPaused ?? false);
+                if (!cancelled) {
+                    setScenariosPaused(res.data.scenariosPaused ?? false);
+                    setExhausted({ pages: res.data.pagesExhausted ?? false, rows: res.data.rowsExhausted ?? false });
+                }
             } catch (err: any) {
                 // Token expired or invalid — stop polling to avoid log spam
                 if (err?.response?.status === 401 || err?.response?.status === 403) {
@@ -137,7 +141,11 @@ export default function Layout({ children }: LayoutProps) {
                 <div className="usage-limit-banner">
                     <AlertTriangle size={22} style={{ flexShrink: 0, marginTop: 2 }} />
                     <div className="usage-limit-banner-body">
-                        <strong>{t.bannerTitle}</strong>
+                        <strong>
+                            {exhausted.rows && !exhausted.pages ? t.bannerTitleRows
+                                : exhausted.pages && !exhausted.rows ? t.bannerTitlePages
+                                : t.bannerTitle}
+                        </strong>
                         <p>{t.bannerBody}</p>
                         <ul>
                             <li>{t.bannerOption1}</li>

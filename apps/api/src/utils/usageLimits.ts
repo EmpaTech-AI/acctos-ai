@@ -390,13 +390,28 @@ export async function checkAndPauseIfNeeded(
     }
 }
 
+/** A billed resource: PDF statements spend pages, Excel statements spend rows. */
+export type LimitResource = 'pages' | 'rows';
+
+export type ProcessingGateResult =
+    | { allowed: true }
+    | { allowed: false; reason: 'paused' }
+    | { allowed: false; reason: 'limit_exceeded'; resource: LimitResource; used: number; limit: number };
+
 /**
  * Gate check: should a NEW processing job be allowed to start for this tenant?
  *
- * - Returns { allowed: false, reason: 'paused' } when scenariosPaused is true
- *   (set either by limit auto-pause or by an admin manual stop).
- * - Returns { allowed: false, reason: 'limit_exceeded' } when current-period
- *   usage >= plan limits; also sets scenariosPaused=true as a side-effect.
+ * `needs` is what the job will spend — ['rows'] for an Excel statement, ['pages']
+ * for a PDF. Each resource is gated on its own limit, so a tenant who has used up
+ * Excel rows can still process PDFs with the pages left, and vice versa.
+ *
+ * - Returns { allowed: false, reason: 'limit_exceeded', resource } when a resource
+ *   the job needs is used up; also sets scenariosPaused=true so the dashboard
+ *   shows the limit.
+ * - Returns { allowed: false, reason: 'paused' } when scenariosPaused is true and
+ *   no limit is exceeded — that flag can then only come from an admin manual stop.
+ *   While a limit IS exceeded the flag is treated as the limit pause, so it does
+ *   not block the other resource.
  * - Returns { allowed: true } otherwise.
  *
  * Call this at the START of every job, before any work begins. Never call it
@@ -407,7 +422,8 @@ export async function checkAndPauseIfNeeded(
 export async function checkProcessingAllowed(
     prisma: PrismaClient,
     tenantId: string,
-): Promise<{ allowed: true } | { allowed: false; reason: 'paused' | 'limit_exceeded' }> {
+    needs: LimitResource[] = ['pages', 'rows'],
+): Promise<ProcessingGateResult> {
     try {
         const tenant = await (prisma.tenant as any).findUnique({
             where: { id: tenantId },
@@ -423,29 +439,35 @@ export async function checkProcessingAllowed(
         });
         if (!tenant) return { allowed: true }; // unknown tenant — don't block
 
-        if (tenant.scenariosPaused) {
-            return { allowed: false, reason: 'paused' };
-        }
-
         const resetDay   = tenant.billingResetDay ?? DEFAULT_BILLING_RESET_DAY;
         const periodStart = tenant.lastResetAt
             ? new Date(tenant.lastResetAt)
             : getExpectedResetDate(resetDay);
         const usage      = await getCurrentPeriodUsage(prisma, tenantId, periodStart);
-        const totalPages = (tenant.pagesLimit ?? 5000) + (tenant.addonPagesLimit ?? 0);
-        const totalRows  = (tenant.rowsLimit  ?? 5000) + (tenant.addonRowsLimit  ?? 0);
+        const totals: Record<LimitResource, number> = {
+            pages: (tenant.pagesLimit ?? 5000) + (tenant.addonPagesLimit ?? 0),
+            rows:  (tenant.rowsLimit  ?? 5000) + (tenant.addonRowsLimit  ?? 0),
+        };
+        const exhausted = (r: LimitResource) => usage[r] >= totals[r];
 
-        if (usage.pages >= totalPages || usage.rows >= totalRows) {
-            // Auto-set the paused flag so subsequent checks are fast (DB read only)
+        if (!exhausted('pages') && !exhausted('rows')) {
+            return tenant.scenariosPaused ? { allowed: false, reason: 'paused' } : { allowed: true };
+        }
+
+        if (!tenant.scenariosPaused) {
+            // Set the paused flag so the dashboard shows the limit banner
             try {
                 await (prisma.tenant as any).update({
                     where: { id: tenantId },
                     data: { scenariosPaused: true },
                 });
             } catch { /* non-fatal */ }
-            return { allowed: false, reason: 'limit_exceeded' };
         }
 
+        const blocked = needs.find(exhausted);
+        if (blocked) {
+            return { allowed: false, reason: 'limit_exceeded', resource: blocked, used: usage[blocked], limit: totals[blocked] };
+        }
         return { allowed: true };
     } catch (e: any) {
         // Fail open — a DB error should never block legitimate processing

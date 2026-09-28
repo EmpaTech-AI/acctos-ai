@@ -106,6 +106,7 @@ export default function Dashboard() {
         pagesRemaining: number; rowsRemaining: number;
         limitWarning: boolean;
         scenariosPaused: boolean;
+        pagesExhausted: boolean; rowsExhausted: boolean;
         lastResetAt: string; nextResetAt: string; billingResetDay: number;
     } | null>(null);
     const [docMonthFilter, setDocMonthFilter] = useState<'30d' | 'current-month' | 'prev-month'>('30d');
@@ -213,6 +214,8 @@ export default function Dashboard() {
                     rowsRemaining:   d.rowsRemaining  ?? ((d.totalRowsLimit  ?? d.rowsLimit)  - (d.currentRows  ?? 0)),
                     limitWarning:    d.limitWarning ?? false,
                     scenariosPaused: d.scenariosPaused,
+                    pagesExhausted:  d.pagesExhausted ?? false,
+                    rowsExhausted:   d.rowsExhausted ?? false,
                     lastResetAt:     d.lastResetAt ?? '',
                     nextResetAt:     d.nextResetAt ?? '',
                     billingResetDay: d.billingResetDay ?? 4,
@@ -1003,7 +1006,9 @@ export default function Dashboard() {
                             marginBottom: '1.5rem', fontSize: '0.9rem'
                         }}>
                             <TrendingUp size={18} />
-                            <span><strong>{t.agentPaused}</strong>{t.agentPausedDesc}</span>
+                            {usageLimits.rowsExhausted !== usageLimits.pagesExhausted
+                                ? <span><strong>{usageLimits.rowsExhausted ? t.bannerTitleRows : t.bannerTitlePages}</strong></span>
+                                : <span><strong>{t.agentPaused}</strong>{t.agentPausedDesc}</span>}
                         </div>
                     )}
 

@@ -372,6 +372,10 @@ router.get('/usage-status', async (req: AuthenticatedRequest, res: Response, nex
             rowsRemaining,
             limitWarning:     isLow,
             scenariosPaused:  tenant.scenariosPaused ?? false,
+            // Which limit is used up — the gate blocks only that kind of statement
+            // (rows → Excel, pages → PDF); the other keeps processing.
+            pagesExhausted:   usage.pages >= totalPages,
+            rowsExhausted:    usage.rows  >= totalRows,
             lastResetAt:        periodStart.toISOString(),
             nextResetAt:        getNextResetDate(resetDay).toISOString(),
             subscriptionStatus: subscription?.status || 'trialing',

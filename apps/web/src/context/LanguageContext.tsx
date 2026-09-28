@@ -52,6 +52,8 @@ const en = {
 
     // Usage limit banner
     bannerTitle: "You've reached your current usage limit, and your agent has been temporarily paused.",
+    bannerTitleRows: "You've used up your Excel rows for this billing period — Excel statements are paused. PDF statements are still processed.",
+    bannerTitlePages: "You've used up your PDF pages for this billing period — PDF statements are paused. Excel statements are still processed.",
     bannerBody: 'To resume your agent, please either:',
     bannerOption1: 'Purchase additional pages/rows on the Billing page, or',
     bannerOption2: 'Upgrade your subscription plan.',
@@ -274,6 +276,8 @@ const bg: typeof en = {
 
     // Usage limit banner
     bannerTitle: 'Достигнахте текущия лимит за употреба и вашият агент беше временно спрян.',
+    bannerTitleRows: 'Изчерпахте редовете за Excel за текущия период на фактуриране — Excel извлеченията са спрени. PDF извлеченията продължават да се обработват.',
+    bannerTitlePages: 'Изчерпахте страниците за PDF за текущия период на фактуриране — PDF извлеченията са спрени. Excel извлеченията продължават да се обработват.',
     bannerBody: 'За да стартирате агента отново, моля:',
     bannerOption1: 'Закупете допълнителни страници/редове от страницата за фактуриране, или',
     bannerOption2: 'Надстройте абонаментния си план.',

@@ -10,14 +10,46 @@ import { parseExcel } from './ExcelParser.js';
 import { buildPdfOutputExcel, buildExcelOutputExcel, buildVatOutputExcel, VatStats } from './ExcelOutputBuilder.js';
 import { Cell, ParsedTransaction, ParseResult } from './parsers/shared.js';
 import { computeVerification, applyCatVerification, logVerificationSummary, computeChainVerification, earliestTransactionDate } from './Verification.js';
-import { notifyParserError, notifyChainGap, notifyJobFailed, notifyInsufficientFiles, notifyDuplicatesRemoved, notifyProcessingComplete, notifyTeamIssuesSummary, notifyClientIssuesSummary, notifyUnknownBank, ClientIssueItem, BankSummary } from './NotificationService.js';
+import { notifyParserError, notifyChainGap, notifyJobFailed, notifyInsufficientFiles, notifyDuplicatesRemoved, notifyProcessingComplete, notifyTeamIssuesSummary, notifyClientIssuesSummary, notifyUnknownBank, notifyProcessingBlocked, ClientIssueItem, BankSummary } from './NotificationService.js';
 import { JobSummary, AdminIssue } from './JobStore.js';
 import {
     getAzureCache, saveAzureCache,
     createJobRecord, updateJobRecord, saveOutputFile,
 } from '../SupabaseService.js';
 import { uploadToDriveFolder, uploadToDriveSubfolder } from '../google/GoogleService.js';
-import { checkProcessingAllowed, recordOrchestratorUsage } from '../../utils/usageLimits.js';
+import { checkProcessingAllowed, recordOrchestratorUsage, LimitResource, ProcessingGateResult } from '../../utils/usageLimits.js';
+
+/** What a file spends against the plan: Excel statements use rows, everything else pages. */
+function resourceFor(filename: string, mimeType: string): LimitResource {
+    return classify(filename, mimeType).fileFormat === 'excel' ? 'rows' : 'pages';
+}
+
+/**
+ * Marks a job stopped at the limit gate as failed and, for email-triggered jobs,
+ * tells the client and the team — otherwise the statement just disappears, since
+ * the email is already marked read and will not be picked up again.
+ */
+function blockJob(
+    jobId: string,
+    gate: Exclude<ProcessingGateResult, { allowed: true }>,
+    filenames: string[],
+    emailSubject?: string,
+    senderEmail?: string,
+): void {
+    const errMsg = gate.reason === 'limit_exceeded'
+        ? `${gate.resource === 'rows' ? 'Excel rows' : 'PDF pages'} limit reached for this billing period (${gate.used}/${gate.limit}). Processing paused.`
+        : 'Processing is currently paused. Contact your administrator.';
+    jobStore.update(jobId, { status: 'failed', error: errMsg, errorType: 'LIMIT_EXCEEDED' });
+    console.warn(`[Orchestrator] Job ${jobId} blocked — ${gate.reason}${gate.reason === 'limit_exceeded' ? `:${gate.resource} ${gate.used}/${gate.limit}` : ''}`);
+    if (senderEmail && emailSubject) {
+        notifyProcessingBlocked({
+            emailSubject,
+            filenames,
+            reason:   gate.reason,
+            ...(gate.reason === 'limit_exceeded' ? { resource: gate.resource, used: gate.used, limit: gate.limit } : {}),
+        });
+    }
+}
 
 function getDriveFolderId(processingMode?: 'bank_statement' | 'vat'): string {
     return processingMode === 'vat'
@@ -341,13 +373,10 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
     try {
         // ── Limit gate: check BEFORE any work starts — never interrupts a running job ──
         if (tracking?.tenantId && tracking?.prisma) {
-            const limitCheck = await checkProcessingAllowed(tracking.prisma, tracking.tenantId);
+            const needs = [...new Set(files.map(f => resourceFor(f.filename, f.mimeType)))];
+            const limitCheck = await checkProcessingAllowed(tracking.prisma, tracking.tenantId, needs);
             if (!limitCheck.allowed) {
-                const errMsg = limitCheck.reason === 'limit_exceeded'
-                    ? 'Usage limit reached for this billing period. Processing paused.'
-                    : 'Processing is currently paused. Contact your administrator.';
-                jobStore.update(jobId, { status: 'failed', error: errMsg, errorType: 'LIMIT_EXCEEDED' });
-                console.warn(`[Orchestrator] Batch job ${jobId} blocked — ${limitCheck.reason}`);
+                blockJob(jobId, limitCheck, files.map(f => f.filename), emailSubject, senderEmail);
                 return;
             }
         }
@@ -1009,13 +1038,9 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
     try {
         // ── Limit gate: check BEFORE any work starts — never interrupts a running job ──
         if (tracking?.tenantId && tracking?.prisma) {
-            const limitCheck = await checkProcessingAllowed(tracking.prisma, tracking.tenantId);
+            const limitCheck = await checkProcessingAllowed(tracking.prisma, tracking.tenantId, [resourceFor(filename, mimeType)]);
             if (!limitCheck.allowed) {
-                const errMsg = limitCheck.reason === 'limit_exceeded'
-                    ? 'Usage limit reached for this billing period. Processing paused.'
-                    : 'Processing is currently paused. Contact your administrator.';
-                jobStore.update(jobId, { status: 'failed', error: errMsg, errorType: 'LIMIT_EXCEEDED' });
-                console.warn(`[Orchestrator] Job ${jobId} blocked — ${limitCheck.reason}`);
+                blockJob(jobId, limitCheck, [filename], emailSubject, senderEmail);
                 return;
             }
         }

@@ -23,7 +23,7 @@ vi.mock('../../MailgunService.js', () => ({
     sendMailgunMessage: async (opts: SendOpts) => { sent.push(opts); },
 }));
 
-import { notifyProcessingComplete, ProcessingCompleteAlert } from '../NotificationService.js';
+import { notifyProcessingComplete, ProcessingCompleteAlert, notifyProcessingBlocked } from '../NotificationService.js';
 
 const DRIVE_URL = 'https://docs.google.com/spreadsheets/d/EXAMPLE/edit';
 
@@ -80,5 +80,57 @@ describe('notifyProcessingComplete', () => {
             expect(m.attachment?.filename).toBe('Example Ltd VAT_processed.xlsx');
             expect(m.text).toContain('Attached you can find');
         }
+    });
+});
+
+/**
+ * A statement stopped at the limit gate used to vanish: the email was marked read,
+ * nothing was processed and nobody was told. Client and team now get a notice that
+ * names the used-up limit and asks for the email to be sent again.
+ */
+describe('notifyProcessingBlocked', () => {
+    async function block(a: Parameters<typeof notifyProcessingBlocked>[0]) {
+        notifyProcessingBlocked(a);
+        await new Promise(r => setTimeout(r, 0));
+        return {
+            team:   sent.find(m => m.to === 'team@example.test')!,
+            client: sent.find(m => m.to === 'client@example.test')!,
+        };
+    }
+    const rowsOut = {
+        emailSubject: 'FS BEXLEY LONDON LTD accounts', filenames: ['Mettle-Export.xlsx'],
+        reason: 'limit_exceeded' as const, resource: 'rows' as const, used: 1401, limit: 1000,
+    };
+
+    it('goes to the client and the team as a reply to the original email', async () => {
+        const { team, client } = await block(rowsOut);
+
+        expect(client).toBeDefined();
+        expect(team).toBeDefined();
+        expect(client.subject).toBe('Re: FS BEXLEY LONDON LTD accounts');
+        expect(client.attachment).toBeUndefined();
+    });
+
+    it('names the used-up limit, says the other kind still works, and asks to resend', async () => {
+        const { client } = await block(rowsOut);
+
+        expect(client.text).toContain('Excel rows limit reached');
+        expect(client.text).toContain('1,401 of 1,000');
+        expect(client.text).toContain('Mettle-Export.xlsx');
+        expect(client.text).toContain('PDF statements are still processed.');
+        expect(client.text).toContain('please send this email again');
+        expect(client.text).toContain('/dashboard/billing');
+        expect(client.text).toContain('редовете за Excel за текущия период на фактуриране са изчерпани');
+        expect(client.html).toContain('<strong>FS BEXLEY LONDON LTD accounts</strong>');
+    });
+
+    it('for a manual pause, says processing is paused without a limit or billing link', async () => {
+        const { client } = await block({ emailSubject: 'Re: Example Ltd', filenames: ['a.pdf'], reason: 'paused' });
+
+        expect(client.subject).toBe('Re: Example Ltd');
+        expect(client.text).toContain('processing is paused');
+        expect(client.text).toContain('please send this email again');
+        expect(client.text).not.toContain('/dashboard/billing');
+        expect(client.text).not.toContain('limit reached');
     });
 });
