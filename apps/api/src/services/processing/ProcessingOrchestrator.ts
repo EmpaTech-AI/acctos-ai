@@ -4,7 +4,7 @@ import { PrismaClientKnownRequestError } from '@prisma/client/runtime/library';
 import { jobStore, FileSummary } from './JobStore.js';
 import { classify, detectBankFromContent, BankType } from './DocumentClassifier.js';
 import { splitPdf } from './PdfSplitter.js';
-import { analyzePages, PageData } from './AzureExtractor.js';
+import { analyzePages, countPagesRead, PageData } from './AzureExtractor.js';
 import { categorize, CategorizedTransaction } from './AssistantCategorizer.js';
 import { parseExcel } from './ExcelParser.js';
 import { buildPdfOutputExcel, buildExcelOutputExcel, buildVatOutputExcel, VatStats } from './ExcelOutputBuilder.js';
@@ -425,15 +425,11 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
             if (cachedPages) {
                 console.log(`[Orchestrator] Azure cache HIT for file ${fi + 1}: "${filename}"`);
                 pageData = cachedPages;
-                jobStore.update(jobId, { pageCount: cachedPages.filter(p => p !== null).length });
-                totalPagesSpent += cachedPages.filter(p => p !== null).length;
             } else {
                 const pageBuffers = await splitPdf(buffer);
                 jobStore.update(jobId, { pageCount: pageBuffers.length });
                 pageData = await analyzePages(pageBuffers);
                 usedAzure = true;
-                totalPagesSpent += pageData.filter(p => p !== null).length;
-                console.log(`[Orchestrator] File ${fi + 1}/${files.length} Azure DI: ${pageData.filter(p => p !== null).length}/${pageData.length} page(s) extracted`);
 
                 // If every page returned null Azure DI may have had a transient
                 // failure (or the split produced bad chunks). Wait 5 minutes and
@@ -444,7 +440,7 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
                     await new Promise(r => setTimeout(r, RETRY_DELAY_MS));
                     const retryBuffers = await splitPdf(buffer);
                     pageData = await analyzePages(retryBuffers);
-                    console.log(`[Orchestrator] Retry result for "${filename}": ${pageData.filter(p => p !== null).length}/${pageData.length} page(s) extracted`);
+                    console.log(`[Orchestrator] Retry result for "${filename}": ${pageData.filter(p => p !== null).length}/${pageData.length} part(s) extracted`);
                 }
 
                 if (pageData.some(p => p !== null)) {
@@ -452,8 +448,19 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
                 }
             }
 
+            // Pages, not entries: a PDF sent to Azure whole is one entry of many
+            // pages. Counted after the retry, so a file that is only read on the
+            // second try is charged too.
+            const filePages = await countPagesRead(buffer, pageData);
+            jobStore.update(jobId, { pageCount: filePages });
+            totalPagesSpent += filePages;
+            if (usedAzure) {
+                const failed = pageData.filter(p => p === null).length;
+                console.log(`[Orchestrator] File ${fi + 1}/${files.length} Azure DI: ${filePages} page(s) extracted${failed ? `, ${failed} of ${pageData.length} part(s) failed` : ''}`);
+            }
+
             if (usedAzure && tracking && !adminImport) {
-                const pageCount = pageData.filter(p => p !== null).length;
+                const pageCount = filePages;
                 if (pageCount > 0) {
                     const today = new Date(); today.setHours(0, 0, 0, 0);
                     const docType = classification.docType ?? '';
@@ -1163,21 +1170,22 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
             if (cachedPages) {
                 console.log(`[Orchestrator] Azure cache HIT for "${filename}"`);
                 pageData = cachedPages;
-                jobStore.update(jobId, { pageCount: cachedPages.filter(p => p !== null).length });
-                _pagesSpent = cachedPages.filter(p => p !== null).length;
             } else {
                 const pageBuffers = await splitPdf(fileBuffer);
                 jobStore.update(jobId, { pageCount: pageBuffers.length });
                 pageData = await analyzePages(pageBuffers);
                 usedAzure = true;
-                _pagesSpent = pageData.filter(p => p !== null).length;
                 console.log(`[Orchestrator] Azure DI results per page:`, pageData.map((p, i) => `page${i+1}:${p?.cells?.length ?? 'null'}cells`));
                 saveAzureCache(fileHash, filename, pageData).catch(() => {});
             }
 
+            // Pages, not entries: a PDF sent to Azure whole is one entry of many pages.
+            _pagesSpent = await countPagesRead(fileBuffer, pageData);
+            jobStore.update(jobId, { pageCount: _pagesSpent });
+
             // Track Azure Document Intelligence usage (only when we actually called Azure, and not for admin imports)
             if (usedAzure && tracking && !adminImport) {
-                const pageCount = pageData.filter(p => p !== null).length;
+                const pageCount = _pagesSpent;
                 if (pageCount > 0) {
                     const today = new Date(); today.setHours(0, 0, 0, 0);
                     const docType = classification.docType ?? '';
