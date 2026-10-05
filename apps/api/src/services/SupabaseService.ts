@@ -31,16 +31,26 @@ const BUCKET = 'processed-files';
 // ── Azure DI cache ────────────────────────────────────────────────────────────
 
 export async function getAzureCache(fileHash: string): Promise<Array<PageData | null> | null> {
+    return (await getAzureCacheEntry(fileHash))?.pages ?? null;
+}
+
+/** The cached pages together with when Azure first read the file. */
+export async function getAzureCacheEntry(
+    fileHash: string,
+): Promise<{ pages: Array<PageData | null>; cachedAt: Date | null } | null> {
     const sb = getClient();
     if (!sb) return null;
     try {
         const { data, error } = await sb
             .from('azure_di_cache')
-            .select('pages')
+            .select('pages, created_at')
             .eq('file_hash', fileHash)
             .single();
         if (error || !data) return null;
-        return data.pages as Array<PageData | null>;
+        return {
+            pages:    data.pages as Array<PageData | null>,
+            cachedAt: data.created_at ? new Date(data.created_at) : null,
+        };
     } catch {
         return null;
     }
