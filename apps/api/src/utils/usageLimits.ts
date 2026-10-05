@@ -37,10 +37,86 @@ export function getNextResetDate(resetDay = DEFAULT_BILLING_RESET_DAY): Date {
     return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), resetDay));
 }
 
+/** Subscription statuses Stripe reports when the last payment did not go through. */
+export const PAYMENT_FAILED_STATUSES = ['past_due', 'unpaid'];
+
+/**
+ * Starts a new billing period at `periodStart`: usage counts from zero again,
+ * add-on credits expire, and a pause caused by a used-up limit is lifted.
+ *
+ * A manual pause (flag set while no limit was exceeded) is left alone — only an
+ * admin lifts that one.
+ */
+export async function startNewBillingPeriod(
+    prisma: PrismaClient,
+    tenantId: string,
+    periodStart: Date,
+    extra: Record<string, unknown> = {},
+): Promise<{ pauseLifted: boolean }> {
+    const tenant = await (prisma.tenant as any).findUnique({
+        where: { id: tenantId },
+        select: {
+            pagesLimit: true, rowsLimit: true,
+            addonPagesLimit: true, addonRowsLimit: true,
+            scenariosPaused: true, lastResetAt: true,
+        },
+    });
+    if (!tenant) return { pauseLifted: false };
+
+    // Decide what the pause was BEFORE the period moves: measured against the
+    // period that is ending, with the add-ons that are about to expire.
+    let limitPaused = false;
+    if (tenant.scenariosPaused) {
+        const oldStart = tenant.lastResetAt ? new Date(tenant.lastResetAt) : new Date(0);
+        const usage = await getCurrentPeriodUsage(prisma, tenantId, oldStart);
+        const totalPages = (tenant.pagesLimit ?? 5000) + (tenant.addonPagesLimit ?? 0);
+        const totalRows  = (tenant.rowsLimit  ?? 5000) + (tenant.addonRowsLimit  ?? 0);
+        limitPaused = usage.pages >= totalPages || usage.rows >= totalRows;
+    }
+
+    // Clear add-on credits (they expire each billing period) and record reset.
+    await (prisma.tenant as any).update({
+        where: { id: tenantId },
+        data: {
+            addonPagesLimit: 0,
+            addonRowsLimit: 0,
+            lastResetAt: periodStart,
+            ...extra,
+        },
+    });
+    // Clear warning flag if column exists (added in later migration)
+    try {
+        await (prisma.tenant as any).update({
+            where: { id: tenantId },
+            data: { limitWarningFiredAt: null },
+        });
+    } catch { /* column may not exist yet */ }
+
+    if (limitPaused) {
+        try {
+            await resumeAllScenarios(prisma, tenantId);
+        } catch (e) {
+            console.warn('[New Period] Auto-resume failed:', e);
+        }
+        // Always clear the flag: usage is back to 0, so the pause notification
+        // must disappear regardless of whether the Make.com API calls succeeded.
+        await (prisma.tenant as any).update({
+            where: { id: tenantId },
+            data: { scenariosPaused: false },
+        });
+    }
+
+    return { pauseLifted: limitPaused };
+}
+
 /**
  * Lazy monthly reset: checks if the billing period has rolled over and if so,
- * clears add-on credits, updates lastResetAt, and auto-resumes scenarios for
- * active subscribers.
+ * starts the new period (see startNewBillingPeriod).
+ *
+ * The calendar is the clock only for tenants with no Stripe subscription. A
+ * tenant on a Stripe subscription gets its new period from the paid renewal
+ * (applyPaidRenewal) and from nothing else: if the calendar restarted it too, a
+ * renewal that failed would go unnoticed and the tenant would keep working.
  *
  * Returns true if a reset was applied.
  */
@@ -51,7 +127,7 @@ export async function applyMonthlyResetIfNeeded(
     try {
         const tenant = await (prisma.tenant as any).findUnique({
             where: { id: tenantId },
-            select: { lastResetAt: true, scenariosPaused: true, billingResetDay: true },
+            select: { lastResetAt: true, billingResetDay: true },
         });
         if (!tenant) return false;
 
@@ -60,51 +136,12 @@ export async function applyMonthlyResetIfNeeded(
         const needsReset = !tenant.lastResetAt || new Date(tenant.lastResetAt) < expectedReset;
         if (!needsReset) return false;
 
-        // Check whether this tenant has an active subscription
         const subscription = await prisma.subscription.findUnique({ where: { tenantId } });
-        const isSubscribed = subscription?.status === 'active';
+        if ((subscription as any)?.stripeSubscriptionId) return false; // waits for the paid renewal
 
-        // Clear add-on credits (they expire each billing period) and record reset.
-        // scenariosPaused is NOT cleared here — it is cleared only after
-        // resumeAllScenarios() confirms the scenarios are actually resuming,
-        // so the notification stays visible until Make.com has been contacted.
-        await (prisma.tenant as any).update({
-            where: { id: tenantId },
-            data: {
-                addonPagesLimit: 0,
-                addonRowsLimit: 0,
-                lastResetAt: expectedReset,
-                billingResetDay: resetDay,
-            },
-        });
-        // Clear warning flag if column exists (added in later migration)
-        try {
-            await (prisma.tenant as any).update({
-                where: { id: tenantId },
-                data: { limitWarningFiredAt: null },
-            });
-        } catch { /* column may not exist yet */ }
+        const { pauseLifted } = await startNewBillingPeriod(prisma, tenantId, expectedReset, { billingResetDay: resetDay });
 
-        if (isSubscribed && tenant.scenariosPaused) {
-            try {
-                await resumeAllScenarios(prisma, tenantId);
-            } catch (e) {
-                console.warn('[Monthly Reset] Auto-resume failed:', e);
-            }
-            // Always clear the flag after a billing-period reset: limits are
-            // back to 0, so the pause notification must disappear regardless
-            // of whether the Make.com API calls succeeded.
-            try {
-                await (prisma.tenant as any).update({
-                    where: { id: tenantId },
-                    data: { scenariosPaused: false },
-                });
-            } catch (e: any) {
-                console.warn('[Monthly Reset] Failed to clear scenariosPaused flag:', e.message?.split('\n')[0]);
-            }
-        }
-
-        console.log(`[Monthly Reset] Tenant ${tenantId} reset. isSubscribed=${isSubscribed}`);
+        console.log(`[Monthly Reset] Tenant ${tenantId} reset. status=${subscription?.status ?? 'none'} pauseLifted=${pauseLifted}`);
         return true;
     } catch (e: any) {
         // Gracefully skip if the DB migration adding these fields hasn't been run yet
@@ -414,6 +451,10 @@ export type ProcessingGateResult =
  *   not block the other resource.
  * - Returns { allowed: true } otherwise.
  *
+ * Applies a pending calendar reset first: that reset is lazy, and an emailed job
+ * on the first morning of a period would otherwise be judged against last
+ * period's usage until someone opened the dashboard.
+ *
  * Call this at the START of every job, before any work begins. Never call it
  * mid-job — running jobs always complete regardless of limit state.
  * Fails open (returns allowed: true) on DB errors so a DB blip never blocks
@@ -425,6 +466,8 @@ export async function checkProcessingAllowed(
     needs: LimitResource[] = ['pages', 'rows'],
 ): Promise<ProcessingGateResult> {
     try {
+        await applyMonthlyResetIfNeeded(prisma, tenantId);
+
         const tenant = await (prisma.tenant as any).findUnique({
             where: { id: tenantId },
             select: {
