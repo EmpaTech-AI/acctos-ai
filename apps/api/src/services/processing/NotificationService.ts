@@ -44,12 +44,12 @@ function sendToAllTeam(subject: string, body: string): void {
     }
 }
 
-function ukTimeStr(): string {
+function ukTimeStr(date: Date = new Date()): string {
     const parts = new Intl.DateTimeFormat('en-GB', {
         timeZone: 'Europe/London',
         day: '2-digit', month: '2-digit', year: 'numeric',
         hour: '2-digit', minute: '2-digit', hour12: false,
-    }).formatToParts(new Date());
+    }).formatToParts(date);
     const g = (t: string) => parts.find(p => p.type === t)?.value ?? '00';
     return `${g('day')}/${g('month')}/${g('year')} ${g('hour')}:${g('minute')} (UK time)`;
 }
@@ -950,6 +950,63 @@ export function notifyUnknownBank(alert: UnknownBankAlert): void {
     ].join('\n');
 
     console.warn(`[ALERT:unknown_bank] ${subject}`);
+    sendToAllTeam(subject, text);
+}
+
+// ── Team: a Stripe payment failed ─────────────────────────────────────────────
+
+export interface PaymentFailedAlert {
+    clientName:     string;
+    tenantId?:      string;
+    customerId?:    string;
+    customerEmail?: string;
+    amountDue:      number;   // in the currency's minor unit
+    currency:       string;
+    attempt:        number;
+    nextAttempt:    Date | null;
+    invoiceUrl?:    string;
+    isRenewal:      boolean;
+}
+
+/**
+ * Stripe could not take a payment. Team only — the client hears from Stripe.
+ *
+ * A subscriber's new billing period starts only when the renewal is paid, so a
+ * failed renewal changes nothing in the system. Without this email it would show
+ * only when the client ran out of limit, possibly weeks later.
+ */
+export function notifyPaymentFailed(alert: PaymentFailedAlert): void {
+    const amount = new Intl.NumberFormat('en-GB', { style: 'currency', currency: alert.currency.toUpperCase() })
+        .format(alert.amountDue / 100);
+    const stripeCustomer = [alert.customerEmail, alert.customerId && `(${alert.customerId})`].filter(Boolean).join(' ') || 'unknown';
+
+    const subject = `[Acctos] Payment failed — ${alert.clientName}`;
+    const text = [
+        `Client: ${alert.clientName}`,
+        `Date: ${ukTimeStr()}`,
+        ``,
+        `Amount due: ${amount}`,
+        `Failed attempt: ${alert.attempt}`,
+        `Next automatic attempt: ${alert.nextAttempt ? ukTimeStr(alert.nextAttempt) : 'none — Stripe will not try again'}`,
+        `Stripe customer: ${stripeCustomer}`,
+        `Tenant: ${alert.tenantId ?? 'not linked to a tenant'}`,
+        ...(alert.invoiceUrl ? [`Invoice: ${alert.invoiceUrl}`] : []),
+        ``,
+        `What this means:`,
+        ...(alert.isRenewal ? [
+            `  The client's new billing period has not started. Usage keeps counting`,
+            `  against the last period, and processing stops when a limit is used up.`,
+            `  The new period starts by itself as soon as the payment succeeds.`,
+        ] : [
+            `  This was not a subscription renewal, so the client's limits are unchanged.`,
+        ]),
+        ``,
+        `What to do:`,
+        `  Contact the client about the payment. The invoice link lets them pay`,
+        `  another way; the reason for the decline is on the payment in Stripe.`,
+    ].join('\n');
+
+    console.warn(`[ALERT:payment_failed] ${subject}`);
     sendToAllTeam(subject, text);
 }
 

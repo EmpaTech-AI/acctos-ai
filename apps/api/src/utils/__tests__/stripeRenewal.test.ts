@@ -9,7 +9,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { applyPaidRenewal, planFromLimits } from '../stripeRenewal.js';
+import { applyPaidRenewal, describeFailedPayment, planFromLimits } from '../stripeRenewal.js';
 
 const T = 'tenant-1';
 const PERIOD_START = new Date('2026-10-04T00:00:00Z');
@@ -177,6 +177,62 @@ describe('applyPaidRenewal', () => {
         const invoice = renewal({ subscription_details: { metadata: { tenantId: 'no-such-tenant' } } });
 
         expect(await applyPaidRenewal(prisma, invoice)).toMatchObject({ applied: false, reason: 'no_tenant' });
+    });
+});
+
+describe('describeFailedPayment', () => {
+    const failed = (over: Record<string, unknown> = {}) => ({
+        billing_reason: 'subscription_cycle',
+        customer: 'cus_1',
+        subscription: 'sub_1',
+        customer_name: 'Stripe Customer Name',
+        customer_email: 'payer@example.test',
+        amount_due: 24900,
+        currency: 'gbp',
+        attempt_count: 2,
+        next_payment_attempt: Date.UTC(2026, 10, 8, 9, 0, 0) / 1000,
+        hosted_invoice_url: 'https://invoice.stripe.com/i/EXAMPLE',
+        ...over,
+    });
+
+    it('names the tenant and carries what the team needs to act on', async () => {
+        const { prisma } = fakePrisma({ tenant: { name: 'Example Trading Ltd' } });
+
+        expect(await describeFailedPayment(prisma, failed())).toEqual({
+            clientName: 'Example Trading Ltd',
+            tenantId: T,
+            customerId: 'cus_1',
+            customerEmail: 'payer@example.test',
+            amountDue: 24900,
+            currency: 'gbp',
+            attempt: 2,
+            nextAttempt: new Date('2026-11-08T09:00:00Z'),
+            invoiceUrl: 'https://invoice.stripe.com/i/EXAMPLE',
+            isRenewal: true,
+        });
+    });
+
+    it('changes nothing for the tenant', async () => {
+        const { prisma, tenant, subs } = fakePrisma({ tenant: { scenariosPaused: true } });
+
+        await describeFailedPayment(prisma, failed());
+        expect(tenant.lastResetAt).toEqual(PERIOD_START);
+        expect(tenant.scenariosPaused).toBe(true);
+        expect(subs[0].status).toBe('starter');
+    });
+
+    it('falls back to the Stripe customer when no tenant is linked', async () => {
+        const { prisma } = fakePrisma({});
+
+        expect(await describeFailedPayment(prisma, failed({ customer: 'cus_unknown', subscription: 'sub_unknown' })))
+            .toMatchObject({ clientName: 'Stripe Customer Name', tenantId: undefined, customerId: 'cus_unknown' });
+    });
+
+    it('reports that Stripe has stopped retrying, and a payment that is not a renewal', async () => {
+        const { prisma } = fakePrisma({});
+
+        expect(await describeFailedPayment(prisma, failed({ next_payment_attempt: null, billing_reason: 'subscription_create' })))
+            .toMatchObject({ nextAttempt: null, isRenewal: false });
     });
 });
 

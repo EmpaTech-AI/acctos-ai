@@ -23,7 +23,7 @@ vi.mock('../../MailgunService.js', () => ({
     sendMailgunMessage: async (opts: SendOpts) => { sent.push(opts); },
 }));
 
-import { notifyProcessingComplete, ProcessingCompleteAlert, notifyProcessingBlocked } from '../NotificationService.js';
+import { notifyProcessingComplete, ProcessingCompleteAlert, notifyProcessingBlocked, notifyPaymentFailed, PaymentFailedAlert } from '../NotificationService.js';
 
 const DRIVE_URL = 'https://docs.google.com/spreadsheets/d/EXAMPLE/edit';
 
@@ -132,5 +132,59 @@ describe('notifyProcessingBlocked', () => {
         expect(client.text).toContain('please send this email again');
         expect(client.text).not.toContain('/dashboard/billing');
         expect(client.text).not.toContain('limit reached');
+    });
+});
+
+/**
+ * A failed Stripe payment is reported to the team.
+ *
+ * Origin: a subscriber's new billing period starts only when the renewal is paid.
+ * A failed renewal therefore changes nothing in the system, and would show only
+ * when the client ran out of limit.
+ */
+describe('notifyPaymentFailed', () => {
+    const failure: PaymentFailedAlert = {
+        clientName: 'Example Trading Ltd',
+        tenantId: 'tenant-1',
+        customerId: 'cus_1',
+        customerEmail: 'payer@example.test',
+        amountDue: 24900,
+        currency: 'gbp',
+        attempt: 2,
+        nextAttempt: new Date('2026-11-08T09:00:00Z'),
+        invoiceUrl: 'https://invoice.stripe.com/i/EXAMPLE',
+        isRenewal: true,
+    };
+
+    async function fail(a: PaymentFailedAlert) {
+        notifyPaymentFailed(a);
+        await new Promise(r => setTimeout(r, 0));
+        return sent.find(m => m.to === 'team@example.test')!;
+    }
+
+    it('goes to the team and never to the client', async () => {
+        const team = await fail(failure);
+
+        expect(team.subject).toBe('[Acctos] Payment failed — Example Trading Ltd');
+        expect(sent.some(m => m.to === 'client@example.test')).toBe(false);
+    });
+
+    it('says how much, which attempt, when Stripe retries, and that the period has not started', async () => {
+        const team = await fail(failure);
+
+        expect(team.text).toContain('Amount due: £249.00');
+        expect(team.text).toContain('Failed attempt: 2');
+        expect(team.text).toContain('Next automatic attempt: 08/11/2026 09:00 (UK time)');
+        expect(team.text).toContain('payer@example.test (cus_1)');
+        expect(team.text).toContain('https://invoice.stripe.com/i/EXAMPLE');
+        expect(team.text).toContain("new billing period has not started");
+    });
+
+    it('says when Stripe has given up, and does not talk about the period for a non-renewal', async () => {
+        const team = await fail({ ...failure, nextAttempt: null, isRenewal: false, tenantId: undefined });
+
+        expect(team.text).toContain('Next automatic attempt: none — Stripe will not try again');
+        expect(team.text).toContain('Tenant: not linked to a tenant');
+        expect(team.text).not.toContain('new billing period has not started');
     });
 });

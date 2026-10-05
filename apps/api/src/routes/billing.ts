@@ -13,7 +13,8 @@ import {
     DEFAULT_BILLING_RESET_DAY,
     PAYMENT_FAILED_STATUSES,
 } from '../utils/usageLimits.js';
-import { applyPaidRenewal, planFromLimits } from '../utils/stripeRenewal.js';
+import { applyPaidRenewal, describeFailedPayment, planFromLimits } from '../utils/stripeRenewal.js';
+import { notifyPaymentFailed } from '../services/processing/NotificationService.js';
 
 const router = Router();
 
@@ -396,6 +397,7 @@ router.get('/usage-status', async (req: AuthenticatedRequest, res: Response, nex
  *   - customer.subscription.updated   → sync status + period end (e.g. portal plan change)
  *   - customer.subscription.deleted   → mark subscription as cancelled
  *   - invoice.paid                    → paid renewal: start the new billing period
+ *   - invoice.payment_failed          → tell the team
  *
  * Expected metadata on the Stripe payment link / checkout session:
  *   - tenantId:       tenant CUID  (OR pass via client_reference_id query param)
@@ -676,6 +678,16 @@ router.post('/stripe-webhook', async (req: Request, res: Response, next: NextFun
             } else if (result.reason === 'already_applied') {
                 console.log(`[Stripe Webhook] invoice.paid — tenant ${result.tenantId} is already in a later period, nothing to do`);
             }
+        }
+
+        // ── invoice.payment_failed ───────────────────────────────────────────────
+        // Nothing changes for the tenant — the new period just does not start. The
+        // team is told now; otherwise a failed renewal would show only when the
+        // tenant ran out of limit.
+        else if (event.type === 'invoice.payment_failed') {
+            const failure = await describeFailedPayment(prisma, event.data.object);
+            console.warn(`[Stripe Webhook] Payment failed: tenant=${failure.tenantId ?? 'not linked'}, customer=${failure.customerId}, attempt=${failure.attempt}`);
+            notifyPaymentFailed(failure);
         }
 
         res.json({ received: true });
