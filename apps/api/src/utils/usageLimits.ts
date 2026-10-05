@@ -519,6 +519,18 @@ export async function checkProcessingAllowed(
     }
 }
 
+/** One file of a finished job, and what processing it costs. */
+export interface UsageFile {
+    /** SHA-256 of the file's bytes. */
+    hash:  string;
+    pages: number;
+    rows:  number;
+    /** When Azure first read the file, if this job took it from the cache. */
+    cachedAt?: Date | null;
+}
+
+const FILE_CHARGE_KEY = 'orchestrator-file-';
+
 /**
  * Records processing usage from the new Orchestrator directly into the same
  * DB tables that Make.com's /api/usage/document endpoint writes to.
@@ -528,44 +540,84 @@ export async function checkProcessingAllowed(
  *   - Email/Drive jobs (still on Make.com) → recorded by Make.com via the route
  *   - After migration (everything on the new Orchestrator) → recorded here only
  *
- * Idempotent: duplicate jobId calls are silently dropped (P2002).
+ * A tenant is charged for each file ONCE, however many times it is processed.
+ * When a result is wrong and the same statements are run again after a fix, the
+ * second run costs the client nothing. The record of a charge is one usage event
+ * per file, keyed by the file's hash; a second event for the same tenant and
+ * file is refused by the unique key, and that file is then skipped.
+ *
+ * Files read before per-file records existed have none. Those were charged per
+ * job at the time, so a cached file that Azure read before the tenant's first
+ * per-file record is taken as already charged.
+ *
+ * Called only when a job has completed, so a failed job charges nothing and the
+ * file is charged when a later run of it succeeds.
  * Non-fatal: any DB error is logged and swallowed — never fails the job.
  */
 export async function recordOrchestratorUsage(
     prisma: PrismaClient,
     tenantId: string,
-    usage: { pagesSpent: number; rowsUsed: number; documentsHandled: number; jobId: string },
+    usage: { jobId: string; files: UsageFile[] },
 ): Promise<void> {
-    if (usage.pagesSpent === 0 && usage.rowsUsed === 0) return;
+    const billable = usage.files.filter(f => f.pages > 0 || f.rows > 0);
+    if (billable.length === 0) return;
     try {
-        const today = new Date(); today.setUTCHours(0, 0, 0, 0);
-        await prisma.documentUsageEvent.create({
-            data: {
-                customerId:       tenantId,
-                idempotencyKey:   `orchestrator-${usage.jobId}`,
-                pagesSpent:       usage.pagesSpent,
-                rowsUsed:         usage.rowsUsed,
-                documentsHandled: usage.documentsHandled,
-                jobId:            usage.jobId,
-                scenarioName:     'orchestrator',
-                timestamp:        new Date(),
-            },
+        const first = await prisma.documentUsageEvent.findFirst({
+            where:   { customerId: tenantId, idempotencyKey: { startsWith: FILE_CHARGE_KEY } },
+            orderBy: { timestamp: 'asc' },
+            select:  { timestamp: true },
         });
+        const recordsSince = first?.timestamp ?? new Date();
+
+        let pages = 0, rows = 0, charged = 0;
+        for (const f of billable) {
+            const chargedBefore = !!f.cachedAt && f.cachedAt < recordsSince;
+            try {
+                await prisma.documentUsageEvent.create({
+                    data: {
+                        customerId:       tenantId,
+                        idempotencyKey:   FILE_CHARGE_KEY + f.hash,
+                        pagesSpent:       chargedBefore ? 0 : f.pages,
+                        rowsUsed:         chargedBefore ? 0 : f.rows,
+                        documentsHandled: 1,
+                        jobId:            usage.jobId,
+                        scenarioName:     'orchestrator',
+                        timestamp:        new Date(),
+                    },
+                });
+            } catch (e: any) {
+                if (e?.code === 'P2002') continue; // this tenant has already been charged for this file
+                throw e;
+            }
+            if (chargedBefore) continue;
+            pages += f.pages;
+            rows  += f.rows;
+            charged++;
+        }
+
+        const free = billable.length - charged;
+        const freeNote = free > 0 ? ` (${free} file(s) charged before — not charged again)` : '';
+        if (charged === 0) {
+            console.log(`[Orchestrator] Usage recorded — nothing to charge${freeNote}`);
+            return;
+        }
+
+        const today = new Date(); today.setUTCHours(0, 0, 0, 0);
         await prisma.documentUsageAggregate.upsert({
             where: { customerId_date: { customerId: tenantId, date: today } },
             create: {
                 customerId:       tenantId,
                 date:             today,
-                pagesSpent:       usage.pagesSpent,
-                rowsUsed:         usage.rowsUsed,
-                documentsHandled: usage.documentsHandled,
-                eventCount:       1,
+                pagesSpent:       pages,
+                rowsUsed:         rows,
+                documentsHandled: charged,
+                eventCount:       charged,
             },
             update: {
-                pagesSpent:       { increment: usage.pagesSpent },
-                rowsUsed:         { increment: usage.rowsUsed },
-                documentsHandled: { increment: usage.documentsHandled },
-                eventCount:       { increment: 1 },
+                pagesSpent:       { increment: pages },
+                rowsUsed:         { increment: rows },
+                documentsHandled: { increment: charged },
+                eventCount:       { increment: charged },
             },
         });
         // Re-run limit check — sets scenariosPaused if newly exceeded.
@@ -574,10 +626,8 @@ export async function recordOrchestratorUsage(
         checkAndPauseIfNeeded(prisma, tenantId).catch((e: any) =>
             console.warn('[recordOrchestratorUsage] Limit check failed:', e?.message?.split('\n')[0])
         );
-        console.log(`[Orchestrator] Usage recorded — pages: ${usage.pagesSpent}, rows: ${usage.rowsUsed}, docs: ${usage.documentsHandled}`);
+        console.log(`[Orchestrator] Usage recorded — pages: ${pages}, rows: ${rows}, docs: ${charged}${freeNote}`);
     } catch (e: any) {
-        if (e?.code !== 'P2002') {
-            console.warn('[recordOrchestratorUsage] Failed to record usage:', e?.message?.split('\n')[0]);
-        }
+        console.warn('[recordOrchestratorUsage] Failed to record usage:', e?.message?.split('\n')[0]);
     }
 }

@@ -13,11 +13,11 @@ import { computeVerification, applyCatVerification, logVerificationSummary, comp
 import { notifyParserError, notifyChainGap, notifyJobFailed, notifyInsufficientFiles, notifyDuplicatesRemoved, notifyProcessingComplete, notifyTeamIssuesSummary, notifyClientIssuesSummary, notifyUnknownBank, notifyProcessingBlocked, ClientIssueItem, BankSummary } from './NotificationService.js';
 import { JobSummary, AdminIssue } from './JobStore.js';
 import {
-    getAzureCache, saveAzureCache,
+    getAzureCacheEntry, saveAzureCache,
     createJobRecord, updateJobRecord, saveOutputFile,
 } from '../SupabaseService.js';
 import { uploadToDriveFolder, uploadToDriveSubfolder } from '../google/GoogleService.js';
-import { checkProcessingAllowed, recordOrchestratorUsage, LimitResource, ProcessingGateResult } from '../../utils/usageLimits.js';
+import { checkProcessingAllowed, recordOrchestratorUsage, LimitResource, ProcessingGateResult, UsageFile } from '../../utils/usageLimits.js';
 
 /** What a file spends against the plan: Excel statements use rows, everything else pages. */
 function resourceFor(filename: string, mimeType: string): LimitResource {
@@ -403,7 +403,7 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
         const fileTotals: Array<{ moneyIn?: number; moneyOut?: number; openingBalance?: number; closingBalance?: number; chainClosingBalance?: number }> = [];
         const fileSummaries: FileSummary[] = [];
         let ascending = false;
-        let totalPagesSpent = 0;
+        const usageFiles: UsageFile[] = [];
 
         for (let fi = 0; fi < files.length; fi++) {
             const { filename, mimeType, buffer } = files[fi];
@@ -419,7 +419,8 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
             // PDF: split → Azure DI (or cache) → parse
             jobStore.update(jobId, { currentStage: 'extract' });
             const fileHash = createHash('sha256').update(buffer).digest('hex');
-            const cachedPages = await getAzureCache(fileHash);
+            const cached = await getAzureCacheEntry(fileHash);
+            const cachedPages = cached?.pages ?? null;
             let pageData: Array<PageData | null>;
             let usedAzure = false;
             if (cachedPages) {
@@ -453,7 +454,7 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
             // second try is charged too.
             const filePages = await countPagesRead(buffer, pageData);
             jobStore.update(jobId, { pageCount: filePages });
-            totalPagesSpent += filePages;
+            usageFiles.push({ hash: fileHash, pages: filePages, rows: 0, cachedAt: cached?.cachedAt });
             if (usedAzure) {
                 const failed = pageData.filter(p => p === null).length;
                 console.log(`[Orchestrator] File ${fi + 1}/${files.length} Azure DI: ${filePages} page(s) extracted${failed ? `, ${failed} of ${pageData.length} part(s) failed` : ''}`);
@@ -913,12 +914,7 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
         if (adminImport) return;
 
         if (tracking) {
-            void recordOrchestratorUsage(tracking.prisma, tracking.tenantId, {
-                pagesSpent:       totalPagesSpent,
-                rowsUsed:         0,
-                documentsHandled: files.length,
-                jobId,
-            });
+            void recordOrchestratorUsage(tracking.prisma, tracking.tenantId, { jobId, files: usageFiles });
         }
 
         const _bankType  = jobStore.get(jobId)?.bankType;
@@ -1072,6 +1068,7 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
         let emailBankSummary: BankSummary | undefined;
         let _pagesSpent = 0;
         let _rowsUsed   = 0;
+        let _cachedAt: Date | null | undefined;
 
         if (classification.fileFormat === 'excel') {
             // ── Stage: extract (OpenAI two-pass for Excel) ───────────────────────
@@ -1164,7 +1161,9 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
             // ── Stage: extract (Azure DI or cache) ───────────────────────────────
             timer.start('extract');
             const fileHash = createHash('sha256').update(fileBuffer).digest('hex');
-            const cachedPages = await getAzureCache(fileHash);
+            const cached = await getAzureCacheEntry(fileHash);
+            const cachedPages = cached?.pages ?? null;
+            _cachedAt = cached?.cachedAt;
             let pageData: Array<PageData | null>;
             let usedAzure = false;
             if (cachedPages) {
@@ -1376,10 +1375,13 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
 
         if (tracking) {
             void recordOrchestratorUsage(tracking.prisma, tracking.tenantId, {
-                pagesSpent:       _pagesSpent,
-                rowsUsed:         _rowsUsed,
-                documentsHandled: 1,
                 jobId,
+                files: [{
+                    hash:     createHash('sha256').update(fileBuffer).digest('hex'),
+                    pages:    _pagesSpent,
+                    rows:     _rowsUsed,
+                    cachedAt: _cachedAt,
+                }],
             });
         }
 
