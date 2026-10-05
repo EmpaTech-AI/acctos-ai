@@ -11,7 +11,10 @@ import {
     pauseAllScenarios,
     checkAndResumeIfPossible,
     DEFAULT_BILLING_RESET_DAY,
+    PAYMENT_FAILED_STATUSES,
 } from '../utils/usageLimits.js';
+import { applyPaidRenewal, describeFailedPayment, planFromLimits } from '../utils/stripeRenewal.js';
+import { notifyPaymentFailed } from '../services/processing/NotificationService.js';
 
 const router = Router();
 
@@ -393,6 +396,8 @@ router.get('/usage-status', async (req: AuthenticatedRequest, res: Response, nex
  *   - checkout.session.completed      → plan purchase / add-on purchase
  *   - customer.subscription.updated   → sync status + period end (e.g. portal plan change)
  *   - customer.subscription.deleted   → mark subscription as cancelled
+ *   - invoice.paid                    → paid renewal: start the new billing period
+ *   - invoice.payment_failed          → tell the team
  *
  * Expected metadata on the Stripe payment link / checkout session:
  *   - tenantId:       tenant CUID  (OR pass via client_reference_id query param)
@@ -488,7 +493,12 @@ router.post('/stripe-webhook', async (req: Request, res: Response, next: NextFun
                 create: { tenantId, ...updateData },
                 update: updateData,
             });
-            await (prisma.tenant as any).update({ where: { id: tenantId }, data: limits });
+            // The purchase is the first payment, so the billing period starts now. From
+            // here on only a paid renewal starts the next one (see applyPaidRenewal).
+            await (prisma.tenant as any).update({
+                where: { id: tenantId },
+                data: newStripeSubscriptionId ? { ...limits, lastResetAt: new Date() } : limits,
+            });
 
             try {
                 await checkAndResumeIfPossible(prisma, tenantId);
@@ -570,13 +580,21 @@ router.post('/stripe-webhook', async (req: Request, res: Response, next: NextFun
             const newStatus            = sub.status as string; // 'active' | 'past_due' | 'canceled' | etc.
             const currentPeriodEnd     = sub.current_period_end ? new Date(sub.current_period_end * 1000) : undefined;
 
-            // Find tenant by stripeCustomerId
-            const existing = await prisma.subscription.findFirst({
+            // Find tenant by stripeCustomerId, or — for a subscription we have not
+            // seen before — by a `tenantId` set in its metadata in Stripe. That is
+            // how an existing subscription is linked to its tenant: without the
+            // link the tenant's renewals cannot be recognised.
+            let existing = await prisma.subscription.findFirst({
                 where: { stripeCustomerId } as any,
             } as any) as any;
+            if (!existing && sub.metadata?.tenantId) {
+                existing = await prisma.subscription.findUnique({ where: { tenantId: sub.metadata.tenantId } }) as any;
+                if (existing) console.log(`[Stripe Webhook] subscription.updated: linked tenant ${existing.tenantId} to customer ${stripeCustomerId}`);
+            }
 
             if (existing) {
                 const updateData: any = {
+                    stripeCustomerId,
                     stripeSubscriptionId,
                     currentPeriodEnd,
                 };
@@ -586,6 +604,14 @@ router.post('/stripe-webhook', async (req: Request, res: Response, next: NextFun
                 // If Stripe says 'canceled' or 'unpaid', reflect that.
                 if (['canceled', 'unpaid', 'past_due'].includes(newStatus)) {
                     updateData.status = newStatus;
+                }
+                // Paid again after a failed payment: put the plan name back, or the
+                // Billing page would go on showing the tenant as having no plan.
+                else if (newStatus === 'active' && PAYMENT_FAILED_STATUSES.includes(existing.status)) {
+                    const t = await (prisma.tenant as any).findUnique({
+                        where: { id: existing.tenantId }, select: { pagesLimit: true },
+                    });
+                    updateData.status = planFromLimits(t?.pagesLimit);
                 }
                 // If the price changed (plan switch via portal), update plan + limits
                 const newPriceId = sub.items?.data?.[0]?.price?.id as string | undefined;
@@ -637,6 +663,31 @@ router.post('/stripe-webhook', async (req: Request, res: Response, next: NextFun
             } else {
                 console.warn(`[Stripe Webhook] subscription.deleted — no tenant found for customer ${stripeCustomerId}`);
             }
+        }
+
+        // ── invoice.paid ─────────────────────────────────────────────────────────
+        // A paid renewal starts the tenant's new billing period: usage back to zero
+        // and a limit pause lifted. For a Stripe subscriber nothing else does — an
+        // unpaid renewal leaves the tenant where it is.
+        else if (event.type === 'invoice.paid') {
+            const result = await applyPaidRenewal(prisma, event.data.object);
+            if (result.applied) {
+                console.log(`[Stripe Webhook] Renewal paid: tenant=${result.tenantId}, new period from ${result.periodStart.toISOString()}, pauseLifted=${result.pauseLifted}`);
+            } else if (result.reason === 'no_tenant') {
+                console.warn(`[Stripe Webhook] invoice.paid — no tenant found for customer ${result.customerId}`);
+            } else if (result.reason === 'already_applied') {
+                console.log(`[Stripe Webhook] invoice.paid — tenant ${result.tenantId} is already in a later period, nothing to do`);
+            }
+        }
+
+        // ── invoice.payment_failed ───────────────────────────────────────────────
+        // Nothing changes for the tenant — the new period just does not start. The
+        // team is told now; otherwise a failed renewal would show only when the
+        // tenant ran out of limit.
+        else if (event.type === 'invoice.payment_failed') {
+            const failure = await describeFailedPayment(prisma, event.data.object);
+            console.warn(`[Stripe Webhook] Payment failed: tenant=${failure.tenantId ?? 'not linked'}, customer=${failure.customerId}, attempt=${failure.attempt}`);
+            notifyPaymentFailed(failure);
         }
 
         res.json({ received: true });
