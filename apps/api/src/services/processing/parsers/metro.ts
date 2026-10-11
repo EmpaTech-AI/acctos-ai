@@ -26,8 +26,34 @@ function headerContainsTransaction(cols: string[]): boolean {
     return /inward payment|outward faster payment|card purchase|atm cash withdrawal/.test(j);
 }
 
+// Azure DI sometimes folds the first transaction of a page into the header row and
+// leaves that transaction's date and balance alone on the next line:
+//     Date        | Transaction Cash Deposit | Money out (£) | Money in (£) 530.00 | Balance (£)
+//     06 JUL 2026 |                          |               |                     | 537.85
+// What is left of each header cell once its own label is removed is that transaction.
+// Only the first occurrence of a label is removed, so a description such as
+// "Transaction Charges" survives being merged into the "Transaction" cell.
+const HEADER_LABELS: RegExp[][] = [
+    [/\bdate\b/i],
+    [/\b(?:transaction|description)\b/i],
+    [/money\s*out\s*(?:\(\s*£\s*\))?/i],
+    [/money\s*in\s*(?:\(\s*£\s*\))?/i, /balance\s*(?:\(\s*£\s*\))?/i],   // the two can share a cell
+    [/balance\s*(?:\(\s*£\s*\))?/i],
+];
+
+function headerResidue(cols: string[]): string[] | null {
+    const rest = cols.map((c, i) => {
+        let s = c ?? '';
+        for (const label of HEADER_LABELS[i] ?? []) s = s.replace(label, ' ');
+        return normStr(s);
+    });
+    return rest.some(Boolean) ? rest : null;
+}
+
 interface PhysRow {
     date:     string;
+    /** The date was printed on this row, not filled down from the row above. */
+    ownDate:  boolean;
     desc:     string;
     moneyOut: number | null;
     moneyIn:  number | null;
@@ -80,7 +106,8 @@ export function parse(cells: Cell[]): ParseResult {
     let startAt = 0;
     for (let i = 0; i < table.length; i++) {
         if (isHeaderRow(table[i])) {
-            startAt = headerContainsTransaction(table[i]) ? i : i + 1;
+            // Keep the header row when a transaction was merged into it.
+            startAt = headerContainsTransaction(table[i]) || headerResidue(table[i]) ? i : i + 1;
             break;
         }
     }
@@ -93,7 +120,7 @@ export function parse(cells: Cell[]): ParseResult {
     let mergedInBalCol = false;
 
     for (let i = startAt; i < table.length; i++) {
-        const cols = table[i];
+        let cols = table[i];
         if (cols.every(c => !c)) continue;           // blank row
 
         // Re-detect column layout when a repeat page header is encountered.
@@ -101,7 +128,11 @@ export function parse(cells: Cell[]): ParseResult {
         if (/\bdate\b/.test(joined) && /transaction/.test(joined) && /money\s*out/.test(joined)) {
             const col3Lower = (cols[3] || '').toLowerCase();
             mergedInBalCol = /money\s*in/.test(col3Lower) && /balance/.test(col3Lower);
-            continue; // skip header rows — don't add them to physical[]
+            // A plain header row is skipped. One with a transaction merged into it
+            // carries on below as that transaction.
+            const merged = headerResidue(cols);
+            if (!merged) continue;
+            cols = merged;
         }
 
         const parsedDate = parseDateToDDMMYYYY(cols[0]);
@@ -121,6 +152,7 @@ export function parse(cells: Cell[]): ParseResult {
 
         physical.push({
             date:     parsedDate || lastDate,
+            ownDate:  !!parsedDate,
             desc,
             moneyOut: parseMoney(cols[2]),
             moneyIn,
@@ -144,6 +176,17 @@ export function parse(cells: Cell[]): ParseResult {
 
         const movement = hasMovement(r);
         const noAmounts = r.moneyIn === null && r.moneyOut === null && r.balance === null;
+
+        // Case E: a balance (and date) with nothing else — the rest of a transaction
+        // whose description and amount were folded into the page header above it.
+        if (!movement && !r.desc && r.balance !== null) {
+            const target: PhysRow | undefined = pending ?? txns[txns.length - 1];
+            if (target && target.balance === null) {
+                target.balance = r.balance;
+                if (r.ownDate) target.date = r.date;
+            }
+            continue;
+        }
 
         // Case A: text-only continuation line — append to pending or last transaction
         if (!movement && r.desc && noAmounts) {

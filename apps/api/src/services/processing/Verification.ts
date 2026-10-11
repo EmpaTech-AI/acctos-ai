@@ -250,11 +250,20 @@ function sortByBalanceChain(files: FileSummary[], totalIn = 0, totalOut = 0): Fi
     for (const a of files) {
         const aClose = a.chainClosingBalance ?? a.closingBalance;
         if (aClose == null) continue;
-        const next = files.find(b =>
+        const candidates = files.filter(b =>
             b !== a &&
             b.openingBalance != null &&
             Math.abs(b.openingBalance - aClose) <= EPS,
         );
+        // Two statements can open on the same balance: a month where money in equals
+        // money out closes where it opened, so the month after it opens there too.
+        // The successor is then the earliest one that starts after this statement;
+        // taking whichever came first in the upload skipped a month and reported it
+        // as a gap.
+        const later = candidates
+            .filter(b => a.periodStart != null && b.periodStart != null && b.periodStart > a.periodStart)
+            .sort((x, y) => x.periodStart! - y.periodStart!);
+        const next = later[0] ?? candidates[0];
         if (next) successor.set(a, next);
     }
 
@@ -342,11 +351,54 @@ function sortByBalanceChain(files: FileSummary[], totalIn = 0, totalOut = 0): Fi
  * (closing balance of file N must match opening balance of file N+1) so the
  * caller does not need to pre-sort them.
  *
+ * A batch can hold statements of more than one account (`FileSummary.account`).
+ * Each account is checked as its own chain, and the batch opens with the sum of
+ * the accounts' openings and closes with the sum of their closings. Chained
+ * together, every switch from one account to the other read as a missing
+ * statement: a batch of a Barclays and a Metro account reported two gaps that
+ * were not there, on top of the one that was.
+ *
  * @param fileSummaries  Summaries in any order (will be sorted chronologically).
  * @param totalIn        Sum of parsedIn across all files.
  * @param totalOut       Sum of parsedOut across all files.
  */
 export function computeChainVerification(
+    fileSummaries: FileSummary[],
+    totalIn: number,
+    totalOut: number,
+): ChainVerification | undefined {
+    const byAccount = new Map<string, FileSummary[]>();
+    for (const f of fileSummaries) {
+        const key = f.account ?? '';
+        byAccount.set(key, [...(byAccount.get(key) ?? []), f]);
+    }
+    if (byAccount.size <= 1) return chainOfOneAccount(fileSummaries, totalIn, totalOut);
+
+    const round = (n: number) => Math.round(n * 100) / 100;
+    let chainOpen = 0, chainClose = 0;
+    const gaps: ChainGap[] = [];
+    for (const files of byAccount.values()) {
+        const accountIn  = files.reduce((s, f) => s + f.parsedIn, 0);
+        const accountOut = files.reduce((s, f) => s + f.parsedOut, 0);
+        const chain = chainOfOneAccount(files, accountIn, accountOut);
+        if (!chain) return undefined;
+        chainOpen  += chain.chainOpeningBalance;
+        chainClose += chain.chainClosingBalance;
+        gaps.push(...chain.gaps);
+    }
+    const expected = round(chainOpen + totalIn - totalOut);
+    const diff     = round(chainClose - expected);
+    return {
+        chainOpeningBalance: round(chainOpen),
+        chainClosingBalance: round(chainClose),
+        expectedClosing: expected,
+        diff,
+        ok: Math.abs(diff) <= 0.02 && gaps.length === 0,
+        gaps,
+    };
+}
+
+function chainOfOneAccount(
     fileSummaries: FileSummary[],
     totalIn: number,
     totalOut: number,

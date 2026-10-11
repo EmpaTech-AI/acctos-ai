@@ -98,7 +98,7 @@ interface TrackingContext {
 
 import { parse as parseHsbc } from './parsers/hsbc.js';
 import { parse as parseRevolut } from './parsers/revolut.js';
-import { parse as parseMonzo } from './parsers/monzo.js';
+import { parse as parseMonzo, dropPotStatements } from './parsers/monzo.js';
 import { parse as parseWise } from './parsers/wise.js';
 import { parse as parseStarling } from './parsers/starling.js';
 import { parse as parseNatwest } from './parsers/natwest.js';
@@ -401,6 +401,8 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
         if (confirmedBankType) console.log(`[Orchestrator] Bank hint applied: ${confirmedBankType}`);
         let combinedStatementTotals: { moneyIn?: number; moneyOut?: number; openingBalance?: number; closingBalance?: number } | undefined;
         const fileTotals: Array<{ moneyIn?: number; moneyOut?: number; openingBalance?: number; closingBalance?: number; chainClosingBalance?: number }> = [];
+        // Which account each file's totals belong to — the bank it was parsed as.
+        const totalsAccount = new Map<typeof fileTotals[0], string>();
         const fileSummaries: FileSummary[] = [];
         let ascending = false;
         const usageFiles: UsageFile[] = [];
@@ -501,8 +503,13 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
                 }
             }
 
-            const combinedContent = pageData.filter((p): p is NonNullable<typeof p> => p !== null).map(p => p.content).join(' ');
-            const pageCells = pageData.map(p => {
+            // A Monzo statement's pot pages are left out of the parse (see dropPotStatements).
+            const statementPages = dropPotStatements(pageData);
+            if (statementPages.length < pageData.length) {
+                console.log(`[Orchestrator] File ${fi + 1}/${files.length}: pot statements start on page ${statementPages.length + 1} of ${pageData.length} — left out`);
+            }
+            const combinedContent = statementPages.filter((p): p is NonNullable<typeof p> => p !== null).map(p => p.content).join(' ');
+            const pageCells = statementPages.map(p => {
                 if (!p) return null;
                 return [{ rowIndex: -1, columnIndex: -1, content: combinedContent }, ...p.cells] as Cell[];
             });
@@ -653,9 +660,11 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
                 closingBalance:      fileClosingBalance,
                 chainClosingBalance: statementTotals?.chainClosingBalance,
                 periodStart:         earliestTransactionDate(fileTransactions),
+                account:             bankType,
             });
             if (statementTotals) {
                 fileTotals.push(statementTotals);
+                totalsAccount.set(statementTotals, bankType);
                 if (!combinedStatementTotals) {
                     combinedStatementTotals = { ...statementTotals };
                 } else {
@@ -677,42 +686,56 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
         // combined opening/closing accordingly instead of using upload-order values.
         let chainBestLen = 0;
         if (combinedStatementTotals && fileTotals.length > 1) {
-            const allClose = new Set(
-                fileTotals.filter(t => t.closingBalance != null).map(t => Math.round((t.chainClosingBalance ?? t.closingBalance!) * 100))
-            );
-            const allOpen = new Set(
-                fileTotals.filter(t => t.openingBalance != null).map(t => Math.round(t.openingBalance! * 100))
-            );
-
-            // When multiple chain-start candidates exist (e.g. an isolated file that was uploaded
-            // separately), find the longest connected chain rather than taking the first candidate.
-            // This prevents an isolated single-period file from overriding the true multi-period chain.
-            const chainStarts = fileTotals.filter(t => t.openingBalance != null && !allClose.has(Math.round(t.openingBalance * 100)));
-            let bestFirst: typeof fileTotals[0] | undefined;
-            let bestLast:  typeof fileTotals[0] | undefined;
-            let bestLen = 0;
-            for (const start of chainStarts) {
-                let cur = start;
-                let len = 1;
-                let tail = start;
-                // A file may only appear once per chain. Without this guard a file whose
-                // opening balance equals its own closing balance (e.g. a statement that
-                // parsed to 0 transactions) matches itself forever, the loop never ends,
-                // and the blocked event loop wedges the whole process.
-                const seen = new Set<typeof fileTotals[0]>([start]);
-                while (true) {
-                    const curClose = cur.chainClosingBalance ?? cur.closingBalance;
-                    if (curClose == null) break;
-                    const nxt = fileTotals.find(t => t.openingBalance != null && !seen.has(t) && Math.round(t.openingBalance * 100) === Math.round(curClose * 100));
-                    if (!nxt) break;
-                    seen.add(nxt);
-                    cur = nxt; tail = nxt; len++;
-                }
-                if (len > bestLen) { bestLen = len; bestFirst = start; bestLast = tail; }
+            // A batch can hold statements of more than one account (a Barclays and a
+            // Metro account, say). Each account is its own chain: chained together,
+            // every switch from one bank to the other reads as a missing statement.
+            // The batch opens with the sum of the accounts' openings and closes with
+            // the sum of their closings.
+            const byAccount = new Map<string, typeof fileTotals>();
+            for (const t of fileTotals) {
+                const key = totalsAccount.get(t) ?? '';
+                byAccount.set(key, [...(byAccount.get(key) ?? []), t]);
             }
-            chainBestLen = bestLen;
-            if (bestFirst?.openingBalance != null) combinedStatementTotals.openingBalance = bestFirst.openingBalance;
-            if (bestLast?.closingBalance  != null) combinedStatementTotals.closingBalance  = bestLast.closingBalance;
+
+            let opening = 0, closing = 0;
+            let haveOpening = true, haveClosing = true;
+            for (const accountTotals of byAccount.values()) {
+                const allClose = new Set(
+                    accountTotals.filter(t => t.closingBalance != null).map(t => Math.round((t.chainClosingBalance ?? t.closingBalance!) * 100))
+                );
+
+                // When multiple chain-start candidates exist (e.g. an isolated file that was uploaded
+                // separately), find the longest connected chain rather than taking the first candidate.
+                // This prevents an isolated single-period file from overriding the true multi-period chain.
+                const chainStarts = accountTotals.filter(t => t.openingBalance != null && !allClose.has(Math.round(t.openingBalance * 100)));
+                let bestFirst: typeof fileTotals[0] | undefined;
+                let bestLast:  typeof fileTotals[0] | undefined;
+                let bestLen = 0;
+                for (const start of chainStarts) {
+                    let cur = start;
+                    let len = 1;
+                    let tail = start;
+                    // A file may only appear once per chain. Without this guard a file whose
+                    // opening balance equals its own closing balance (e.g. a statement that
+                    // parsed to 0 transactions) matches itself forever, the loop never ends,
+                    // and the blocked event loop wedges the whole process.
+                    const seen = new Set<typeof fileTotals[0]>([start]);
+                    while (true) {
+                        const curClose = cur.chainClosingBalance ?? cur.closingBalance;
+                        if (curClose == null) break;
+                        const nxt = accountTotals.find(t => t.openingBalance != null && !seen.has(t) && Math.round(t.openingBalance * 100) === Math.round(curClose * 100));
+                        if (!nxt) break;
+                        seen.add(nxt);
+                        cur = nxt; tail = nxt; len++;
+                    }
+                    if (len > bestLen) { bestLen = len; bestFirst = start; bestLast = tail; }
+                }
+                chainBestLen += bestLen;
+                if (bestFirst?.openingBalance != null) opening += bestFirst.openingBalance; else haveOpening = false;
+                if (bestLast?.closingBalance  != null) closing += bestLast.closingBalance;  else haveClosing = false;
+            }
+            if (haveOpening) combinedStatementTotals.openingBalance = Math.round(opening * 100) / 100;
+            if (haveClosing) combinedStatementTotals.closingBalance = Math.round(closing * 100) / 100;
         } else if (combinedStatementTotals && fileTotals.length === 1) {
             chainBestLen = (fileTotals[0].openingBalance != null && fileTotals[0].closingBalance != null) ? 1 : 0;
             combinedStatementTotals.openingBalance = fileTotals[0].openingBalance;
@@ -1240,7 +1263,12 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
             // Azure DI captures in result.content but not in table cells) into a
             // single string. This lets year detection work even when year-bearing
             // text only appears in the header of page 1.
-            const combinedContent = pageData
+            // A Monzo statement's pot pages are left out of the parse (see dropPotStatements).
+            const statementPages = dropPotStatements(pageData);
+            if (statementPages.length < pageData.length) {
+                console.log(`[Orchestrator] Pot statements start on page ${statementPages.length + 1} of ${pageData.length} — left out`);
+            }
+            const combinedContent = statementPages
                 .filter((p): p is NonNullable<typeof p> => p !== null)
                 .map(p => p.content)
                 .join(' ');
@@ -1249,7 +1277,7 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
             // rowIndex -1 so extractYearsFromCells() on any page can see years from
             // the whole document (e.g. "Issued on 06 January 2026" on page 1 informs
             // the parser running on page 2 which has no year-bearing text at all).
-            const pageCells = pageData.map(p => {
+            const pageCells = statementPages.map(p => {
                 if (!p) return null;
                 const cells: Cell[] = [
                     { rowIndex: -1, columnIndex: -1, content: combinedContent },

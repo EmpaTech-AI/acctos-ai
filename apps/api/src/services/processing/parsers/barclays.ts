@@ -35,10 +35,15 @@ const MAX_SANE_AMOUNT  = 1_000_000;
 
 // ── Shared helpers ───────────────────────────────────────────────────────────
 
+// The "»)" artefact is optional, and the whitespace before it is only consumed
+// together with it. Consuming it unconditionally glued "11 Jun 2026" into
+// "11 Jun2026": the statement period "12 May - 11 Jun 2026" then no longer parsed,
+// and every date on a statement ending in June fell back to the oldest year
+// printed anywhere in the document.
 function fixOCR(s: string): string {
     return s
-        .replace(/\b(\d{1,2})\s+un\b\s*»?\)?/gi, '$1 Jun')
-        .replace(/\b(\d{1,2})\s+Ju[nm]\b\s*»?\)?/gi, '$1 Jun')
+        .replace(/\b(\d{1,2})\s+un\b(?:\s*»\)?)?/gi, '$1 Jun')
+        .replace(/\b(\d{1,2})\s+Ju[nm]\b(?:\s*»\)?)?/gi, '$1 Jun')
         .replace(/^\s*»\)?\s*/gm, '');
 }
 
@@ -400,6 +405,10 @@ function parseNormal(cells: Cell[]): ParseResult {
     let prevDate          = '';
     let activePostingDate = '';
     let initialBalance: number | null = null;
+    // True from a page's "Balance carried forward" / totals row until the next
+    // header or dated row. Text in between is the page's small print (interest
+    // rates, the FSCS notice), not a continuation of the last transaction.
+    let tableClosed = false;
 
     for (let i = startAt; i < table.length; i++) {
         const row = table[i];
@@ -407,7 +416,7 @@ function parseNormal(cells: Cell[]): ParseResult {
         // Re-detect column mapping when a page header row appears mid-data
         // (happens when the whole encrypted PDF is sent as one chunk to Azure DI)
         const remapped = extractColMap(row);
-        if (remapped) { COL = remapped; continue; }
+        if (remapped) { COL = remapped; tableClosed = false; continue; }
 
         let moneyIn  = COL.in  >= 0 ? parseMoney(gv(row, COL.in))  : null;
         let moneyOut = COL.out >= 0 ? parseMoney(gv(row, COL.out)) : null;
@@ -487,16 +496,24 @@ function parseNormal(cells: Cell[]): ParseResult {
             const bal = balance ?? (moneyIn !== null ? moneyIn : moneyOut);
             if (bal !== null) initialBalance = bal;
             if (parsedDate) { prevDate = parsedDate; activePostingDate = parsedDate; }
+            tableClosed = false;
             continue;
         }
         // ── Skip: carried forward ─────────────────────────────────────────────
         if (CARRIED_FWD_RE.test(desc)) {
-            if (balance !== null) initialBalance = initialBalance ?? balance;
+            // A carried-forward balance is where the rows ABOVE it end. It stands in
+            // for the opening balance only when no row has been read yet. Taken as
+            // the opening after transactions (a new account's first statement has no
+            // "brought forward" row), it turned the balance-only "Account Opened"
+            // line into a payment of the whole closing balance.
+            if (balance !== null && physical.length === 0) initialBalance = initialBalance ?? balance;
             if (parsedDate) { prevDate = parsedDate; activePostingDate = parsedDate; }
+            tableClosed = true;
             continue;
         }
         // ── Skip: totals / end balance ────────────────────────────────────────
-        if (TOTAL_RE.test(desc) || FOOTER_RE.test(desc)) continue;
+        if (TOTAL_RE.test(desc)) { tableClosed = true; continue; }
+        if (FOOTER_RE.test(desc)) continue;
 
         // Raw text fallback (last resort)
         if (!parsedDate && desc) {
@@ -546,6 +563,7 @@ function parseNormal(cells: Cell[]): ParseResult {
 
         // ── Continuation line (no date, no movement) ──────────────────────────
         if (!dateCell && !movement && desc) {
+            if (tableClosed) continue;      // small print under a finished table
             if (physical.length > 0) {
                 physical[physical.length-1].desc = normStr(physical[physical.length-1].desc + ' ' + desc);
                 if (balance !== null) physical[physical.length-1].balance = balance;
@@ -556,6 +574,7 @@ function parseNormal(cells: Cell[]): ParseResult {
         // ── Noise row (no movement, no balance) ───────────────────────────────
         if (!movement && balance === null) continue;
 
+        if (movement) tableClosed = false;  // a transaction: the table has resumed
         physical.push({ date: parsedDate || prevDate, desc, moneyIn, moneyOut, balance });
     }
 

@@ -43,6 +43,11 @@ export interface FileSummary {
      * several disconnected runs; undefined when no transaction date could be parsed.
      */
     periodStart?: number;
+    /**
+     * Which account the statement belongs to, as far as it can be told: the bank it
+     * was parsed as. Statements of different accounts are never chained to each other.
+     */
+    account?: string;
 }
 
 export interface ProcessingJob {

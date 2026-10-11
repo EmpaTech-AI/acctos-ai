@@ -77,6 +77,12 @@ export function detectBankFromContent(text: string): BankType {
     if (/^monese/i.test(t) || t.includes('monese.com') || /\bmonese\b/.test(t)) return 'monese';
     if (/\bzempler\b/.test(t))                                         return 'zempler';
     if (/\bcounting\s*up\b/.test(t) || t.includes('countingup'))         return 'countingup';
+    // Monzo by its own statement header, before every name below: a personal statement
+    // lists whoever the holder pays, and a card repayment ("BARCLAYCARD NORTHAMPTON") or a
+    // transfer to another bank would otherwise claim the whole document. The header
+    // carries Monzo's BIC and its "Total deposits" / "Total outgoings" summary; the BIC
+    // alone could be a payee's on another bank's statement.
+    if (t.includes('monzgb2l') && t.includes('total deposits') && t.includes('total outgoings')) return 'monzo';
     // Halifax: check before NatWest — Halifax statements contain "NATWEST BANK" as a payee
     // which would otherwise trigger NatWest detection. Use footer text unique to Halifax.
     if (t.includes('halifax is a division') || (/\bhalifax\b/.test(t) && t.includes('bank of scotland'))) return 'halifax';

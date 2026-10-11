@@ -309,6 +309,121 @@ function rawFallback(rawText: string, existing: ParsedTransaction[]): ParseResul
     return { transactions, ascending: true };
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// Starling "Transaction Export" — the feed export from the app, not the statement.
+//
+//     DATE       | TYPE           | TRANSACTION               | CATEGORY | VALUE    | BALANCE
+//     01/07/2025 | Faster Payment | Main Client Ltd (invoice) | Revenue  | +£160.00 | +£160.60
+//     01/07/2025 | Direct Debit   | Insurer Ltd (0000048)     | Admin    | -£18.81  | +£141.79
+//
+// One signed VALUE column instead of separate In / Out columns, and a CATEGORY
+// column where the statement has "In". Read through the statement path, every
+// incoming payment was recorded as a payment out and every outgoing one — a
+// negative number in the "Out" column — was dropped: 28 rows instead of 232, with
+// Money In at zero.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function isExportHeaderRow(cells: string[]): boolean {
+    const labels = new Set(cells.map(c => normStr(c).toUpperCase()));
+    return labels.has('DATE') && labels.has('VALUE') && labels.has('BALANCE');
+}
+
+/** "+£160.00", "-£18.81", "£300.00" → the signed value, and whether a sign was printed. */
+function signedMoney(raw: string): { value: number; signed: boolean } | null {
+    const m = normStr(raw).replace(/\s+/g, '')
+        .match(/^([+\-−–])?[£$€]?([+\-−–])?(\d{1,3}(?:,\d{3})+|\d+)\.(\d{2})$/);
+    if (!m) return null;
+    const sign = m[1] ?? m[2];
+    const magnitude = Number(`${m[3].replace(/,/g, '')}.${m[4]}`);
+    return { value: sign && sign !== '+' ? -magnitude : magnitude, signed: !!sign };
+}
+
+// The summary on the first page:  Net total / Income / Spending, then the three amounts.
+function extractExportSummary(rawText: string): { moneyIn: number; moneyOut: number } | null {
+    const amount = '([+\\-−–]?£[\\d,]+\\.\\d{2})';
+    const m = rawText.match(new RegExp(`Net total\\s+Income\\s+Spending\\s+${amount}\\s+${amount}\\s+${amount}`, 'i'));
+    if (!m) return null;
+    const income = signedMoney(m[2]), spending = signedMoney(m[3]);
+    if (!income || !spending) return null;
+    return { moneyIn: Math.abs(income.value), moneyOut: Math.abs(spending.value) };
+}
+
+function parseExport(
+    grid: Map<number, Map<number, string>>,
+    sortedRows: number[],
+    rawText: string,
+): ParseResult {
+    const col = { date: 0, type: 1, desc: 2, value: 4, balance: 5 };
+    const transactions: ParsedTransaction[] = [];
+    let prevBalance: number | null = null;
+    let openingBalance: number | null = null;
+
+    for (const r of sortedRows) {
+        const row = grid.get(r)!;
+
+        // Every page repeats the header. Azure DI sometimes drops the TRANSACTION
+        // label from it, so that column is taken as the one after TYPE.
+        if (isExportHeaderRow([...row.values()])) {
+            for (const [c, v] of row) {
+                const label = normStr(v).toUpperCase();
+                if (label === 'DATE')         col.date = c;
+                else if (label === 'TYPE')    { col.type = c; col.desc = c + 1; }
+                else if (label === 'VALUE')   col.value = c;
+                else if (label === 'BALANCE') col.balance = c;
+            }
+            continue;
+        }
+
+        const date = parseDateToDDMMYYYY(normStr(row.get(col.date) ?? ''));
+        if (!date) continue;
+
+        const amount  = signedMoney(row.get(col.value) ?? '');
+        const balance = signedMoney(row.get(col.balance) ?? '');
+        if (!amount || amount.value === 0) {
+            if (balance) prevBalance = balance.value;
+            continue;
+        }
+
+        // The running balance decides the direction whenever it can: Azure DI
+        // sometimes drops the sign from VALUE ("£300.00" for a payment out), and the
+        // move from the previous balance to this one cannot be misread that way.
+        // With no balance to go by, an unsigned value is taken as a payment out —
+        // the minus is the sign that gets lost.
+        let value = amount.signed ? amount.value : -Math.abs(amount.value);
+        if (balance && prevBalance !== null) {
+            const delta = balance.value - prevBalance;
+            if (Math.abs(Math.abs(delta) - Math.abs(value)) < 0.005) value = Math.sign(delta) * Math.abs(value);
+        }
+        if (balance) {
+            if (openingBalance === null) openingBalance = balance.value - value;
+            prevBalance = balance.value;
+        }
+
+        const type = normStr(row.get(col.type) ?? '');
+        const desc = normStr(row.get(col.desc) ?? '');
+        transactions.push({
+            date,
+            type,
+            description: [type, desc].filter(Boolean).join(' ') || 'Unknown',
+            moneyIn:  value > 0 ? formatMoney(value)  : '',
+            moneyOut: value < 0 ? formatMoney(-value) : '',
+            balance:  balance ? balance.value.toFixed(2) : '',
+        });
+    }
+
+    const summary = extractExportSummary(rawText);
+    const statementTotals: NonNullable<ParseResult['statementTotals']> = { ...(summary ?? {}) };
+    if (openingBalance !== null && prevBalance !== null) {
+        statementTotals.openingBalance = Math.round(openingBalance * 100) / 100;
+        statementTotals.closingBalance = prevBalance;
+    }
+    return {
+        transactions,
+        ascending: true,
+        ...(Object.keys(statementTotals).length ? { statementTotals } : {}),
+    };
+}
+
 export function parse(cells: Cell[]): ParseResult {
     // Synthetic context cell (rowIndex -1) holds the full document text
     const rawText = normStr(cells.find(c => c.rowIndex < 0)?.content ?? '');
@@ -317,6 +432,10 @@ export function parse(cells: Cell[]): ParseResult {
     const sortedRows = [...grid.keys()].filter(r => r >= 0).sort((a, b) => a - b);
 
     if (!sortedRows.length) return rawFallback(rawText, []);
+
+    if (sortedRows.some(r => isExportHeaderRow([...grid.get(r)!.values()]))) {
+        return parseExport(grid, sortedRows, rawText);
+    }
 
     const transactions: ParsedTransaction[] = [];
     let sectionRows: number[] = [];
