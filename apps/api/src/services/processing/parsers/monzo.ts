@@ -62,6 +62,20 @@ function extractDeclaredTotals(content: string): { moneyIn: number; moneyOut: nu
     return { moneyIn, moneyOut, closingBalance };
 }
 
+/**
+ * A Monzo statement "including all Pots" carries each pot's own statement after
+ * the account's. Those pages are the other side of the account's "Transfer to
+ * Pot" / "Transfer from Pot" rows, so reading them counts that money twice: a
+ * year's statement came out about £2,300 over the declared totals on both sides.
+ *
+ * Returns the pages before the first pot statement. Each pot statement opens
+ * with a page headed "Pot statement" that shows a "Pot balance".
+ */
+export function dropPotStatements<T extends { content: string } | null>(pages: T[]): T[] {
+    const first = pages.findIndex(p => p !== null && /\bPot statement\b/i.test(p.content) && /\bPot balance\b/i.test(p.content));
+    return first > 0 ? pages.slice(0, first) : pages;
+}
+
 export function parse(cells: Cell[], _opts?: { pendingFromPrev?: ParsedTransaction | null }): ParseResult {
     // Context cell (rowIndex -1) carries the full document text — use it for declared totals
     const contextContent = cells.find(c => c.rowIndex < 0)?.content ?? '';
@@ -122,7 +136,6 @@ export function parse(cells: Cell[], _opts?: { pendingFromPrev?: ParsedTransacti
             }
 
             const absAmt = Math.abs(amountNum);
-            const bal    = balNum !== null ? balNum.toFixed(2) : '';
 
             // Primary: use sign from amount value
             let isOut = amountNum < 0;
@@ -141,6 +154,20 @@ export function parse(cells: Cell[], _opts?: { pendingFromPrev?: ParsedTransacti
                     }
                 }
             }
+
+            // Azure DI sometimes drops the minus sign from an overdrawn balance
+            // ("83.78" for -83.78). The older row below settles it: this balance is
+            // that one plus this row's signed amount. Only a real transaction row
+            // counts — parseMoney reads a repeated header cell as 0.
+            if (balNum !== null) {
+                const older    = table[i + 1];
+                const olderBal = older && parseDate(older.cols[0]) ? parseMoney(older.cols[3]) : null;
+                if (olderBal !== null) {
+                    const expected = olderBal + (isOut ? -absAmt : absAmt);
+                    if (Math.abs(balNum - expected) > 0.011 && Math.abs(balNum + expected) <= 0.011) balNum = -balNum;
+                }
+            }
+            const bal = balNum !== null ? balNum.toFixed(2) : '';
 
             transactions.push({
                 date, type: '', description: description || 'Unknown',

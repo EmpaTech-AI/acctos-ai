@@ -362,3 +362,84 @@ describe('Starling parser – genuine 6col pages are unaffected', () => {
         expect(sumOut(transactions)).toBe(100.00);
     });
 });
+
+// ── Starling "Transaction Export" — a different document from the statement ───
+
+/**
+ * Origin: a feed export for a quarter came out as 28 payments out and no money
+ * in at all, where the document holds 232 transactions. The export has one signed
+ * VALUE column and a CATEGORY column:
+ *
+ *     DATE | TYPE | TRANSACTION | CATEGORY | VALUE | BALANCE
+ *
+ * Read as a statement, CATEGORY sat where "In" is expected and VALUE where "Out"
+ * is, so every incoming payment became a payment out and every outgoing one, a
+ * negative number, was dropped.
+ *
+ * Opening 100.00. In 1,000.00 + 500.00 = 1,500.00. Out 200.00 + 300.00 + 50.00 =
+ * 550.00. Closing 1,050.00.
+ */
+describe('Starling parser – Transaction Export layout', () => {
+    const EXPORT_HEADER = ['DATE', 'TYPE', 'TRANSACTION', 'CATEGORY', 'VALUE', 'BALANCE'];
+    const line = (r: number, ...cols: string[]): Cell[] => cols.map((v, i) => c(r, i, v)).filter(x => x.content.length > 0);
+
+    const cells: Cell[] = [
+        c(-1, 0, 'STARLING Transaction Export Settled payments Period 01 Jul 2025 to 30 Sep 2025\nNet total\nIncome\nSpending\n+£950.00\n+£1,500.00\n-£550.00'),
+        // page 1: the summary
+        ...line(0, 'Net total', ' ', 'Income', 'Spending'),
+        ...line(1, '+£950.00', ' ', '+£1,500.00', '-£550.00'),
+        // page 2
+        ...line(10000, ...EXPORT_HEADER),
+        ...line(10001, '01/07/2025', 'Faster Payment', 'Main Client Ltd (invoice)', 'Revenue', '+£1,000.00', '+£1,100.00'),
+        ...line(10002, '02/07/2025', 'Direct Debit', 'Insurer Ltd (0000048)', 'Admin', '-£200.00', '+£900.00'),
+        // the minus sign was lost: only the balance shows this is a payment out
+        ...line(10003, '03/07/2025', 'Faster Payment', 'Card Issuer Ltd (repayment)', 'None', '£300.00', '+£600.00'),
+        // page 3: a title row, then a header that lost its TRANSACTION label
+        ...line(20000, 'Transaction Export', ' ', 'TRANSACTION', ' ', 'Period 01 Jul 2025 to 30 Sep 2025'),
+        ...line(20001, 'DATE', 'TYPE', ' ', 'CATEGORY', 'VALUE', 'BALANCE'),
+        ...line(20002, '10/07/2025', 'Faster Payment', 'Second Client Ltd (invoice)', 'Revenue', '+£500.00', '+£1,100.00'),
+        ...line(20003, '11/07/2025', 'Contactless', 'EXAMPLE CAFE', 'Food And Drink', '-£50.00', '+£1,050.00'),
+    ];
+    const { transactions, statementTotals, ascending } = parse(cells);
+    const NONE = String();
+
+    it('reads every row, in and out, from the signed VALUE column', () => {
+        expect(transactions.map(t => [t.date, t.description, t.moneyIn, t.moneyOut, t.balance])).toEqual([
+            ['01/07/2025', 'Faster Payment Main Client Ltd (invoice)',   '1000.00', NONE,     '1100.00'],
+            ['02/07/2025', 'Direct Debit Insurer Ltd (0000048)',         NONE,      '200.00', '900.00'],
+            ['03/07/2025', 'Faster Payment Card Issuer Ltd (repayment)', NONE,      '300.00', '600.00'],
+            ['10/07/2025', 'Faster Payment Second Client Ltd (invoice)', '500.00',  NONE,     '1100.00'],
+            ['11/07/2025', 'Contactless EXAMPLE CAFE',                   NONE,      '50.00',  '1050.00'],
+        ]);
+        expect(ascending).toBe(true);
+    });
+
+    it('takes the direction of an unsigned value from the running balance', () => {
+        expect(transactions[2]).toMatchObject({ moneyIn: NONE, moneyOut: '300.00' });
+    });
+
+    it('matches the Income and Spending the export declares on its first page', () => {
+        expect(sumIn(transactions)).toBe(1500);
+        expect(sumOut(transactions)).toBe(550);
+        expect(statementTotals).toEqual({ moneyIn: 1500, moneyOut: 550, openingBalance: 100, closingBalance: 1050 });
+    });
+
+    it('lets the balance overrule a sign that was misread, not just a missing one', () => {
+        const { transactions: t } = parse([
+            c(-1, 0, 'STARLING Transaction Export'),
+            ...line(0, ...EXPORT_HEADER),
+            ...line(1, '01/07/2025', 'Faster Payment', 'Main Client Ltd (invoice)', 'Revenue', '+£1,000.00', '+£1,100.00'),
+            ...line(2, '02/07/2025', 'Direct Debit', 'Insurer Ltd (0000048)', 'Admin', '+£200.00', '+£900.00'),
+        ]);
+        expect(t[1]).toMatchObject({ moneyIn: NONE, moneyOut: '200.00' });
+    });
+
+    it('treats an unsigned first value, with no balance before it, as a payment out', () => {
+        const { transactions: t } = parse([
+            c(-1, 0, 'STARLING Transaction Export'),
+            ...line(0, ...EXPORT_HEADER),
+            ...line(1, '01/07/2025', 'Contactless', 'EXAMPLE CAFE', 'Food And Drink', '£50.00', '+£50.00'),
+        ]);
+        expect(t[0]).toMatchObject({ moneyIn: NONE, moneyOut: '50.00' });
+    });
+});

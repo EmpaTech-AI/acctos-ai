@@ -24,7 +24,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { parse } from '../monzo.js';
+import { parse, dropPotStatements } from '../monzo.js';
 import { Cell, ParsedTransaction } from '../shared.js';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -156,5 +156,80 @@ describe('Monzo row with an empty balance cell', () => {
 
         expect(transactions).toHaveLength(2);
         expect(transactions[0]).toMatchObject({ moneyOut: '8.00', balance: '' });
+    });
+});
+
+/**
+ * A Monzo statement "including all Pots" carries each pot's own statement after
+ * the account's.
+ *
+ * Origin: a 192-page personal statement for a year came out about £2,300 over
+ * the declared totals on both sides. Pages 154 onwards were the pots, and every
+ * row there is the other side of a "Transfer to Pot" / "Transfer from Pot" row
+ * already in the account.
+ */
+describe('Monzo pot statements', () => {
+    const account = { cells: [], content: 'monzo\nPersonal Account statement\n01/06/2026 - 31/08/2026\nJane Example\n-£850.00\nTotal outgoings\n+£2,000.00\nTotal deposits\nBIC: MONZGB2L' };
+    const more    = { cells: [], content: 'Date\nDescription\n(GBP) Amount\n(GBP) Balance\n20/07/2026\nTransfer to Pot\n-10.00\n790.00' };
+    const pot     = { cells: [], content: 'monzo\nJane Example\nPot statement\n01/06/2026 - 31/08/2026\n£10.00 Pot balance\n-£0.00\nTotal outgoings\n+£10.00\nTotal deposits\nHoliday\nPot name' };
+    const potMore = { cells: [], content: 'Date\nDescription\n(GBP) Amount\n(GBP) Balance\n20/07/2026\nDeposit\n10.00\n10.00' };
+
+    it('keeps the account pages and drops everything from the first pot statement', () => {
+        expect(dropPotStatements([account, more, pot, potMore, pot, potMore])).toEqual([account, more]);
+    });
+
+    it('leaves a statement without pots alone', () => {
+        const pages = [account, more, null];
+        expect(dropPotStatements(pages)).toBe(pages);
+    });
+
+    it('leaves a document that is only a pot statement alone', () => {
+        const pages = [pot, potMore];
+        expect(dropPotStatements(pages)).toBe(pages);
+    });
+
+    it('is not triggered by a row that merely mentions a pot', () => {
+        const pages = [account, { cells: [], content: '20/07/2026\nTransfer to Pot\n-10.00\n790.00\nPot statement fee\n-1.00' }];
+        expect(dropPotStatements(pages)).toBe(pages);
+    });
+});
+
+/**
+ * Azure DI sometimes drops the minus sign from an overdrawn balance.
+ *
+ * Origin: ten rows of the same statement showed e.g. 83.78 between -109.66 and
+ * -26.64. The amounts were right, so totals matched, but the Balance column was
+ * wrong on those rows.
+ */
+describe('Monzo balance sign', () => {
+    const NO_CONTEXT = String();
+
+    // Newest first. -26.64 → (-57.14) → -83.78 → (-25.88) → -109.66
+    it('restores a minus sign the older row proves was lost', () => {
+        const { txns } = parsePages(NO_CONTEXT, [[
+            ...HEADER,
+            ...row(1, '25/03/2026', 'SHOP ONE LONDON GBR', '-25.88', '-109.66'),
+            ...row(2, '25/03/2026', 'SHOP TWO LONDON GBR', '-57.14', '83.78'),
+            ...row(3, '25/03/2026', 'SHOP THREE LONDON GBR', '-10.00', '-26.64'),
+        ]]);
+        expect(txns.map(t => t.balance)).toEqual(['-109.66', '-83.78', '-26.64']);
+    });
+
+    it('leaves a genuinely positive balance alone', () => {
+        const { txns } = parsePages(NO_CONTEXT, [[
+            ...HEADER,
+            ...row(1, '25/03/2026', 'ACME LTD (Faster Payments)', '200.00', '83.78'),
+            ...row(2, '25/03/2026', 'SHOP THREE LONDON GBR', '-10.00', '-116.22'),
+        ]]);
+        expect(txns.map(t => t.balance)).toEqual(['83.78', '-116.22']);
+    });
+
+    it('does not take a repeated header row for a balance of zero', () => {
+        const { txns } = parsePages(NO_CONTEXT, [[
+            ...HEADER,
+            ...row(1, '25/03/2026', 'SHOP ONE LONDON GBR', '-25.00', '25.00'),
+            ...HEADER.map(h => ({ ...h, rowIndex: 2 })),
+        ]]);
+        expect(txns[0].balance).toBe('25.00');
     });
 });
