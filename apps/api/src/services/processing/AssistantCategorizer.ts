@@ -192,6 +192,36 @@ function normalizeDescription(desc: string): string {
     return s || desc;
 }
 
+// ── Notes a bank prints inside a transaction's own text ───────────────────────
+// Some statements add, after the payee, the exchange rate used or a fee that is already
+// part of the amount. They describe the payment, not who was paid:
+//   Revolut  "To J Example . Event pay Fee: £0.20"
+//            "Example Cafe FX Rate GBP 1 = EUR 1.156195, Fee: £0.42"
+//   Tide     "Cash Withdrawal POST OFFICE (includes fee of GBP 1.00) Fee (£): 0.00 Tide Card: **** **** **** 1234"
+//   Lloyds   "Card Purchase Example Shop BGN 26.40 On 09 Apr at VISA Exchange Rate 2.26 The Final GBP Amount
+//             Includes A Non-Sterling Transaction Fee of £ 0.32"
+//   NatWest  "VIS INT'L 0012345678 EXAMPLE SHOP EUR 62.97 @ 1.1505 Visa Rate"
+// Left in, the words "fee" and "rate" sent ordinary payments, card purchases and cash
+// withdrawals to CHARGES. Rules and the AI read the text without these notes; the text
+// written to the Excel keeps them.
+const BANK_NOTE_RES: RegExp[] = [
+    /\bFX Rate\s+[A-Z]{3}\s*1\s*=\s*[A-Z]{3}\s*[\d.,]*\d/gi,
+    /,?\s*\bFee:\s*(?:[£$€]|[A-Z]{3}\b)\s*[\d.,]*\d/gi,
+    /\(includes fee of\s+[A-Z]{3}\s*[\d.,]*\d\)/gi,
+    /\bFee\s*\(£\):\s*[\d.,]*\d/gi,
+    /\bTide Card:[\s*\d]+/gi,
+    /\bat VISA Exchange Rate\s*[\d.,]*\d/gi,
+    /\bThe Final GBP Amount Includes A Non-Sterling Transaction Fee of\s*£\s*[\d.,]*\d/gi,
+    /@\s*[\d.,]*\d\s*Visa Rate\b/gi,
+];
+
+export function stripBankNotes(desc: string): string {
+    let s = desc;
+    for (const re of BANK_NOTE_RES) s = s.replace(re, ' ');
+    s = s.replace(/\s+/g, ' ').trim();
+    return s || desc;
+}
+
 // ── Rule-based pre-categorization (runs before AI, first match wins) ──────────
 const PRE_RULES: Array<{ pattern: RegExp; category: string }> = [
     // CASH — ATM and cash withdrawals
@@ -207,7 +237,7 @@ const PRE_RULES: Array<{ pattern: RegExp; category: string }> = [
     // Bank_Transfer — inter-account transfers
     { pattern: /\b(INTERNET BANKING (?:TRANSFER|PAYMENT)|ONLINE BANKING (?:TRANSFER|PAYMENT)|FASTER PAYMENT (?:TRANSFER|OUT)|CHAPS PAYMENT)\b/i, category: 'Bank_Transfer' },
     // CHARGES — bank-originated fees only (never shopping)
-    { pattern: /\b(OVERDRAFT (?:USAGE |ARRANGEMENT )?FEE|ARRANGED OVERDRAFT|UNARRANGED OVERDRAFT|MONTHLY (?:ACCOUNT )?FEE|ACCOUNT (?:SERVICE )?CHARGE|INTEREST CHARGED|RETURNED (?:ITEM|DD) FEE|UNPAID (?:ITEM|DD) FEE|FOREIGN (?:TRANSACTION|EXCHANGE) FEE|FX (?:FEE|CHARGE)|NON-STERLING|CHAPS FEE|REFERRAL FEE|COMMISSION CHARGES?)\b/i, category: 'CHARGES' },
+    { pattern: /\b(OVERDRAFT (?:USAGE |ARRANGEMENT )?FEE|ARRANGED OVERDRAFT|UNARRANGED OVERDRAFT|MONTHLY (?:ACCOUNT )?FEE|ACCOUNT (?:SERVICE )?CHARGE|INTEREST CHARGED|RETURNED (?:ITEM|DD) FEE|UNPAID (?:ITEM|DD) FEE|FOREIGN (?:TRANSACTION|EXCHANGE) FEE|FX (?:FEE|CHARGE)|NON-STERLING|NON-GBP (?:TRANS|PURCH)\w* FEE|O\/D FEE|BLUE REWARDS FEE|MONESE LTD FEE|CHAPS FEE|REFERRAL FEE|COMMISSION CHARGES?)\b/i, category: 'CHARGES' },
 ];
 
 function applyPreRule(description: string): string | null {
@@ -215,6 +245,44 @@ function applyPreRule(description: string): string | null {
         if (rule.pattern.test(description)) return rule.category;
     }
     return null;
+}
+
+/**
+ * The category a transaction gets from rules alone, or null when the AI has to decide.
+ * `code` is the bank's own transaction-type code, `merchant` the payee text.
+ */
+export function ruleCategory(code: string, merchant: string, vendorRules: VendorRule[]): string | null {
+    // The bank's own code for what it charges: "FEE Revolut Business Fee . Basic plan fee".
+    if (code.trim().toUpperCase() === 'FEE') return 'CHARGES';
+
+    const text     = stripBankNotes(merchant);
+    const normDesc = normalizeDescription(text);
+    // Vendor DB rules: try normalized description first so bank-prefix stripping
+    // (e.g. "BILL PAYMENT TO BT GROUP" → "BT GROUP") lets specific merchant rules
+    // win before generic prefix rules like "bill payment to → Bank_Transfer".
+    // Fall back to raw merchant for rules that intentionally match the prefix.
+    return applyVendorRule(normDesc, vendorRules)
+        ?? applyVendorRule(text, vendorRules)
+        ?? applyPreRule(normDesc)
+        ?? applyPreRule(text);
+}
+
+// Words the prompt already tells the AI never to return as a signal. Three were learned
+// anyway — "FEE", "FX Rate" and "Visa Rate" — and one statement had 267 ordinary payments
+// sent to CHARGES by them, so the list is enforced here as well.
+const TOO_BROAD_SIGNALS = new Set([
+    'fee', 'fees', 'charge', 'charges', 'interest', 'cheque', 'rate', 'fx rate', 'visa rate', 'exchange rate',
+    'cash', 'loan', 'rent', 'station', 'revolut', 'monzo', 'payment', 'transfer',
+    'payment to', 'transfer to', 'bill payment', 'faster payment',
+    'card payment', 'card purchase', 'debit card', 'contactless', 'direct debit', 'standing order', 'bacs',
+    'online payment', 'online purchase', 'internet payment', 'credit', 'debit', 'tfr', 'chg',
+]);
+
+/** A learned signal becomes a permanent rule, so it has to name a payee, not a kind of payment. */
+export function isLearnableSignal(signal: string): boolean {
+    const s = signal.toLowerCase().replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, '');   // "Fee:" is still "fee"
+    // 3-letter signals ("Car", "INS", "KEY") became rules that matched far too much
+    return s.length >= 4 && !TOO_BROAD_SIGNALS.has(s);
 }
 
 function buildRuleRow(tx: ParsedTransaction, formatted: any, category: string): CategorizedTransaction {
@@ -510,15 +578,7 @@ export async function categorize(transactions: ParsedTransaction[], context?: { 
         // Merchant is already the clean payee/merchant name (no bank prefix).
         // Description is the combined fallback for older paths that don't have Merchant.
         const merchant  = (formatted['Merchant'] || formatted['Description'] || '') as string;
-        const normDesc  = normalizeDescription(merchant);
-        // Vendor DB rules: try normalized description first so bank-prefix stripping
-        // (e.g. "BILL PAYMENT TO BT GROUP" → "BT GROUP") lets specific merchant rules
-        // win before generic prefix rules like "bill payment to → Bank_Transfer".
-        // Fall back to raw merchant for rules that intentionally match the prefix.
-        const category  = applyVendorRule(normDesc, vendorRules)
-                       ?? applyVendorRule(merchant, vendorRules)
-                       ?? applyPreRule(normDesc)
-                       ?? applyPreRule(merchant);
+        const category  = ruleCategory(formatted['Code'] || '', merchant, vendorRules);
         if (category) {
             preCat[i] = buildRuleRow(transactions[i], formatted, category);
         } else {
@@ -540,10 +600,11 @@ export async function categorize(transactions: ParsedTransaction[], context?: { 
     if (aiIndices.length > 0) {
         // Strip the combined Description field before sending to AI — AI receives Code + Merchant
         // as separate fields so it can ignore bank prefixes and focus on the merchant name.
+        // The bank's own fee and exchange-rate notes are left out of Merchant as well.
         const aiFormatted = aiIndices.map(i => {
             const f = inputArray[i] as any;
             const { Description: _drop, ...rest } = f;
-            return rest;
+            return { ...rest, Merchant: stripBankNotes(rest.Merchant || '') };
         });
         const totalBatches = Math.ceil(aiFormatted.length / BATCH_SIZE);
 
@@ -572,7 +633,11 @@ export async function categorize(transactions: ParsedTransaction[], context?: { 
 
         const aiResults = batchResults.flat();
         for (let j = 0; j < aiIndices.length; j++) {
-            results[aiIndices[j]] = aiResults[j] ?? buildFallbackRow(inputArray[aiIndices[j]] as any);
+            const row = aiResults[j] ?? buildFallbackRow(inputArray[aiIndices[j]] as any);
+            // The AI read the text without the bank's notes; the Excel gets the full text.
+            const fullText = typeAndDesc(inputArray[aiIndices[j]]);
+            if (fullText) row['Type and Description'] = fullText;
+            results[aiIndices[j]] = row;
         }
 
         // ── Learn: save AI-categorized vendors to Supabase for future runs ──────
@@ -587,8 +652,7 @@ export async function categorize(transactions: ParsedTransaction[], context?: { 
         for (let j = 0; j < aiIndices.length; j++) {
             const result  = aiResults[j];
             const signal  = ((result as any).__signal as string | undefined)?.trim();
-            // 3-letter signals ("Car", "INS", "KEY") became rules that matched far too much
-            if (!signal || signal.length < 4) continue;
+            if (!signal || !isLearnableSignal(signal)) continue;
             signalCount++;
             // Find the category placed by AI (non-empty expense column)
             const placedCat = EXPENSE_CATS.filter(k => k !== 'INCOME')
