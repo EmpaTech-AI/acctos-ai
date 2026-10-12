@@ -474,7 +474,7 @@ Authentication: `Authorization: Token {makeApiKey}`
 ### 8.2 Stripe
 
 - **Webhook endpoint**: `POST /v1/billing/stripe-webhook`
-- **Handled event**: `checkout.session.completed`
+- **Handled events**: `checkout.session.completed`, `customer.subscription.updated`, `customer.subscription.deleted`, `invoice.paid`, `invoice.payment_failed`
 - **Metadata fields**: `tenantId`, `addonType` (`pages`|`rows`), `addonQuantity`
 - **Fallback**: `client_reference_id` used when metadata lacks `tenantId` (for static payment links)
 
@@ -539,7 +539,7 @@ All UI strings centralised in `LanguageContext.tsx`. Language preference persist
 | `HMAC_SECRET` | Yes | Secret for HMAC event verification |
 | `USAGE_API_KEY` | Yes | API key for document usage ingestion |
 | `STRIPE_SECRET_KEY` | No | Stripe API secret key |
-| `STRIPE_WEBHOOK_SECRET` | No | Stripe webhook signing secret |
+| `STRIPE_WEBHOOK_SECRET` | For Stripe billing | Stripe webhook signing secret. Without it every Stripe event is refused |
 | `OPENAI_API_KEY` | No | OpenAI API key for cost tracking |
 | `MAKE_FOLDER_ID` | No | Default Make.com folder ID |
 | `DEFAULT_TENANT_ID` | No | Fallback tenant for unauthenticated events |
@@ -607,7 +607,7 @@ All POST/PUT request bodies validated with **Zod** schemas. Invalid requests ret
 - **Tenant isolation**: Every database query scoped to the authenticated tenant ID.
 - **HMAC verification**: Event ingestion endpoints require cryptographic signature.
 - **API key protection**: Integration keys stored per-tenant, never exposed to frontend users.
-- **Stripe webhook verification**: Signature validation when `STRIPE_WEBHOOK_SECRET` is configured.
+- **Stripe webhook verification**: The webhook needs no login, so every event must carry a valid Stripe signature. Without `STRIPE_WEBHOOK_SECRET` all events are refused.
 - **Input validation**: Zod schemas on all user-facing endpoints prevent injection attacks.
 - **CORS**: Configured for the frontend origin only.
 - **Idempotency**: Usage events deduplicated by `(tenantId, source, idempotencyKey)` composite unique constraint.
