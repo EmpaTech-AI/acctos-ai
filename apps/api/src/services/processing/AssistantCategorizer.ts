@@ -4,7 +4,7 @@ import { fileURLToPath } from 'url';
 import { Anthropic } from '@anthropic-ai/sdk';
 import { ParsedTransaction, formatTransactionsForAssistant } from './parsers/shared.js';
 import { notifyParserError } from './NotificationService.js';
-import { loadVendorCategories, saveAiVendorRule, VendorRule } from '../SupabaseService.js';
+import { loadVendorCategories, loadRetiredVendorPatterns, saveAiVendorRule, VendorRule } from '../SupabaseService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = dirname(__filename);
@@ -140,12 +140,20 @@ let vendorRulesCache: VendorRule[] = [];
 let vendorRulesCacheAt = 0;
 const VENDOR_RULES_TTL = 5 * 60 * 1000;
 
+// Patterns of rules somebody has switched off, refreshed with the rules. A word that was
+// switched off must not be learned again: "Luton" and "Stansted" were offered by the AI
+// as TRAVEL signals again in the first run after they were taken out.
+let retiredPatterns = new Set<string>();
+
+const signalKey = (s: string) => s.toLowerCase().replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, '');
+
 async function getVendorRules(): Promise<VendorRule[]> {
     if (vendorRulesCache.length > 0 && Date.now() - vendorRulesCacheAt < VENDOR_RULES_TTL) {
         return vendorRulesCache;
     }
-    const rules = await loadVendorCategories();
+    const [rules, retired] = await Promise.all([loadVendorCategories(), loadRetiredVendorPatterns()]);
     vendorRulesCache = rules;
+    retiredPatterns = new Set(retired.map(signalKey));
     vendorRulesCacheAt = Date.now();
     if (rules.length > 0) console.log(`[Categorizer] Loaded ${rules.length} vendor rules from Supabase`);
     return rules;
@@ -279,10 +287,10 @@ const TOO_BROAD_SIGNALS = new Set([
 ]);
 
 /** A learned signal becomes a permanent rule, so it has to name a payee, not a kind of payment. */
-export function isLearnableSignal(signal: string): boolean {
-    const s = signal.toLowerCase().replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, '');   // "Fee:" is still "fee"
+export function isLearnableSignal(signal: string, retired: ReadonlySet<string> = new Set()): boolean {
+    const s = signalKey(signal);   // "Fee:" is still "fee"
     // 3-letter signals ("Car", "INS", "KEY") became rules that matched far too much
-    return s.length >= 4 && !TOO_BROAD_SIGNALS.has(s);
+    return s.length >= 4 && !TOO_BROAD_SIGNALS.has(s) && !retired.has(s);
 }
 
 function buildRuleRow(tx: ParsedTransaction, formatted: any, category: string): CategorizedTransaction {
@@ -652,7 +660,7 @@ export async function categorize(transactions: ParsedTransaction[], context?: { 
         for (let j = 0; j < aiIndices.length; j++) {
             const result  = aiResults[j];
             const signal  = ((result as any).__signal as string | undefined)?.trim();
-            if (!signal || !isLearnableSignal(signal)) continue;
+            if (!signal || !isLearnableSignal(signal, retiredPatterns)) continue;
             signalCount++;
             // Find the category placed by AI (non-empty expense column)
             const placedCat = EXPENSE_CATS.filter(k => k !== 'INCOME')
