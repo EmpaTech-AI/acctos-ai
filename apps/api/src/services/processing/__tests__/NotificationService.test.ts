@@ -81,6 +81,39 @@ describe('notifyProcessingComplete', () => {
             expect(m.text).toContain('Attached you can find');
         }
     });
+
+    /**
+     * Origin: files corrected after they were sent changed silently behind the same
+     * link. The client still held an email with the old figures and no word that they
+     * had been replaced. A corrected result is sent as a new email that says so.
+     */
+    it('marks a corrected result in the subject and says it replaces the earlier one', async () => {
+        const { team, client } = await send(alert({ corrected: true }));
+
+        for (const m of [team, client]) {
+            expect(m.subject).toBe('Corrected: Example Ltd VAT');
+            expect(m.text).toContain('This is a corrected version. It replaces the result we sent earlier');
+            expect(m.text).toContain('Това е коригирана версия');
+            expect(m.html).toContain('This is a corrected version');
+            expect(m.html).toContain('Това е коригирана версия');
+            expect(m.text).toContain(DRIVE_URL);
+        }
+    });
+
+    it('does not keep a "Re:" in the subject of a corrected result', async () => {
+        const { client } = await send(alert({ corrected: true, emailSubject: 'RE: Example Ltd VAT' }));
+
+        expect(client.subject).toBe('Corrected: Example Ltd VAT');
+    });
+
+    it('says nothing about a correction on an ordinary result', async () => {
+        const { client } = await send(alert());
+
+        expect(client.subject).toBe('Re: Example Ltd VAT');
+        expect(client.text).not.toMatch(/corrected/i);
+        expect(client.html).not.toMatch(/corrected/i);
+        expect(client.text).not.toContain('коригирана');
+    });
 });
 
 /**

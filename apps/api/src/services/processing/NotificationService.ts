@@ -548,13 +548,18 @@ export interface ProcessingCompleteAlert {
     driveFileUrl?: string;
     vatSummary?:   VatSummary;
     bankSummary?:  BankSummary;
+    /** This result replaces one already sent: the subject starts with "Corrected:" and the email says so. */
+    corrected?:    boolean;
 }
 
 export function notifyProcessingComplete(alert: ProcessingCompleteAlert): void {
 
-    const replySubject = /^re:/i.test(alert.emailSubject)
-        ? alert.emailSubject
-        : `Re: ${alert.emailSubject}`;
+    // A corrected result is a new email, not a reply: a "Re:" would thread it under the result it replaces.
+    const replySubject = alert.corrected
+        ? `Corrected: ${alert.emailSubject.replace(/^re:\s*/i, '')}`
+        : /^re:/i.test(alert.emailSubject)
+            ? alert.emailSubject
+            : `Re: ${alert.emailSubject}`;
 
     const name = alert.clientName || alert.emailSubject;
     const isVat = !!alert.vatSummary;
@@ -623,11 +628,15 @@ export function notifyProcessingComplete(alert: ProcessingCompleteAlert): void {
         ? `В прикачения файл можете да намерите свалената информация от ${descBg} за ${n}.`
         : `Можете да намерите свалената информация от ${descBg} за ${n} чрез линка по-долу.`;
 
+    const correctedEn = 'This is a corrected version. It replaces the result we sent earlier, so please use this file.';
+    const correctedBg = 'Това е коригирана версия. Тя заменя резултата, който изпратихме по-рано, затова моля използвайте този файл.';
+
     const text = (attached: boolean) => [
         title,
         '',
         'Hi,',
         '',
+        ...(alert.corrected ? [correctedEn, ''] : []),
         intro(attached, name),
         summaryText,
         processedAt,
@@ -640,6 +649,7 @@ export function notifyProcessingComplete(alert: ProcessingCompleteAlert): void {
         '',
         'Здравейте,',
         '',
+        ...(alert.corrected ? [correctedBg, ''] : []),
         introBg(attached, name),
         processedAt,
         linkSectionBg(attached),
@@ -716,9 +726,13 @@ export function notifyProcessingComplete(alert: ProcessingCompleteAlert): void {
 
     const summaryHtml = vatSummaryHtml + bankSummaryHtml;
 
+    const correctedBoxStyle = 'background:#fffbeb;border:1px solid #fcd34d;border-radius:8px;padding:12px 16px;margin:0 0 16px;color:#92400e;font-weight:600';
+    const correctedBox = (line: string) => alert.corrected ? `<p style="${correctedBoxStyle}">${line}</p>` : '';
+
     const html = (attached: boolean) => `<!DOCTYPE html><html><body style="font-family:Arial,sans-serif;font-size:15px;color:#111827;max-width:600px;margin:0 auto;padding:24px">
       <h2 style="font-size:20px;font-weight:700;margin:0 0 16px">${title}</h2>
       <p>Hi,</p>
+      ${correctedBox(correctedEn)}
       <p>${intro(attached, `<strong>${name}</strong>`)}</p>
       ${summaryHtml}
       <p style="font-size:13px;color:#6b7280;margin:8px 0">${processedAt}</p>
@@ -727,6 +741,7 @@ export function notifyProcessingComplete(alert: ProcessingCompleteAlert): void {
       <hr style="border:none;border-top:1px solid #e5e7eb;margin:32px 0">
       <h2 style="font-size:20px;font-weight:700;margin:0 0 16px">${titleBg}</h2>
       <p>Здравейте,</p>
+      ${correctedBox(correctedBg)}
       <p>${introBg(attached, `<strong>${name}</strong>`)}</p>
       ${driveButton('Отвори файла', 'Директен линк (ако бутонът не работи)')}
       <p style="margin-top:24px;color:#6b7280;font-size:13px">Ако имате въпроси, моля отговорете на този имейл.</p>
