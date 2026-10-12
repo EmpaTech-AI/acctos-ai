@@ -18,6 +18,11 @@ import { notifyPaymentFailed } from '../services/processing/NotificationService.
 
 const router = Router();
 
+// Stripe calls its webhook without a login token: the signature it sends is the
+// check (see stripeWebhook). It has to be registered ahead of the login check
+// below, which would answer every call from Stripe with 401.
+router.post('/stripe-webhook', stripeWebhook);
+
 // Most billing routes require authentication
 router.use(authenticateToken);
 
@@ -404,32 +409,34 @@ router.get('/usage-status', async (req: AuthenticatedRequest, res: Response, nex
  *   - addonType:      "pages" | "rows"
  *   - addonQuantity:  number (e.g. 1000)
  */
-router.post('/stripe-webhook', async (req: Request, res: Response, next: NextFunction) => {
+async function stripeWebhook(req: Request, res: Response, next: NextFunction) {
     try {
         const prisma: PrismaClient = req.app.locals.prisma;
-        const sig    = req.headers['stripe-signature'] as string;
+        const sig    = req.headers['stripe-signature'] as string | undefined;
         const secret = process.env.STRIPE_WEBHOOK_SECRET;
 
-        let event: any = req.body;
-        let stripe: any = null;
-
-        // Verify signature and keep the stripe instance for later API calls
-        if (process.env.STRIPE_SECRET_KEY) {
-            const Stripe = (await import('stripe')).default;
-            stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: '2025-01-27.acacia' as any });
-            if (secret && sig) {
-                try {
-                    event = stripe.webhooks.constructEvent(
-                        (req as any).rawBody ?? req.body,
-                        sig,
-                        secret
-                    );
-                } catch (err: any) {
-                    console.warn('[Stripe Webhook] Signature verification failed:', err.message);
-                    return res.status(400).json({ error: 'Invalid signature' });
-                }
-            }
+        // The route is open to the internet, so the signature is the only proof that
+        // Stripe sent the event. Without the signing secret nothing can be proved, and
+        // an unproved "invoice paid" would hand out a free billing period — refuse.
+        if (!secret) {
+            console.error('[Stripe Webhook] STRIPE_WEBHOOK_SECRET is not set — event refused');
+            return res.status(503).json({ error: 'Webhook is not configured' });
         }
+
+        const Stripe = (await import('stripe')).default;
+        let event: any;
+        try {
+            event = Stripe.webhooks.constructEvent((req as any).rawBody ?? req.body, sig ?? '', secret);
+        } catch (err: any) {
+            console.warn('[Stripe Webhook] Signature verification failed:', err.message);
+            return res.status(400).json({ error: 'Invalid signature' });
+        }
+
+        // Only calls back to Stripe (cancelling a replaced subscription) need the API
+        // key. Reading an event does not.
+        const stripe: any = process.env.STRIPE_SECRET_KEY
+            ? new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: '2025-01-27.acacia' as any })
+            : null;
 
         // ── Plan limits map ──────────────────────────────────────────────────────
         const PLAN_LIMITS: Record<string, { pagesLimit: number; rowsLimit: number }> = {
@@ -694,7 +701,7 @@ router.post('/stripe-webhook', async (req: Request, res: Response, next: NextFun
     } catch (error) {
         next(error);
     }
-});
+}
 
 /**
  * POST /v1/billing/webhooks
