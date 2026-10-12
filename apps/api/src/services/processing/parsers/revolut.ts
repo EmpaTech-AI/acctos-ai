@@ -172,11 +172,40 @@ function extractTwoAmounts(s: string): [number, number] | null {
 
 // Parse amount, falling back to the first £-prefixed decimal when the cell also
 // contains a foreign-currency amount, e.g. "£30.67 1 574.00 TRY" → 30.67
+//
+// Revolut prints thousands with a space, so the £ amount itself can contain one:
+// "£1 072.35 €1 228.90" is 1,072.35. Stopping at the first space read it as £1 —
+// four payments abroad of over £1,000 came out as £1 or £3. The two decimals mark
+// where the £ amount ends, which keeps "£5.00 574.00 TRY" at 5.00.
 function parseMoneyFirst(s: string): number | null {
     const direct = parseMoney(s);
     if (direct !== null) return direct;
-    const m = normStr(s).match(/£\s*(\d+(?:\.\d{1,2})?)/);
+    const text = normStr(s);
+    const m = text.match(/£\s*(\d{1,3}(?:[\s,]\d{3})*\.\d{2})(?!\d)/) ?? text.match(/£\s*(\d+(?:\.\d{1,2})?)/);
     return m ? parseMoney('£' + m[1]) : null;
+}
+
+// Which currency a row is in, going by its amount and balance cells. A row of the
+// GBP account can also show the foreign amount of a card payment ("£7.99 $9.99"),
+// so a £ anywhere makes it a GBP row.
+function rowCurrency(...cells: Array<string | undefined>): '£' | 'foreign' | '' {
+    const text = cells.join(' ');
+    if (text.includes('£')) return '£';
+    return /[$€]/.test(text) ? 'foreign' : '';
+}
+
+/**
+ * One statement can hold several currency accounts (Main GBP, Main USD, Main EUR).
+ * The declared totals are the GBP accounts' — € and $ summaries are skipped — so
+ * the rows of a $ or € account do not belong next to them: $45.22 of refunds on a
+ * USD account was being added to Money In as £45.22.
+ *
+ * Foreign-currency rows are dropped only when the statement has GBP rows. A
+ * statement with no GBP account at all is left as it is.
+ */
+function gbpRowsOnly(transactions: ParsedTransaction[], currencies: Array<'£' | 'foreign' | ''>): ParsedTransaction[] {
+    if (!currencies.includes('£')) return transactions;
+    return transactions.filter((_, i) => currencies[i] !== 'foreign');
 }
 
 export function parse(cells: Cell[]): ParseResult {
@@ -214,6 +243,7 @@ export function parse(cells: Cell[]): ParseResult {
     const isFiveCols = cols === 4;
 
     const transactions: ParsedTransaction[] = [];
+    const currencies: Array<'£' | 'foreign' | ''> = [];   // one per transaction, same order
 
     // ── 5-col in/out: [date, desc, out, in, balance] ─────────────────────────
     if (isFiveCols && hasHeader && isInOut5Header(headerRow)) {
@@ -242,8 +272,9 @@ export function parse(cells: Cell[]): ParseResult {
             }
 
             transactions.push({ date, type: '', description: desc, moneyIn, moneyOut, balance: bal });
+            currencies.push(rowCurrency(c[2], c[3], c[4]));
         }
-        return { transactions, statementTotals };
+        return { transactions: gbpRowsOnly(transactions, currencies), statementTotals };
     }
 
     // ── Transaction-statement: [date, "TYPE desc", status, account, out, in] ──
@@ -337,6 +368,7 @@ export function parse(cells: Cell[]): ParseResult {
             }
 
             transactions.push({ date, type, description: desc, moneyIn, moneyOut, balance: bal });
+            currencies.push(rowCurrency(c[3], c[4], c[5]));
             continue;
         }
 
@@ -408,8 +440,9 @@ export function parse(cells: Cell[]): ParseResult {
 
             if (!moneyIn && !moneyOut) continue;
             transactions.push({ date, type, description: desc, moneyIn, moneyOut, balance: bal });
+            currencies.push(rowCurrency(c[3], c[4]));
         }
     }
 
-    return { transactions, statementTotals };
+    return { transactions: gbpRowsOnly(transactions, currencies), statementTotals };
 }

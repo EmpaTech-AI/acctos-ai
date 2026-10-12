@@ -3,6 +3,7 @@ import { PrismaClient } from '@prisma/client';
 import { PrismaClientKnownRequestError } from '@prisma/client/runtime/library';
 import { jobStore, FileSummary } from './JobStore.js';
 import { classify, detectBankFromContent, BankType } from './DocumentClassifier.js';
+import { findBetterBank } from './bankFit.js';
 import { splitPdf } from './PdfSplitter.js';
 import { analyzePages, countPagesRead, PageData } from './AzureExtractor.js';
 import { categorize, CategorizedTransaction } from './AssistantCategorizer.js';
@@ -593,6 +594,20 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
                     }
                 } else {
                     console.log(`[Orchestrator] Keeping confirmed bank "${bankType}" (${parseResult.transactions.length} tx ≥ ${altResult.transactions.length} tx from "${conflictDetected}", conf diff=${confMaxDiff === Infinity ? '∞' : confMaxDiff.toFixed(2)})`);
+                }
+            }
+
+            // The bank came from the text, not the filename: check it against the
+            // other banks the text names (see findBetterBank).
+            if (classification.bankType === 'generic') {
+                const better = await findBetterBank(combinedContent, bankType, parseResult, bank => parseAllCells(pageCells, bank));
+                if (better) {
+                    console.log(`[Orchestrator] File ${fi + 1}/${files.length}: "${bankType}" does not fit this document, "${better.bankType}" matches its declared totals — using "${better.bankType}"`);
+                    // Later files inherit the batch's bank; do not hand them the wrong one.
+                    if (confirmedBankType === bankType && fileSummaries.length === 0) confirmedBankType = better.bankType;
+                    bankType = better.bankType;
+                    parseResult = better.result;
+                    jobStore.update(jobId, { bankType });
                 }
             }
             const { transactions: fileTransactions, statementTotals, ascending: fileAscending } = parseResult;
@@ -1305,7 +1320,19 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
                 }
             }
 
-            const { transactions, statementTotals, ascending } = await parseAllCells(pageCells, bankType);
+            let parseResult = await parseAllCells(pageCells, bankType);
+            // The bank came from the text, not the filename: check it against the
+            // other banks the text names (see findBetterBank).
+            if (classification.bankType === 'generic' && bankType !== 'generic') {
+                const better = await findBetterBank(combinedContent, bankType, parseResult, bank => parseAllCells(pageCells, bank));
+                if (better) {
+                    console.log(`[Orchestrator] "${bankType}" does not fit this document, "${better.bankType}" matches its declared totals — using "${better.bankType}"`);
+                    bankType = better.bankType;
+                    parseResult = better.result;
+                    jobStore.update(jobId, { bankType });
+                }
+            }
+            const { transactions, statementTotals, ascending } = parseResult;
             if (transactions.length === 0) throw new Error('No transactions could be extracted from the document');
 
             console.log(`[Orchestrator] Parsed ${transactions.length} transactions from "${filename}"`);

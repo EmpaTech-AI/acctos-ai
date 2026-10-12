@@ -9,7 +9,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { detectBankFromContent } from '../DocumentClassifier.js';
+import { detectBankFromContent, banksNamedInContent } from '../DocumentClassifier.js';
 
 const MONZO_HEADER = [
     'monzo', 'Personal Account statement', '01/04/2025 - 31/03/2026', 'Jane Example',
@@ -36,5 +36,46 @@ describe('detectBankFromContent – Monzo', () => {
     it('does not claim another bank because a payee there has a Monzo BIC', () => {
         const natwest = 'NatWest\nStatement\nBIC NWBKGB2L\nPayment to J Example BIC MONZGB2L\n£20.00';
         expect(detectBankFromContent(natwest)).toBe('natwest');
+    });
+});
+
+/**
+ * Origin: on 11 Oct an ANNA statement and three Tide statements were read as
+ * NatWest. ANNA's header prints "Intermediary BIC/SWIFT: NWBKGB2L"; the Tide
+ * account had used a cash machine listed as "NATWEST BANK - …". The first failed
+ * with no transactions, the second came out with dates and amounts as descriptions.
+ */
+describe('detectBankFromContent – ANNA and Tide', () => {
+    const ANNA = [
+        'ANNA', 'EXAMPLE TRANSPORT LTD', 'Statement 1 Jul 2026 - 30 Sep 2026',
+        'Institution: Payrnet, Po Box 1130, Cardiff', 'Account number: 12345678 Sort code: 23-11-85',
+        'IBAN: GB00PAYR23118512345678 BIC/SWIFT: PAYRGB2LXXX Intermediary BIC/SWIFT: NWBKGB2L',
+        'Closing balance', '£700.00', 'Processed on', 'Created on', 'Type', 'Transaction',
+        'ANNA is an Electronic Money account opened with PayrNet Ltd.',
+    ].join('\n');
+    const TIDE = [
+        'tide', 'Business Owner:', 'EXAMPLE LTD', 'Bank statement', 'Account number: 12345678 Sort code: 040605',
+        'Total paid in (£)', '1,000.00', 'Total paid out (£)', '500.00',
+        '26 Aug 2026', 'Cash Withdrawal', 'NATWEST BANK - EXAMPLE STORE, LONDON (includes fee of GBP 1.00)', '500.00',
+        'Bank account legal', 'Your Tide account is a bank account provided by ClearBank Limited.',
+    ].join('\n');
+
+    it('reads an ANNA statement as ANNA although its header shows a NatWest intermediary BIC', () => {
+        expect(detectBankFromContent(ANNA)).toBe('anna');
+    });
+
+    it('reads a Tide statement as Tide although a row names a NatWest cash machine', () => {
+        expect(detectBankFromContent(TIDE)).toBe('tide');
+    });
+
+    it('still reads a NatWest statement as NatWest when a payee there is Tide or ANNA', () => {
+        const natwest = 'NatWest\nStatement\nBIC NWBKGB2L\nPayment to TIDE PLATFORM LTD\n£20.00\nPayment to ANNA MONEY PAYRNET\n£5.00';
+        expect(detectBankFromContent(natwest)).toBe('natwest');
+    });
+
+    it('lists every bank a document names, issuer and payees alike', () => {
+        expect(banksNamedInContent(TIDE)).toEqual(['tide', 'natwest']);
+        expect(banksNamedInContent(ANNA)).toEqual(['anna', 'natwest']);
+        expect(banksNamedInContent('nothing here names a bank')).toEqual([]);
     });
 });

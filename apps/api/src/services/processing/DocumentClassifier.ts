@@ -83,6 +83,12 @@ export function detectBankFromContent(text: string): BankType {
     // carries Monzo's BIC and its "Total deposits" / "Total outgoings" summary; the BIC
     // alone could be a payee's on another bank's statement.
     if (t.includes('monzgb2l') && t.includes('total deposits') && t.includes('total outgoings')) return 'monzo';
+    // ANNA and Tide by their own legal footer, for the same reason. An ANNA statement
+    // prints "Intermediary BIC/SWIFT: NWBKGB2L" in its header, and a Tide account that
+    // uses a NatWest cash machine lists "NATWEST BANK - …" as the payee; both were read
+    // as NatWest. The footers name the institution behind the account.
+    if (t.includes('anna is an electronic money account') || (t.includes('payrgb2l') && t.includes('institution: payrnet'))) return 'anna';
+    if (/your tide account is an?\b/.test(t))                          return 'tide';
     // Halifax: check before NatWest — Halifax statements contain "NATWEST BANK" as a payee
     // which would otherwise trigger NatWest detection. Use footer text unique to Halifax.
     if (t.includes('halifax is a division') || (/\bhalifax\b/.test(t) && t.includes('bank of scotland'))) return 'halifax';
@@ -141,6 +147,46 @@ export function detectBankFromContent(text: string): BankType {
     // ANNA Money — Payrnet is ANNA's banking institution, unique to their statements
     if (t.includes('payrnet') || /\banna\s+(?:business|money|subscription)\b/.test(t)) return 'anna';
     return 'generic';
+}
+
+// Every bank whose name appears anywhere in the text — as issuer or as a payee.
+const BANK_MENTIONS: Array<[BankType, RegExp]> = [
+    ['monzo',             /\bmonzo\b|monzgb2l/],
+    ['tide',              /\btide\b/],
+    ['anna',              /\banna\b|payrnet/],
+    ['starling',          /\bstarling\b/],
+    ['revolut',           /\brevolut\b/],
+    ['natwest',           /\bnat\s?west\b|nwbkgb2l/],
+    ['hsbc',              /\bhsbc\b|hbukgb/],
+    ['barclays',          /\bbarclays\b/],
+    ['barclays-business', /barclays\s+business\s+account/],
+    ['barclaycard',       /\bbarclaycard\b/],
+    ['lloyds',            /\blloyds\b|total payments\/receipts:/],
+    ['santander',         /\bsantander\b/],
+    ['nationwide',        /\bnationwide\b/],
+    ['metro',             /m\s*etro\s+bank|mymbgb/],
+    ['halifax',           /\bhalifax\b/],
+    ['tsb',               /\btsb\b/],
+    ['rbs',               /\brbs\b|royal bank of scotland/],
+    ['mettle',            /\bmettle\b/],
+    ['virginmoney',       /virgin\s*money/],
+    ['pockit',            /\bpockit\b/],
+    ['zempler',           /\bzempler\b/],
+    ['countingup',        /counting\s*up/],
+    ['monese',            /\bmonese\b/],
+];
+
+/**
+ * The banks a document could be from, going by the names in its text.
+ *
+ * detectBankFromContent answers with the first rule that matches, and a statement
+ * names more banks than its own: payees, cash machines, intermediary banks. When
+ * the bank it picked turns out not to fit the document, these are the others worth
+ * trying (see ProcessingOrchestrator, parseWithBestBank).
+ */
+export function banksNamedInContent(text: string): BankType[] {
+    const t = text.toLowerCase();
+    return BANK_MENTIONS.filter(([, re]) => re.test(t)).map(([bank]) => bank);
 }
 
 function detectDocType(lower: string): DocType {
