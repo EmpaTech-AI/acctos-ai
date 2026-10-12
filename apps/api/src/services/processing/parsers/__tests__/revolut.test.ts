@@ -256,3 +256,81 @@ describe('Revolut Balance summary: single-summary statements', () => {
         expect(parse(cells).statementTotals).toBeUndefined();
     });
 });
+
+// ── amounts over £1,000 that also show the foreign amount ────────────────────
+
+/**
+ * Origin: a Revolut Business statement whose Money Out came out £6,214.69 under
+ * the declared total. Revolut prints thousands with a space, and a payment abroad
+ * shows the foreign amount after the sterling one: "£1 072.35 €1 228.90". The
+ * parser took the digits up to the first space, so four such payments were
+ * recorded as £1 or £3.
+ *
+ * Newest first: 10,000.00 → -1,500.00 → 8,500.00 → -7.99 → 8,492.01 → +250.00 → 8,742.01
+ */
+describe('Revolut amounts with a space for thousands and a foreign amount beside them', () => {
+    const cells = [
+        CONTEXT,
+        ...summary(0, '£', '10 000.00', '250.00', '1 507.99', '8 742.01'),
+        ...header(5),
+        ...txn(6, '20 Jan 2025', 'MOR', 'From Example Client Ltd', '', '£250.00', '£8 742.01'),
+        ...txn(7, '10 Jan 2025', 'CAR', 'Example Tools FX Rate GBP 1 = USD 1.250718', '£7.99 $9.99', '', '£8 492.01'),
+        ...txn(8, '5 Jan 2025', 'MOS', 'To Example Agency GmbH FX Rate GBP 1 = EUR 1.146007, Fee: £0.23', '£1 500.00 €1 719.01', '', '£8 500.00'),
+    ];
+    const { transactions, statementTotals } = parse(cells);
+
+    it('reads the whole sterling amount', () => {
+        expect(transactions.map(t => t.moneyOut)).toEqual([String(), '7.99', '1500.00']);
+    });
+
+    it('then matches the declared totals', () => {
+        expect(sumIn(transactions)).toBe(statementTotals!.moneyIn);
+        expect(sumOut(transactions)).toBe(statementTotals!.moneyOut);
+    });
+
+    it('does not run a small sterling amount into the foreign amount after it', () => {
+        const { transactions: t } = parse([
+            CONTEXT,
+            ...header(0),
+            ...txn(1, '5 Jan 2025', 'CAR', 'Example Shop Istanbul', '£5.00 574.00 TRY', '', '£95.00'),
+        ]);
+        expect(t[0].moneyOut).toBe('5.00');
+    });
+});
+
+// ── accounts in other currencies ─────────────────────────────────────────────
+
+/**
+ * Origin: the same statement also held a "Main" USD account with three refunds
+ * ($45.22) and two card payments. They were added to the sterling rows as if they
+ * were pounds, so Money In came out £45.22 over the declared (sterling) total.
+ */
+describe('Revolut statement with a second account in another currency', () => {
+    const gbp = [
+        ...summary(0, '£', '100.00', '250.00', '50.00', '300.00'),
+        ...header(5),
+        ...txn(6, '20 Jan 2025', 'MOR', 'From Example Client Ltd', '', '£250.00', '£300.00'),
+        ...txn(7, '10 Jan 2025', 'CAR', 'Example Shop', '£50.00', '', '£50.00'),
+    ];
+    const usd = [
+        ...summary(10000, '$', '0.00', '45.22', '21.99', '23.23'),
+        ...header(10005),
+        ...txn(10006, '16 Aug 2025', 'MOR', 'Refund from Example Video', '', '$45.22', '$23.23'),
+        ...txn(10007, '5 Jun 2025', 'CAR', 'Example Video', '$21.99', '', '-$21.99'),
+    ];
+
+    it('keeps the sterling rows and leaves the dollar rows out', () => {
+        const { transactions, statementTotals } = parse([CONTEXT, ...gbp, ...usd]);
+
+        expect(transactions.map(t => t.description)).toEqual(['From Example Client Ltd', 'Example Shop']);
+        expect(sumIn(transactions)).toBe(statementTotals!.moneyIn);
+        expect(sumOut(transactions)).toBe(statementTotals!.moneyOut);
+    });
+
+    it('keeps the rows of a statement that has no sterling account at all', () => {
+        const { transactions } = parse([CONTEXT, ...usd.map(x => ({ ...x, rowIndex: x.rowIndex - 10000 }))]);
+
+        expect(transactions).toHaveLength(2);
+        expect(sumIn(transactions)).toBe(45.22);
+    });
+});
