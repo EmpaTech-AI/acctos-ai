@@ -203,6 +203,22 @@ export async function loadVendorCategories(): Promise<VendorRule[]> {
     }
 }
 
+/** Patterns of rules that have been switched off (active = false). The categoriser must not learn them again. */
+export async function loadRetiredVendorPatterns(): Promise<string[]> {
+    const sb = getClient();
+    if (!sb) return [];
+    try {
+        const { data, error } = await sb
+            .from('vendor_categories')
+            .select('pattern')
+            .eq('active', false);
+        if (error || !data) return [];
+        return (data as Array<{ pattern: string }>).map(r => r.pattern);
+    } catch {
+        return [];
+    }
+}
+
 export async function saveAiVendorRule(pattern: string, category: string): Promise<void> {
     const sb = getClient();
     if (!sb) return;

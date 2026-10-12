@@ -18,9 +18,11 @@ import type { VendorRule } from '../../SupabaseService.js';
 
 const saved = vi.hoisted(() => [] as Array<{ pattern: string; category: string }>);
 const RULES = vi.hoisted(() => [] as VendorRule[]);
+const RETIRED = vi.hoisted(() => [] as string[]);
 vi.hoisted(() => { process.env.OPENAI_API_KEY = 'test-key'; });
 vi.mock('../../SupabaseService.js', () => ({
     loadVendorCategories: async () => RULES,
+    loadRetiredVendorPatterns: async () => RETIRED,
     saveAiVendorRule: async (pattern: string, category: string) => { saved.push({ pattern, category }); },
 }));
 
@@ -117,6 +119,19 @@ describe('isLearnableSignal', () => {
     ('learns "%s"', signal => {
         expect(isLearnableSignal(signal)).toBe(true);
     });
+
+    /**
+     * Origin: place names such as "Luton" and "Stansted" had been learned as TRAVEL and sent
+     * airport shops there. In the first trial run after they were taken out, the AI offered
+     * both again. A word somebody switched off stays off.
+     */
+    it('does not learn a word again once its rule has been switched off', () => {
+        const retired = new Set(['luton', 'bill payment']);
+
+        expect(isLearnableSignal('Luton', retired)).toBe(false);
+        expect(isLearnableSignal('LUTON', retired)).toBe(false);
+        expect(isLearnableSignal('Luton Airport Parking', retired)).toBe(true);
+    });
 });
 
 /**
@@ -128,7 +143,7 @@ describe('categorize — what the AI is sent and what is written out', () => {
     const sentMerchants: string[] = [];
 
     beforeEach(() => {
-        saved.length = 0; sentMerchants.length = 0; RULES.length = 0;
+        saved.length = 0; sentMerchants.length = 0; RULES.length = 0; RETIRED.length = 0;
         vi.stubGlobal('fetch', async (_url: string, init: { body: string }) => {
             const items = JSON.parse(JSON.parse(init.body).input[1].content) as Array<{ id: number; Merchant: string }>;
             const results = items.map(t => {
@@ -162,5 +177,13 @@ describe('categorize — what the AI is sent and what is written out', () => {
         ]);
 
         expect(saved).toEqual([{ pattern: 'Example Rail', category: 'TRAVEL' }]);
+    });
+
+    it('does not save a rule again that somebody has switched off', async () => {
+        RETIRED.push('EXAMPLE RAIL');
+
+        await categorize([tx('CAR', 'Example Rail tickets', '25.00')]);
+
+        expect(saved).toEqual([]);
     });
 });
