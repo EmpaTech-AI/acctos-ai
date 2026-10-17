@@ -41,8 +41,10 @@ function cellToAmount(val: any): number {
     let s = String(val).trim();
     // Parentheses = negative (we always take abs here)
     s = s.replace(/^\((.+)\)$/, '$1');
-    // Strip currency symbols/codes
-    s = s.replace(/[£$€]/g, '').replace(/\b(GBP|USD|EUR|CHF)\b/gi, '').trim();
+    // Keep only the number. Stripping a list of known currency signs missed the
+    // ones it did not list (and a "£" garbled by a wrong text encoding), and the
+    // row was dropped as having no amount.
+    s = s.replace(/[^\d.,\-]/g, '');
     // EU thousands format: 1.234,56 → 1234.56
     if (/\d{1,3}(\.\d{3})+,\d{2}$/.test(s)) {
         s = s.replace(/\./g, '').replace(',', '.');
@@ -277,8 +279,30 @@ function rowsToText(rows: any[][]): string {
     }).join('\n');
 }
 
+/**
+ * Some banks' "Excel" export is a web page with an .xls name, written in the
+ * encoding its own header declares (Santander: ISO-8859-1). Read as a buffer it
+ * is taken as UTF-8, so every "£" came out as an unreadable character, no amount
+ * could be read and the whole statement was "No transactions found".
+ */
+function decodeHtmlExport(fileBuffer: Buffer): string | null {
+    const head = fileBuffer.subarray(0, 2048).toString('latin1');
+    if (!/^\s*(<!DOCTYPE html|<html|<table)/i.test(head)) return null;
+    const charset = head.match(/charset\s*=\s*["']?([\w-]+)/i)?.[1] ?? 'utf-8';
+    try {
+        return new TextDecoder(charset).decode(fileBuffer);
+    } catch {
+        return new TextDecoder('utf-8').decode(fileBuffer);
+    }
+}
+
 export async function parseExcel(fileBuffer: Buffer): Promise<ExcelTransaction[]> {
-    const workbook = XLSX.read(fileBuffer, { type: 'buffer', cellDates: true });
+    // `raw` keeps a web page's cells as the text they are. Otherwise the library
+    // guesses: "04/07/2026" became 7 April (US order) and "£ 45.02" a date.
+    const html = decodeHtmlExport(fileBuffer);
+    const workbook = html !== null
+        ? XLSX.read(html, { type: 'string', raw: true })
+        : XLSX.read(fileBuffer, { type: 'buffer', cellDates: true });
     const sheetName = workbook.SheetNames[0];
     const sheet = workbook.Sheets[sheetName];
 
