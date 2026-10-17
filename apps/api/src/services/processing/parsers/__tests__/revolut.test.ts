@@ -334,3 +334,67 @@ describe('Revolut statement with a second account in another currency', () => {
         expect(sumIn(transactions)).toBe(45.22);
     });
 });
+
+// ── Transaction statement in Bulgarian ───────────────────────────────────────
+//
+// Origin: a Revolut Business "Извлечение за трансакции" (transaction statement)
+// exported in Bulgarian (17 Oct 2026) gave 0 transactions: the layout was only
+// recognised by its English column names "Status" and "Account". Azure DI also
+// read 3 as the Cyrillic З, "авг" as "abr", codes as Cyrillic look-alikes ("МОА"),
+// £ as E, f, $ or {, put date and description in one cell, and printed the year
+// on the next line. A transaction statement has no balances and no summary.
+
+describe('Revolut transaction statement in Bulgarian', () => {
+    const page2 = 10000;   // the orchestrator offsets each page's rows
+    const cells: Cell[] = [
+        c(0, 0, 'Дата (UTC)'), c(0, 1, 'Описание'), c(0, 3, 'Състояние'), c(0, 4, 'Сметка'), c(0, 5, 'Изходяща сума'), c(0, 6, 'Входяща сума'),
+        c(1, 0, '1 юли 2026'), c(1, 1, 'CAR Example Builders Merchant'), c(1, 3, 'Завършена'), c(1, 4, 'Main · GBP'), c(1, 5, '£75.50'),
+        c(2, 0, 'З юли 2026'), c(2, 1, 'MOS До Example Person · Work'), c(2, 3, 'Завършена'), c(2, 4, 'Main · GBP'), c(2, 5, 'E1 150.00'),
+        c(3, 0, '3 юли 2026'), c(3, 1, 'МОА Добавени пари от Example Software Ltd • Invoice 7'), c(3, 3, 'Завършена'), c(3, 4, 'Main · GBP'), c(3, 6, 'f2 000.00'),
+        c(4, 0, '4 юли 2026'), c(4, 1, 'MOR Възстановена сума от Example Hardware'), c(4, 3, 'Завършена'), c(4, 4, 'Main · GBP'), c(4, 5, '$53.86'),
+        // a page where Azure merged columns: date and description share the first cell
+        c(page2 + 0, 0, '27 cen 2026 CAR Example Fuel Station'), c(page2 + 0, 1, 'Завършена'), c(page2 + 0, 2, 'Main · GBP'), c(page2 + 0, 3, 'E41.82'),
+        // the year printed on the next line
+        c(page2 + 1, 0, '29 abr'), c(page2 + 1, 1, 'CAR Example Parking'), c(page2 + 1, 2, 'Завършена Main · GBP'), c(page2 + 1, 4, '{12.00'),
+        c(page2 + 2, 0, '2026'), c(page2 + 2, 3, 'GBP'),
+        // a card payment in euros: the euro amount sits alone on the next line
+        c(page2 + 3, 0, '21 сеп 2026'), c(page2 + 3, 1, 'CAR Example Shop Обменен курс GBP 1 = EUR 1.17, Такса: E2.00'),
+        c(page2 + 3, 2, 'Завършена'), c(page2 + 3, 3, 'Main ·'), c(page2 + 3, 4, 'E256.00'),
+        c(page2 + 4, 3, 'GBP'), c(page2 + 4, 4, 'Є297.18'),
+    ];
+    const { transactions, statementTotals } = parse(cells);
+
+    it('reads every transaction', () => {
+        expect(transactions.map(t => t.date)).toEqual([
+            '01/07/2026', '03/07/2026', '03/07/2026', '04/07/2026', '27/09/2026', '29/08/2026', '21/09/2026',
+        ]);
+    });
+
+    it('takes the direction from the transaction code', () => {
+        expect(transactions.filter(t => t.moneyIn).map(t => t.type)).toEqual(['MOA', 'MOR']);
+        expect(sumIn(transactions)).toBe(2053.86);
+        expect(sumOut(transactions)).toBe(1535.32);
+    });
+
+    it('splits a merged date cell into date, code and description', () => {
+        expect(transactions[4]).toMatchObject({ type: 'CAR', description: 'Example Fuel Station', moneyOut: '41.82' });
+    });
+
+    it('has no declared totals to check against', () => {
+        expect(statementTotals).toBeUndefined();
+    });
+});
+
+describe('Revolut transaction statement in English', () => {
+    it('reads as before', () => {
+        const { transactions } = parse([
+            c(0, 0, 'Date (UTC)'), c(0, 1, 'Description'), c(0, 2, 'Status'), c(0, 3, 'Account'), c(0, 4, 'Money out'), c(0, 5, 'Money in'),
+            c(1, 0, '1 Jul 2026'), c(1, 1, 'CAR Example Shop'), c(1, 2, 'Completed'), c(1, 3, 'Main · GBP'), c(1, 4, '£10.00'),
+            c(2, 0, '2 Jul 2026'), c(2, 1, 'MOA Money added from Example Client Ltd'), c(2, 2, 'Completed'), c(2, 3, 'Main · GBP'), c(2, 5, '£500.00'),
+        ]);
+        expect(transactions.map(t => [t.date, t.moneyIn, t.moneyOut])).toEqual([
+            ['01/07/2026', '', '10.00'],
+            ['02/07/2026', '500.00', ''],
+        ]);
+    });
+});

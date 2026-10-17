@@ -31,7 +31,15 @@ const OCR_MONTH_FIXES: Record<string, string> = {
     okt: 'окт',  // октомври  (О→o, К→k, Т→t)
     cen: 'сеп',  // септември (С→c, е→e, п→n)
     anp: 'апр',  // април     (А→a, п→n, р→p)
+    abr: 'авг',  // август    (а→a, в→b, г→r)
 };
+
+// Azure DI also reads some Latin transaction codes as the Cyrillic letters that
+// look the same: "МОА", "АТМ".
+const LATIN_LOOKALIKES: Record<string, string> = {
+    'А': 'A', 'В': 'B', 'Е': 'E', 'К': 'K', 'М': 'M', 'Н': 'H', 'О': 'O', 'Р': 'P', 'С': 'C', 'Т': 'T', 'Х': 'X',
+};
+const toLatinCode = (s: string) => s.replace(/[АВЕКМНОРСТХ]/g, ch => LATIN_LOOKALIKES[ch]);
 
 function parseBgDate(s: string): string {
     // Allow any non-whitespace chars in the month position (handles Latin/Cyrillic mix)
@@ -46,6 +54,26 @@ function parseBgDate(s: string): string {
 
 function parseAnyDate(s: string): string {
     return parseDateToDDMMYYYY(s) || parseBgDate(s);
+}
+
+/**
+ * The date at the start of a transaction-statement row, when the cell is not a
+ * clean date. Seen on a Bulgarian statement read by Azure DI:
+ *   "З юли 2026"                    — 3 read as the Cyrillic З
+ *   "27 сеп 2026 CAR Wickes Harlow" — date and description in one cell; the
+ *                                     description comes back as `rest`
+ *   "29 юли" with "2026" alone in the first cell of the next row
+ * Without a year in either place the year of the previous row is used.
+ */
+function leadingBgDate(cell: string, nextCell: string | undefined, previousYear: string): { date: string; rest: string } | null {
+    const s = normStr(cell).replace(/^З(?=\d?\s)/, '3');
+    const m = s.match(/^(\d{1,2})\s+(\S+)(?:\s+(\d{4}))?(?:\s+(.*))?$/);
+    if (!m) return null;
+    const next = normStr(nextCell ?? '');
+    const year = m[3] ?? (/^\d{4}$/.test(next) ? next : previousYear);
+    if (!year) return null;
+    const date = parseBgDate(`${m[1]} ${m[2]} ${year}`);
+    return date ? { date, rest: m[4] ?? '' } : null;
 }
 
 type SummarySection = { openingBalance?: number; moneyIn?: number; moneyOut?: number; closingBalance?: number };
@@ -154,9 +182,10 @@ function isInOut5Header(header: string[]): boolean {
 // Detect transaction-statement format: [date, desc, status, account, out, in]
 // Key markers: "status" and "account" columns present, no "balance" column.
 // Azure DI may shift columns across pages, but the header is stable on page 1.
+// In Bulgarian the columns are "Състояние" and "Сметка".
 function isTransactionStatement(header: string[]): boolean {
     const joined = header.join(' ').toLowerCase();
-    return /\bstatus\b/.test(joined) && /\baccount\b/.test(joined) && !/\bbalance\b/.test(joined);
+    return /\bstatus\b|състояние/.test(joined) && /\baccount\b|сметка/.test(joined) && !/\bbalance\b|баланс/.test(joined);
 }
 
 // Extract two £-prefixed amounts from a smashed cell, e.g. "£48.70 £436.68" or "£6 000.00 £6 027.18"
@@ -282,20 +311,28 @@ export function parse(cells: Cell[]): ParseResult {
     // right-to-left from col 6→3 for the first parseable £ amount, then use
     // the type code (IN_CODES/OUT_CODES) + "from" keyword for direction.
     if (hasHeader && isTransactionStatement(headerRow)) {
+        let previousYear = '';
         for (let i = startAt; i < table.length; i++) {
             const c = table[i].cols;
-            const date = parseAnyDate(c[0]);
-            if (!date) continue;
+            let date = parseAnyDate(c[0]);
+            let cell1 = normStr(c[1]);
+            if (!date) {
+                const lead = leadingBgDate(c[0], table[i + 1]?.cols[0], previousYear);
+                if (!lead) continue;
+                date = lead.date;
+                if (lead.rest) cell1 = lead.rest;
+            }
+            previousYear = date.slice(-4);
 
-            // Split c[1]: "TYPE rest" → type + desc; if c[1] is bare code → desc from c[2]
-            const cell1 = normStr(c[1]);
+            // Split cell1: "TYPE rest" → type + desc; if cell1 is bare code → desc from c[2]
             const sp = cell1.indexOf(' ');
+            const code = toLatinCode(sp > 0 ? cell1.slice(0, sp) : cell1);
             let type = '', desc = '';
-            if (sp > 0 && /^[A-Z]{2,4}$/.test(cell1.slice(0, sp))) {
-                type = cell1.slice(0, sp);
+            if (sp > 0 && /^[A-Z]{2,4}$/.test(code)) {
+                type = code;
                 desc = cell1.slice(sp + 1).trim();
-            } else if (/^[A-Z]{2,4}$/.test(cell1)) {
-                type = cell1;
+            } else if (/^[A-Z]{2,4}$/.test(code)) {
+                type = code;
                 desc = normStr(c[2]);
             } else {
                 desc = cell1;
@@ -312,7 +349,8 @@ export function parse(cells: Cell[]): ParseResult {
             const t = type.toUpperCase();
             const d = desc.toLowerCase();
             let moneyIn = '', moneyOut = '';
-            if (IN_CODES.has(t) || /\bfrom\b/.test(d) || d.includes('money added from')) {
+            // "Добавени пари от" = money added from, "Възстановена сума от" = refund from
+            if (IN_CODES.has(t) || /\bfrom\b/.test(d) || d.includes('money added from') || /^(добавени пари|възстановена сума) от/.test(d)) {
                 moneyIn = formatMoney(amt);
             } else {
                 moneyOut = formatMoney(amt);
