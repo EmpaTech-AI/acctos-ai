@@ -80,7 +80,9 @@ function extractDeclaredTotals(content: string): { moneyIn: number; moneyOut: nu
     const openingBalance = after(/Opening balance/);
     const moneyIn        = after(/Total money in/);
     const moneyOut       = after(/Total money out/);
-    const closingBalance = after(/End balance/);
+    // The deposit-account layout labels it "Closing Balance". That label also closes the
+    // transaction table, but without a £ sign, so only the summary value matches.
+    const closingBalance = after(/End balance/) ?? after(/Closing balance/);
     if (openingBalance === null || moneyIn === null || moneyOut === null || closingBalance === null) return null;
     return { moneyIn, moneyOut, openingBalance, closingBalance };
 }
@@ -100,7 +102,9 @@ export function parse(cells: Cell[]): ParseResult {
         return cols;
     });
 
-    if (!table.length) return { transactions: [] };
+    // A statement with no transactions still has its summary. Keep it, so the job can
+    // say the account had no money in or out rather than that nothing could be read.
+    if (!table.length) return { transactions: [], ...(declared ? { statementTotals: declared } : {}) };
 
     // Locate header row (may be preceded by a "Your transactions" section heading)
     let startAt = 0;

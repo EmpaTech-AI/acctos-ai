@@ -82,6 +82,8 @@ export interface JobFailedAlert {
     stageElapsedSec?: number;
     error:         string;
     errorType?:    'client' | 'system';
+    /** Replaces the stage's default "What to do" line when the cause is known. */
+    action?:       string;
 }
 
 export interface ChainGapAlert {
@@ -174,7 +176,7 @@ export function notifyJobFailed(alert: JobFailedAlert): void {
     const elapsed = alert.stageElapsedSec ? `${alert.stageElapsedSec}s` : 'unknown';
 
     const actionMap = isClientError ? CLIENT_ERROR_ACTIONS : SYSTEM_ERROR_ACTIONS;
-    const action = actionMap[alert.stage ?? ''] ?? 'Check the server logs for more details.';
+    const action = alert.action ?? actionMap[alert.stage ?? ''] ?? 'Check the server logs for more details.';
 
     const errorTypeLabel = isClientError
         ? 'CLIENT ERROR — problem with the uploaded file'
@@ -203,6 +205,143 @@ export function notifyJobFailed(alert: JobFailedAlert): void {
 
     console.error(`[ALERT:job_failed] ${subject}\n${text}`);
     sendToAllTeam(subject, text);
+}
+
+// ── Client + team: an emailed statement could not be processed ────────────────
+
+export interface EmptyStatement {
+    filename:        string;
+    openingBalance?: number;
+    closingBalance?: number;
+}
+
+export interface ClientJobFailedAlert {
+    emailSubject: string;
+    filenames:    string[];
+    /**
+     * no_movement: every statement says nothing came in or went out.
+     * client:      the files could not be read (wrong kind of file, no transactions found).
+     * system:      our side failed.
+     */
+    reason:       'no_movement' | 'client' | 'system';
+    /** For no_movement: each statement and its balance. */
+    statements?:  EmptyStatement[];
+}
+
+/**
+ * Tells the client that the statements they emailed were not processed, and why.
+ *
+ * Origin: a failed job sent its alert to the team only. The email had already been
+ * marked read, so the accountant got no result and no reply, and reported that the
+ * system "stopped working". The statements were for a deposit account with no
+ * transactions in it.
+ *
+ * Not gated by PAUSE_CLIENT_ERRORS. That flag holds back warnings sent alongside a
+ * result. Here there is no result: without this email the client hears nothing at all.
+ */
+export function notifyClientJobFailed(alert: ClientJobFailedAlert): void {
+    const replySubject = /^re:/i.test(alert.emailSubject) ? alert.emailSubject : `Re: ${alert.emailSubject}`;
+    const files = alert.filenames.join(', ');
+    const fmt   = (n?: number) => n == null ? '?' : `£${n.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',')}`;
+    const balance = (s: EmptyStatement) => s.openingBalance === s.closingBalance
+        ? fmt(s.closingBalance)
+        : `${fmt(s.openingBalance)} → ${fmt(s.closingBalance)}`;
+    const stmtLines = (alert.statements ?? []).map(s => `  - ${s.filename}: ${balance(s)}`);
+
+    const en = {
+        no_movement: {
+            title: 'Statement not processed — no transactions on the statement',
+            why:   [
+                'The statements show no money in and no money out for the whole period, so there is nothing to put in the report. Balance on each statement:',
+                ...stmtLines,
+                '',
+                'This often means the statements are for a different account, such as a savings or deposit account, rather than the account the payments go through.',
+            ],
+            todo:  'If there is another account, please send its statements for the same period in a new email.',
+        },
+        client: {
+            title: 'Statement not processed — no transactions could be read',
+            why:   ['We could not read any transactions from the attached files.'],
+            todo:  "Please check that they are the bank's own statements (PDF or Excel downloaded from the bank, not a scan or photo) and send them again in a new email.",
+        },
+        system: {
+            title: 'Statement not processed — error on our side',
+            why:   ['Something went wrong on our side while processing the attached files.'],
+            todo:  'Our team has been notified and will get back to you. You do not need to send the files again.',
+        },
+    }[alert.reason];
+
+    const bg = {
+        no_movement: {
+            title: 'Извлечението не е обработено — в извлечението няма транзакции',
+            why:   [
+                'В извлеченията няма нито постъпления, нито плащания за целия период, затова няма какво да влезе в отчета. Салдо по всяко извлечение:',
+                ...stmtLines,
+                '',
+                'Обикновено това означава, че извлеченията са от друга сметка, например спестовна или депозитна, а не от сметката, през която минават плащанията.',
+            ],
+            todo:  'Ако има друга сметка, моля изпратете нейните извлечения за същия период в нов имейл.',
+        },
+        client: {
+            title: 'Извлечението не е обработено — не успяхме да прочетем транзакции',
+            why:   ['Не успяхме да прочетем нито една транзакция от прикачените файлове.'],
+            todo:  'Моля проверете дали това са извлеченията от банката (PDF или Excel, свалени от банката, а не сканирани или снимани) и ги изпратете отново в нов имейл.',
+        },
+        system: {
+            title: 'Извлечението не е обработено — грешка при нас',
+            why:   ['При обработката на прикачените файлове възникна грешка при нас.'],
+            todo:  'Екипът ни е уведомен и ще се свърже с Вас. Не е нужно да изпращате файловете отново.',
+        },
+    }[alert.reason];
+
+    const text = [
+        en.title, '', 'Hi,', '',
+        `We received your email "${alert.emailSubject}" (${files}), but it was not processed.`,
+        '', ...en.why, '', en.todo, '',
+        'If you have any questions, please reply to this email.',
+        '', '---', '',
+        bg.title, '', 'Здравейте,', '',
+        `Получихме Вашия имейл „${alert.emailSubject}“ (${files}), но той не беше обработен.`,
+        '', ...bg.why, '', bg.todo, '',
+        'Ако имате въпроси, моля отговорете на този имейл.',
+    ].join('\n');
+
+    const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const errStyle = 'font-size:20px;font-weight:700;margin:0 0 16px;color:#dc2626';
+    const paras = (lines: string[]) => {
+        const out: string[] = [];
+        let list: string[] = [];
+        const flush = () => { if (list.length) { out.push(`<ul>${list.map(l => `<li>${esc(l)}</li>`).join('')}</ul>`); list = []; } };
+        for (const l of lines) {
+            if (l.startsWith('  - ')) { list.push(l.slice(4)); continue; }
+            flush();
+            if (l) out.push(`<p>${esc(l)}</p>`);
+        }
+        flush();
+        return out.join('\n');
+    };
+    const section = (t: typeof en, hi: string, lead: string, footer: string) => `
+      <h2 style="${errStyle}">${t.title}</h2>
+      <p>${hi}</p>
+      <p>${lead}</p>
+      ${paras(t.why)}
+      <p><strong>${esc(t.todo)}</strong></p>
+      <p style="margin-top:24px;color:#6b7280;font-size:13px">${footer}</p>`;
+    const subj = `<strong>${esc(alert.emailSubject)}</strong>`;
+    const html = `<!DOCTYPE html><html><body style="font-family:Arial,sans-serif;font-size:15px;color:#111827;max-width:600px;margin:0 auto;padding:24px">
+      ${section(en, 'Hi,', `We received your email ${subj} (${esc(files)}), but it was not processed.`, 'If you have any questions, please reply to this email.')}
+      <hr style="border:none;border-top:1px solid #e5e7eb;margin:32px 0">
+      ${section(bg, 'Здравейте,', `Получихме Вашия имейл ${subj} (${esc(files)}), но той не беше обработен.`, 'Ако имате въпроси, моля отговорете на този имейл.')}
+    </body></html>`;
+
+    const sendTo = (to: string) => sendMailgunMessage({ from: FROM_EMAIL, to, subject: replySubject, text, html })
+        .then(() => console.log(`[Notifications] Not-processed notice (${alert.reason}) sent to ${to}: "${replySubject}"`))
+        .catch(err => console.error(`[Notifications] Failed to send not-processed notice to ${to}:`, err.message));
+
+    // The client, and the primary team contact so the team sees what the client saw.
+    // The team's technical alert (notifyJobFailed) goes out separately.
+    sendTo(CLIENT_EMAIL);
+    if (TEAM_EMAIL.toLowerCase() !== CLIENT_EMAIL.toLowerCase()) sendTo(TEAM_EMAIL);
 }
 
 // ── Team + Client: missing documents in sequence ───────────────────────────────

@@ -23,7 +23,7 @@ vi.mock('../../MailgunService.js', () => ({
     sendMailgunMessage: async (opts: SendOpts) => { sent.push(opts); },
 }));
 
-import { notifyProcessingComplete, ProcessingCompleteAlert, notifyProcessingBlocked, notifyPaymentFailed, PaymentFailedAlert } from '../NotificationService.js';
+import { notifyProcessingComplete, ProcessingCompleteAlert, notifyProcessingBlocked, notifyPaymentFailed, PaymentFailedAlert, notifyClientJobFailed, ClientJobFailedAlert, notifyJobFailed } from '../NotificationService.js';
 
 const DRIVE_URL = 'https://docs.google.com/spreadsheets/d/EXAMPLE/edit';
 
@@ -219,5 +219,86 @@ describe('notifyPaymentFailed', () => {
         expect(team.text).toContain('Next automatic attempt: none — Stripe will not try again');
         expect(team.text).toContain('Tenant: not linked to a tenant');
         expect(team.text).not.toContain('new billing period has not started');
+    });
+});
+
+/**
+ * A failed job used to reach the team only. The email was already marked read, so the
+ * client got no result and no reply, and reported that the system had stopped working.
+ * The client now gets a notice saying the statements were not processed and why.
+ */
+describe('notifyClientJobFailed', () => {
+    async function failed(a: ClientJobFailedAlert) {
+        notifyClientJobFailed(a);
+        await new Promise(r => setTimeout(r, 0));
+        return {
+            team:   sent.find(m => m.to === 'team@example.test')!,
+            client: sent.find(m => m.to === 'client@example.test')!,
+        };
+    }
+    const noMovement: ClientJobFailedAlert = {
+        emailSubject: 'EXAMPLE LTD VAT AI',
+        filenames:    ['aug.pdf', 'sep.pdf'],
+        reason:       'no_movement',
+        statements:   [
+            { filename: 'aug.pdf', openingBalance: 12.34, closingBalance: 12.34 },
+            { filename: 'sep.pdf', openingBalance: 12.34, closingBalance: 1234.5 },
+        ],
+    };
+
+    it('goes to the client and the team as a reply to the original email', async () => {
+        const { team, client } = await failed(noMovement);
+
+        expect(client.subject).toBe('Re: EXAMPLE LTD VAT AI');
+        expect(team.subject).toBe('Re: EXAMPLE LTD VAT AI');
+        expect(client.attachment).toBeUndefined();
+    });
+
+    it('for statements without activity, lists each balance and asks for the other account', async () => {
+        const { client } = await failed(noMovement);
+
+        expect(client.text).toContain('no transactions on the statement');
+        expect(client.text).toContain('no money in and no money out');
+        expect(client.text).toContain('  - aug.pdf: £12.34');
+        expect(client.text).toContain('  - sep.pdf: £12.34 → £1,234.50');
+        expect(client.text).toContain('savings or deposit account');
+        expect(client.text).toContain('нито постъпления, нито плащания');
+        expect(client.html).toContain('<li>aug.pdf: £12.34</li>');
+        expect(client.html).toContain('<strong>EXAMPLE LTD VAT AI</strong>');
+    });
+
+    it('for unreadable files, asks for the bank statements again', async () => {
+        const { client } = await failed({ emailSubject: 'Re: Example', filenames: ['scan.pdf'], reason: 'client' });
+
+        expect(client.subject).toBe('Re: Example');
+        expect(client.text).toContain('We could not read any transactions');
+        expect(client.text).toContain('send them again in a new email');
+        expect(client.text).not.toContain('deposit account');
+    });
+
+    it('for our own failure, says the team is on it and nothing needs resending', async () => {
+        const { client } = await failed({ emailSubject: 'Example', filenames: ['a.pdf'], reason: 'system' });
+
+        expect(client.text).toContain('error on our side');
+        expect(client.text).toContain('You do not need to send the files again.');
+        expect(client.text).toContain('Не е нужно да изпращате файловете отново.');
+    });
+
+    it('escapes the subject in the HTML', async () => {
+        const { client } = await failed({ emailSubject: 'A <b> & Co', filenames: ['a.pdf'], reason: 'client' });
+
+        expect(client.html).toContain('A &lt;b&gt; &amp; Co');
+        expect(client.html).not.toContain('<b> & Co');
+    });
+});
+
+describe('notifyJobFailed', () => {
+    it('uses a known cause\'s action instead of the stage default', async () => {
+        notifyJobFailed({ jobId: 'j1', filename: 'batch (3 files)', stage: 'parse', error: 'x', errorType: 'client', action: 'Nothing to fix.' });
+        await new Promise(r => setTimeout(r, 0));
+        const team = sent.find(m => m.to === 'team@example.test')!;
+
+        expect(team.text).toContain('What to do:\n  Nothing to fix.');
+        expect(team.text).not.toContain('unsupported bank');
     });
 });
