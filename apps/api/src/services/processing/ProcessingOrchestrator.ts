@@ -11,7 +11,8 @@ import { parseExcel } from './ExcelParser.js';
 import { buildPdfOutputExcel, buildExcelOutputExcel, buildVatOutputExcel, VatStats } from './ExcelOutputBuilder.js';
 import { Cell, ParsedTransaction, ParseResult } from './parsers/shared.js';
 import { computeVerification, applyCatVerification, logVerificationSummary, computeChainVerification, earliestTransactionDate } from './Verification.js';
-import { notifyParserError, notifyChainGap, notifyJobFailed, notifyInsufficientFiles, notifyDuplicatesRemoved, notifyProcessingComplete, notifyTeamIssuesSummary, notifyClientIssuesSummary, notifyUnknownBank, notifyProcessingBlocked, ClientIssueItem, BankSummary } from './NotificationService.js';
+import { NoMovementError, noMovementError, EmptyFile } from './noMovement.js';
+import { notifyClientJobFailed, notifyParserError,notifyChainGap, notifyJobFailed,notifyInsufficientFiles, notifyDuplicatesRemoved, notifyProcessingComplete, notifyTeamIssuesSummary, notifyClientIssuesSummary, notifyUnknownBank, notifyProcessingBlocked, ClientIssueItem, BankSummary } from './NotificationService.js';
 import { JobSummary, AdminIssue } from './JobStore.js';
 import {
     getAzureCacheEntry, saveAzureCache,
@@ -140,6 +141,16 @@ const CLIENT_ERROR_PATTERNS = [
 function classifyError(err: Error): 'client' | 'system' {
     const msg = err.message || '';
     return CLIENT_ERROR_PATTERNS.some(p => p.test(msg)) ? 'client' : 'system';
+}
+
+/** Reply to the client's email when its job failed — only for jobs that came in by email. */
+function tellClientJobFailed(err: unknown, errorType: 'client' | 'system', emailSubject: string | undefined, senderEmail: string | undefined, filenames: string[]): void {
+    if (!emailSubject || !senderEmail) return;
+    if (err instanceof NoMovementError) {
+        notifyClientJobFailed({ emailSubject, filenames, reason: 'no_movement', statements: err.statements });
+    } else {
+        notifyClientJobFailed({ emailSubject, filenames, reason: errorType });
+    }
 }
 
 function buildJobSummary(bankSummary?: BankSummary, vatStats?: VatStats): JobSummary | undefined {
@@ -407,6 +418,10 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
         const fileSummaries: FileSummary[] = [];
         let ascending = false;
         const usageFiles: UsageFile[] = [];
+        // Files that parsed to no transactions, with their declared totals. Recorded
+        // before the duplicate-statement skip: empty statements of one account all share
+        // the same balance, so all but the first would otherwise be skipped as duplicates.
+        const emptyFiles: EmptyFile[] = [];
 
         for (let fi = 0; fi < files.length; fi++) {
             const { filename, mimeType, buffer } = files[fi];
@@ -613,6 +628,7 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
             const { transactions: fileTransactions, statementTotals, ascending: fileAscending } = parseResult;
             if (fileAscending) ascending = true;
             console.log(`[Orchestrator] File ${fi + 1}/${files.length} "${filename}": ${fileTransactions.length} transactions`);
+            if (fileTransactions.length === 0) emptyFiles.push({ filename, statementTotals });
 
             if (bankType === 'generic') {
                 if (!adminImport) {
@@ -779,7 +795,9 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
             combinedStatementTotals.closingBalance = undefined;
         }
 
-        if (allTransactions.length === 0) throw new Error('No transactions found in any of the uploaded files');
+        if (allTransactions.length === 0) {
+            throw noMovementError(files.length, emptyFiles) ?? new Error('No transactions found in any of the uploaded files');
+        }
 
         // Sort by date, preserving the bank's natural order (ascending for Mettle, descending for all others)
         const sorted = files.length > 1 ? sortTransactions(allTransactions, ascending) : allTransactions;
@@ -1045,7 +1063,11 @@ async function runBatchJob(jobId: string, files: FileInput[], tracking?: Trackin
                 stageElapsedSec: elapsed,
                 error:    err.message || String(err),
                 errorType,
+                ...(err instanceof NoMovementError ? {
+                    action: 'Nothing to fix: the statements were read and have no transactions. The client has been told and asked for the statements of the account the payments go through.',
+                } : {}),
             });
+            tellClientJobFailed(err, errorType, emailSubject, senderEmail, files.map(f => f.filename));
         }
     }
 }
@@ -1514,12 +1536,14 @@ async function runJob(jobId: string, filename: string, mimeType: string, fileBuf
             notifyJobFailed({
                 jobId,
                 tenantId: tracking?.tenantId,
+                emailSubject,
                 filename,
                 stage,
                 stageElapsedSec: elapsed,
                 error: err.message || String(err),
                 errorType,
             });
+            tellClientJobFailed(err, errorType, emailSubject, senderEmail, [filename]);
         }
     }
 }

@@ -124,3 +124,50 @@ describe('Metro parser – ordinary pages are unchanged', () => {
         expect(transactions[2]).toMatchObject({ description: 'Direct Debit EXAMPLE INSURER', moneyOut: '50.00', moneyIn: '', balance: '1350.00' });
     });
 });
+
+/**
+ * Origin: three monthly statements of a business deposit account with no activity.
+ * Its summary says "Closing Balance", not "End balance", and the only table Azure DI
+ * found was that summary. The parser returned no totals, so the job could only say
+ * "No transactions found" and the team's alert pointed at an unsupported bank.
+ * Text below is a made-up account in the same layout.
+ */
+describe('Metro parser – deposit account statement with no transactions', () => {
+    const content = [
+        'Business Instant Access Deposit Account BIC: MYMBGB2L IBAN: GB00EXAM00000000000000',
+        'EXAMPLE LTD 1 EXAMPLE STREET, LONDON',
+        'Your account summary', '01 OCT 2026 To', '31 OCT 2026',
+        'Opening Balance', '£12.34', 'Total Money In', '£0.00', 'Total Money Out', '£0.00', 'Closing Balance', '£12.34',
+        'Your transactions', 'DATE', 'TRANSACTION', 'Balance brought forward', 'M ETRO BANK',
+        'MONEY OUT MONEY IN', 'BALANCE', '12.34', 'Closing Balance', '12.34',
+    ].join('\n');
+    const summaryCells: Cell[] = [
+        ...row(0, '01 OCT 2026 To', '31 OCT 2026'),
+        ...row(1, 'Opening Balance', '£12.34'),
+        ...row(2, 'Total Money In', '£0.00'),
+        ...row(3, 'Total Money Out', '£0.00'),
+        ...row(4, 'Closing Balance', '£12.34'),
+        ...row(6, 'Business Account Number', '00000000'),
+        ...row(7, 'Sort Code', '00-00-00'),
+    ];
+
+    it('finds no transactions but returns the declared totals, closing balance included', () => {
+        const result = parse([{ rowIndex: -1, columnIndex: 0, content }, ...summaryCells]);
+
+        expect(result.transactions).toHaveLength(0);
+        expect(result.statementTotals).toEqual({ moneyIn: 0, moneyOut: 0, openingBalance: 12.34, closingBalance: 12.34 });
+    });
+
+    it('returns the declared totals when Azure DI found no table at all', () => {
+        const result = parse([{ rowIndex: -1, columnIndex: 0, content }]);
+
+        expect(result.transactions).toHaveLength(0);
+        expect(result.statementTotals).toEqual({ moneyIn: 0, moneyOut: 0, openingBalance: 12.34, closingBalance: 12.34 });
+    });
+
+    it('still prefers "End balance" on the current-account layout', () => {
+        const result = parse([{ ...CONTEXT, content: CONTEXT.content + ' Closing balance £9.99' }, ...PAGE_1]);
+
+        expect(result.statementTotals?.closingBalance).toBe(1650);
+    });
+});
